@@ -12,7 +12,7 @@ Install the application and local editable runtime packages into the Python
 environment that already contains the heavy CUDA/PyTorch stack:
 
 ```bash
-export ARTALK_STREAMLIT_PYTHON=/home/mil/tsuchiya/.local/share/mamba/envs/artalk-web/bin/python
+export ARTALK_STREAMLIT_PYTHON=/path/to/python
 export ARTALK_PACKAGE_DIR=/path/to/packaged/ARTalk
 export GAGAVATAR_PACKAGE_DIR=/path/to/packaged/GAGAvatar
 scripts/install_runtime.sh
@@ -37,27 +37,42 @@ through the upstream environment instructions.
 
 ## Assets
 
-Override these paths when using different assets:
+The default asset root is configured in `pyproject.toml`:
+
+```toml
+[tool.artalk.assets]
+root = "assets"
+```
+
+For local development, either create an ignored `assets` symlink that points at
+a complete ARTalk asset tree or populate the tree with the package downloaders:
+
+```bash
+artalk-assets download --root assets --include-optional
+gagavatar-assets download --root assets/GAGAvatar
+```
+
+The downloaders fetch only assets with explicit upstream sources and verify
+known sizes and SHA-256 hashes. They do not download FLAME assets; provide
+`assets/FLAME_with_eye.pt` manually according to the FLAME license terms.
+
+GAGAvatar assets are resolved from the same tree by default:
+`GAGAvatar/GAGAvatar.pt`, `GAGAvatar/tracked.pt`, and `FLAME_with_eye.pt`.
+
+Override the configured root when using different assets:
 
 ```bash
 export ARTALK_ASSET_DIR=/path/to/ARTalk/assets
-export GAGAVATAR_MODEL_PATH=/path/to/GAGAvatar/assets/GAGAvatar.pt
-export GAGAVATAR_TRACKED_PATH=/path/to/GAGAvatar/assets/tracked.pt
-export GAGAVATAR_FLAME_MODEL_PATH=/path/to/ARTalk/assets/FLAME_with_eye.pt
 ```
 
-By default, assets are resolved from the editable ARTalk package checkout when
-available, using the `assets/` directory next to the installed `app` package.
-GAGAvatar assets are resolved from the same ARTalk asset tree:
-`GAGAvatar/GAGAvatar.pt`, `GAGAvatar/tracked.pt`, and `FLAME_with_eye.pt`.
-Pass `--asset-dir` to point at a complete ARTalk asset tree. For non-standard
-layouts, pass `--gagavatar-model-path`, `--gagavatar-tracked-path`, or
+For non-standard layouts, pass `--gagavatar-asset-dir`,
+`--gagavatar-model-path`, `--gagavatar-tracked-path`, or
 `--gagavatar-flame-model-path` as Streamlit app arguments.
 
 ## Run
 
 ```bash
-ARTALK_STREAMLIT_PYTHON=/home/mil/tsuchiya/.local/share/mamba/envs/artalk-web/bin/python scripts/run_app.sh
+ARTALK_STREAMLIT_PYTHON=/path/to/python scripts/run_app.sh
 ```
 
 The launcher uses `st-remote` from the selected Python environment. Set
@@ -68,10 +83,9 @@ Pass `st-remote` options before `--`, and `streamlit_app.py` options after
 `--`:
 
 ```bash
-ARTALK_STREAMLIT_PYTHON=/home/mil/tsuchiya/.local/share/mamba/envs/artalk-web/bin/python \
+ARTALK_STREAMLIT_PYTHON=/path/to/python \
   scripts/run_app.sh --no-remote -- \
     --device cuda \
-    --asset-dir /path/to/ARTalk/assets \
     --render-res 512
 ```
 

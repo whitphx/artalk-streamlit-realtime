@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import importlib.util
 import logging
 import os
 import threading
@@ -24,6 +23,7 @@ import av
 import numpy as np
 import streamlit as st
 import torch
+from artalk.assets import ARTalkAssets
 from streamlit_webrtc import (
     WebRtcMode,
     create_audio_sink_track,
@@ -36,6 +36,8 @@ from streamlit_webrtc.shutdown import SessionShutdownObserver
 from artalk.flame_model import RenderMesh
 from artalk.realtime_pipeline import ARTalkPipeline
 from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
+from gagavatar.assets import AssetConfigError as GAGAvatarAssetConfigError
+from gagavatar.assets import GAGAvatarAssets
 
 logger = logging.getLogger(__name__)
 
@@ -60,68 +62,36 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
 )
 
 
-def env_path(name: str, default: str | Path | None = None) -> Path | None:
-    value = os.environ.get(name)
-    if value:
-        return Path(value).expanduser().resolve()
-    if default is None:
-        return None
-    return Path(default).expanduser().resolve()
-
-
-def package_asset_dir() -> Path | None:
-    spec = importlib.util.find_spec("artalk")
-    if spec is None or spec.origin is None:
-        return None
-    asset_dir = Path(spec.origin).resolve().parent.parent / "assets"
-    return asset_dir if asset_dir.exists() else None
-
-
-def artalk_asset_dir(asset_dir: str | None = None) -> Path:
-    if asset_dir:
-        return Path(asset_dir).expanduser().resolve()
-    default = package_asset_dir() or Path("assets")
-    return env_path("ARTALK_ASSET_DIR", default) or default.resolve()
-
-
-def resolve_path(value: str | None) -> Path | None:
-    return Path(value).expanduser().resolve() if value else None
-
-
-def gagavatar_model_path(
-    asset_dir: Path, value: str | None = None, use_env: bool = True
-) -> Path | None:
-    default = asset_dir / "GAGAvatar" / "GAGAvatar.pt"
-    return resolve_path(value) or (
-        env_path("GAGAVATAR_MODEL_PATH", default) if use_env else default.resolve()
+def resolve_gagavatar_assets(args, artalk_assets: ARTalkAssets) -> GAGAvatarAssets:
+    has_gagavatar_override = any(
+        [
+            args.gagavatar_asset_dir,
+            args.gagavatar_model_path,
+            args.gagavatar_tracked_path,
+            args.gagavatar_flame_model_path,
+        ]
     )
-
-
-def gagavatar_tracked_path(
-    asset_dir: Path, value: str | None = None, use_env: bool = True
-) -> Path | None:
-    default = asset_dir / "GAGAvatar" / "tracked.pt"
-    return resolve_path(value) or (
-        env_path("GAGAVATAR_TRACKED_PATH", default) if use_env else default.resolve()
-    )
-
-
-def gagavatar_flame_model_path(
-    asset_dir: Path, value: str | None = None, use_env: bool = True
-) -> Path | None:
-    default = asset_dir / "FLAME_with_eye.pt"
-    return resolve_path(value) or (
-        env_path("GAGAVATAR_FLAME_MODEL_PATH", default)
-        if use_env
-        else default.resolve()
-    )
+    if has_gagavatar_override:
+        return GAGAvatarAssets.resolve(
+            root=args.gagavatar_asset_dir,
+            model_path=args.gagavatar_model_path,
+            tracked_path=args.gagavatar_tracked_path,
+            flame_model_path=args.gagavatar_flame_model_path,
+        )
+    if args.asset_dir:
+        return GAGAvatarAssets.from_artalk_assets(artalk_assets)
+    try:
+        return GAGAvatarAssets.from_pyproject()
+    except GAGAvatarAssetConfigError:
+        return GAGAvatarAssets.from_artalk_assets(artalk_assets)
 
 
 @st.cache_resource
-def load_artalk_runtime(device: str, render_res: int, asset_dir: str):
+def load_artalk_runtime(device: str, render_res: int, asset_root: str):
+    assets = ARTalkAssets.from_root(asset_root)
     runtime = ARTalkRuntime(
         ARTalkRuntimeConfig(
-            asset_dir=asset_dir,
+            assets=assets,
             device=device,
             flame_scale=1.0,
         )
@@ -417,28 +387,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--device", default=os.environ.get("ARTALK_DEVICE", "cuda"), type=str)
 parser.add_argument("--render-res", default=int(os.environ.get("ARTALK_RENDER_RES", "512")), type=int)
 parser.add_argument("--asset-dir", default=os.environ.get("ARTALK_ASSET_DIR"), type=str)
-parser.add_argument("--gagavatar-model-path", default=None, type=str)
-parser.add_argument("--gagavatar-tracked-path", default=None, type=str)
-parser.add_argument("--gagavatar-flame-model-path", default=None, type=str)
+parser.add_argument("--gagavatar-asset-dir", default=os.environ.get("GAGAVATAR_ASSET_DIR"), type=str)
+parser.add_argument("--gagavatar-model-path", default=os.environ.get("GAGAVATAR_MODEL_PATH"), type=str)
+parser.add_argument("--gagavatar-tracked-path", default=os.environ.get("GAGAVATAR_TRACKED_PATH"), type=str)
+parser.add_argument(
+    "--gagavatar-flame-model-path",
+    default=os.environ.get("GAGAVATAR_FLAME_MODEL_PATH"),
+    type=str,
+)
 args, _ = parser.parse_known_args()
 
-asset_dir = artalk_asset_dir(args.asset_dir)
-use_gagavatar_env_defaults = not args.asset_dir
-tracked_path = gagavatar_tracked_path(
-    asset_dir,
-    args.gagavatar_tracked_path,
-    use_env=use_gagavatar_env_defaults,
-)
-model_path = gagavatar_model_path(
-    asset_dir,
-    args.gagavatar_model_path,
-    use_env=use_gagavatar_env_defaults,
-)
-flame_model_path = gagavatar_flame_model_path(
-    asset_dir,
-    args.gagavatar_flame_model_path,
-    use_env=use_gagavatar_env_defaults,
-)
+artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
+gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
+asset_dir = artalk_assets.root
+tracked_path = gagavatar_assets.tracked_path
+model_path = gagavatar_assets.model_path
+flame_model_path = gagavatar_assets.flame_model_path
 
 st.set_page_config(page_title="ARTalk Realtime", page_icon=":speech_balloon:")
 st.title("ARTalk Realtime")
