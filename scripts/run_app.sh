@@ -19,8 +19,31 @@ if [[ -n "${ARTALK_ASSET_DIR:-}" ]]; then
   export GAGAVATAR_FLAME_MODEL_PATH="${GAGAVATAR_FLAME_MODEL_PATH:-$ARTALK_ASSET_DIR/FLAME_with_eye.pt}"
 fi
 
-exec "$ST_REMOTE_BIN" \
-  --host "${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}" \
-  --port "${STREAMLIT_SERVER_PORT:-8501}" \
-  "$@" \
+ST_REMOTE_ARGS=()
+APP_ARGS=()
+TARGET_ARGS=ST_REMOTE_ARGS
+for arg in "$@"; do
+  if [[ "$arg" == "--" ]]; then
+    TARGET_ARGS=APP_ARGS
+    continue
+  fi
+  if [[ "$TARGET_ARGS" == "ST_REMOTE_ARGS" ]]; then
+    ST_REMOTE_ARGS+=("$arg")
+  else
+    APP_ARGS+=("$arg")
+  fi
+done
+
+COMMAND=(
+  "$ST_REMOTE_BIN"
+  --host "${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}"
+  --port "${STREAMLIT_SERVER_PORT:-8501}"
+  "${ST_REMOTE_ARGS[@]}"
   streamlit_app.py
+)
+
+if [[ "${#APP_ARGS[@]}" -gt 0 ]]; then
+  COMMAND+=(-- -- "${APP_ARGS[@]}")
+fi
+
+exec "${COMMAND[@]}"

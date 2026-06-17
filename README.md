@@ -50,6 +50,9 @@ By default, assets are resolved from the editable ARTalk package checkout when
 available, using the `assets/` directory next to the installed `app` package.
 GAGAvatar assets are resolved from the same ARTalk asset tree:
 `GAGAvatar/GAGAvatar.pt`, `GAGAvatar/tracked.pt`, and `FLAME_with_eye.pt`.
+Pass `--asset-dir` to point at a complete ARTalk asset tree. For non-standard
+layouts, pass `--gagavatar-model-path`, `--gagavatar-tracked-path`, or
+`--gagavatar-flame-model-path` as Streamlit app arguments.
 
 ## Run
 
@@ -61,18 +64,15 @@ The launcher uses `st-remote` from the selected Python environment. Set
 `ST_REMOTE_BIN` to override the executable, and set `STREAMLIT_SERVER_ADDRESS`
 or `STREAMLIT_SERVER_PORT` to change the local bind address.
 
-Pass options directly to `st-remote`. Use repeated `--streamlit-arg` options
-for arguments that should reach `streamlit_app.py`; `--streamlit-arg=--`
-inserts Streamlit's app-argument separator:
+Pass `st-remote` options before `--`, and `streamlit_app.py` options after
+`--`:
 
 ```bash
 ARTALK_STREAMLIT_PYTHON=/home/mil/tsuchiya/.local/share/mamba/envs/artalk-web/bin/python \
-  scripts/run_app.sh --no-remote \
-    --streamlit-arg=-- \
-    --streamlit-arg=--device \
-    --streamlit-arg=cuda \
-    --streamlit-arg=--render-res \
-    --streamlit-arg=512
+  scripts/run_app.sh --no-remote -- \
+    --device cuda \
+    --asset-dir /path/to/ARTalk/assets \
+    --render-res 512
 ```
 
 Browser microphone access requires a secure context. Use `http://localhost:8501`

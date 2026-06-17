@@ -77,21 +77,44 @@ def package_asset_dir() -> Path | None:
     return asset_dir if asset_dir.exists() else None
 
 
-def artalk_asset_dir() -> Path:
+def artalk_asset_dir(asset_dir: str | None = None) -> Path:
+    if asset_dir:
+        return Path(asset_dir).expanduser().resolve()
     default = package_asset_dir() or Path("assets")
     return env_path("ARTALK_ASSET_DIR", default) or default.resolve()
 
 
-def gagavatar_model_path() -> Path | None:
-    return env_path("GAGAVATAR_MODEL_PATH", artalk_asset_dir() / "GAGAvatar" / "GAGAvatar.pt")
+def resolve_path(value: str | None) -> Path | None:
+    return Path(value).expanduser().resolve() if value else None
 
 
-def gagavatar_tracked_path() -> Path | None:
-    return env_path("GAGAVATAR_TRACKED_PATH", artalk_asset_dir() / "GAGAvatar" / "tracked.pt")
+def gagavatar_model_path(
+    asset_dir: Path, value: str | None = None, use_env: bool = True
+) -> Path | None:
+    default = asset_dir / "GAGAvatar" / "GAGAvatar.pt"
+    return resolve_path(value) or (
+        env_path("GAGAVATAR_MODEL_PATH", default) if use_env else default.resolve()
+    )
 
 
-def gagavatar_flame_model_path() -> Path | None:
-    return env_path("GAGAVATAR_FLAME_MODEL_PATH", artalk_asset_dir() / "FLAME_with_eye.pt")
+def gagavatar_tracked_path(
+    asset_dir: Path, value: str | None = None, use_env: bool = True
+) -> Path | None:
+    default = asset_dir / "GAGAvatar" / "tracked.pt"
+    return resolve_path(value) or (
+        env_path("GAGAVATAR_TRACKED_PATH", default) if use_env else default.resolve()
+    )
+
+
+def gagavatar_flame_model_path(
+    asset_dir: Path, value: str | None = None, use_env: bool = True
+) -> Path | None:
+    default = asset_dir / "FLAME_with_eye.pt"
+    return resolve_path(value) or (
+        env_path("GAGAVATAR_FLAME_MODEL_PATH", default)
+        if use_env
+        else default.resolve()
+    )
 
 
 @st.cache_resource
@@ -393,12 +416,29 @@ class OpenAIRealtimeBridge:
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", default=os.environ.get("ARTALK_DEVICE", "cuda"), type=str)
 parser.add_argument("--render-res", default=int(os.environ.get("ARTALK_RENDER_RES", "512")), type=int)
+parser.add_argument("--asset-dir", default=os.environ.get("ARTALK_ASSET_DIR"), type=str)
+parser.add_argument("--gagavatar-model-path", default=None, type=str)
+parser.add_argument("--gagavatar-tracked-path", default=None, type=str)
+parser.add_argument("--gagavatar-flame-model-path", default=None, type=str)
 args, _ = parser.parse_known_args()
 
-asset_dir = artalk_asset_dir()
-tracked_path = gagavatar_tracked_path()
-model_path = gagavatar_model_path()
-flame_model_path = gagavatar_flame_model_path()
+asset_dir = artalk_asset_dir(args.asset_dir)
+use_gagavatar_env_defaults = not args.asset_dir
+tracked_path = gagavatar_tracked_path(
+    asset_dir,
+    args.gagavatar_tracked_path,
+    use_env=use_gagavatar_env_defaults,
+)
+model_path = gagavatar_model_path(
+    asset_dir,
+    args.gagavatar_model_path,
+    use_env=use_gagavatar_env_defaults,
+)
+flame_model_path = gagavatar_flame_model_path(
+    asset_dir,
+    args.gagavatar_flame_model_path,
+    use_env=use_gagavatar_env_defaults,
+)
 
 st.set_page_config(page_title="ARTalk Realtime", page_icon=":speech_balloon:")
 st.title("ARTalk Realtime")
@@ -423,6 +463,19 @@ flame_model = artalk_runtime.flame_model
 with st.sidebar:
     gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
     style_ids = list_style_ids(str(asset_dir))
+    if not gagavatar_ids:
+        with st.expander("GAGAvatar assets", expanded=True):
+            st.write(f"Asset dir: `{asset_dir}`")
+            st.write(f"Tracked: `{tracked_path}`")
+            st.write(f"Tracked exists: `{bool(tracked_path and tracked_path.exists())}`")
+            st.write(f"Model: `{model_path}`")
+            st.write(f"Model exists: `{bool(model_path and model_path.exists())}`")
+            st.write(f"FLAME: `{flame_model_path}`")
+            st.write(f"FLAME exists: `{bool(flame_model_path and flame_model_path.exists())}`")
+        st.warning(
+            "No GAGAvatar avatars were found. Set ARTALK_ASSET_DIR or pass "
+            "--asset-dir to an asset tree containing GAGAvatar/tracked.pt."
+        )
     appearance_options = [DEFAULT_APPEARANCE] + [f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids]
     appearance = st.selectbox("Appearance", appearance_options, index=0)
     default_style_index = (
