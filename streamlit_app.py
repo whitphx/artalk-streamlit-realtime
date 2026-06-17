@@ -33,9 +33,9 @@ from streamlit_webrtc import (
 )
 from streamlit_webrtc.shutdown import SessionShutdownObserver
 
-from app.flame_model import RenderMesh
-from app.realtime_pipeline import ARTalkPipeline
-from app.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
+from artalk.flame_model import RenderMesh
+from artalk.realtime_pipeline import ARTalkPipeline
+from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def env_path(name: str, default: str | Path | None = None) -> Path | None:
 
 
 def package_asset_dir() -> Path | None:
-    spec = importlib.util.find_spec("app")
+    spec = importlib.util.find_spec("artalk")
     if spec is None or spec.origin is None:
         return None
     asset_dir = Path(spec.origin).resolve().parent.parent / "assets"
@@ -166,7 +166,7 @@ def load_style_motion(asset_dir: str, style_id: str):
 
 
 class StreamingGAGAvatarAdapter:
-    """Adapter from packaged ``core.runtime`` to ARTalk's streaming renderer API."""
+    """Adapter from packaged ``gagavatar.runtime`` to ARTalk's streaming renderer API."""
 
     def __init__(self, runtime):
         self.runtime = runtime
@@ -183,7 +183,7 @@ class StreamingGAGAvatarAdapter:
 
 @st.cache_resource
 def load_gagavatar(device: str, model_path: str, tracked_path: str | None, flame_model_path: str | None):
-    from core.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
+    from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
     runtime = GAGAvatarRuntime(
         GAGAvatarRuntimeConfig(
