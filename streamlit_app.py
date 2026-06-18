@@ -538,11 +538,24 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("Resample input", durations, "resample"),
         duration_row("ARTalk streamer feed", durations, "artalk_streamer_feed"),
         duration_row("Savgol smoother", durations, "smoother_feed"),
+        duration_row("Renderer warm-up", durations, "renderer_warmup"),
+        duration_row("Warm-up prepare", durations, "warmup_avatar_prepare_frame"),
+        duration_row("Warm-up forward", durations, "warmup_avatar_forward_model"),
+        duration_row("Warm-up GPU copy", durations, "warmup_avatar_gpu_to_cpu_copy"),
+        duration_row("Warm-up RGB convert", durations, "warmup_rgb_tensor_to_numpy"),
+        duration_row("Avatar prepare frame", durations, "avatar_prepare_frame"),
+        duration_row("Avatar forward model", durations, "avatar_forward_model"),
+        duration_row("Avatar GPU to CPU copy", durations, "avatar_gpu_to_cpu_copy"),
         duration_row("Avatar render frame", durations, "avatar_render_frame"),
         duration_row("RGB tensor to ndarray", durations, "rgb_tensor_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
     ]
-    st.dataframe(stage_rows, hide_index=True, width="stretch")
+    st.dataframe(
+        stage_rows,
+        hide_index=True,
+        width="stretch",
+        key="pipeline_stage_metrics",
+    )
 
     queue_cols = st.columns(4)
     queue_cols[0].metric("Audio in queue", int(metric_value(counters, "audio_in_queue_depth")))
@@ -606,7 +619,12 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": int(metric_value(counters, "audio_underrun_frames")),
         },
     ]
-    st.dataframe(output_rows, hide_index=True, width="stretch")
+    st.dataframe(
+        output_rows,
+        hide_index=True,
+        width="stretch",
+        key="pipeline_output_counters",
+    )
 
 
 def stop_bridge() -> None:
@@ -786,27 +804,6 @@ def on_change() -> None:
         video_source_track.stop()
         audio_source_track.stop()
 
-
-webrtc_streamer(
-    key=streamer_key,
-    mode=WebRtcMode.SENDRECV,
-    source_video_track=video_source_track,
-    source_audio_track=audio_source_track,
-    sink_audio_track=audio_sink_track,
-    media_stream_constraints={"audio": True, "video": False},
-    on_change=on_change,
-)
-
-
-@st.fragment(run_every="500ms")
-def render_diagnostics_fragment() -> None:
-    with st.expander("Pipeline diagnostics", expanded=True):
-        render_pipeline_diagnostics(pipeline)
-
-
-render_diagnostics_fragment()
-
-
 if bridge is not None:
 
     @st.fragment(run_every="500ms")
@@ -814,14 +811,41 @@ if bridge is not None:
         snap = bridge.snapshot()
         if snap["error"]:
             st.error(f"OpenAI Realtime API error: {snap['error']}")
-        if snap["user"] or snap["assistant"]:
-            st.subheader("Transcript")
-            user_col, assistant_col = st.columns(2)
-            with user_col:
-                st.caption("You")
-                st.text(snap["user"] or "-")
-            with assistant_col:
-                st.caption("Assistant")
-                st.text(snap["assistant"] or "-")
+        st.text_area(
+            "Assistant transcript",
+            snap["assistant"] or "-",
+            height=260,
+            label_visibility="collapsed",
+            disabled=True,
+        )
 
-    render_interactive_status()
+
+def render_webrtc_component() -> None:
+    webrtc_streamer(
+        key=streamer_key,
+        mode=WebRtcMode.SENDRECV,
+        source_video_track=video_source_track,
+        source_audio_track=audio_source_track,
+        sink_audio_track=audio_sink_track,
+        media_stream_constraints={"audio": True, "video": False},
+        on_change=on_change,
+    )
+
+
+if bridge is not None:
+    video_col, preview_col = st.columns([2, 1])
+    with video_col:
+        render_webrtc_component()
+    with preview_col:
+        render_interactive_status()
+else:
+    render_webrtc_component()
+
+
+@st.fragment(run_every="500ms")
+def render_diagnostics_fragment() -> None:
+    with st.expander("Pipeline diagnostics", expanded=(mode == "Loopback")):
+        render_pipeline_diagnostics(pipeline)
+
+
+render_diagnostics_fragment()
