@@ -483,6 +483,132 @@ BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 BRIDGE_SHUTDOWN_OBSERVER_KEY = "openai_realtime_bridge_shutdown_observer"
 
 
+def metric_value(counters: dict, key: str, default: float = 0.0) -> float:
+    value = counters.get(key, default)
+    return float(value) if value is not None else default
+
+
+def elapsed_rate(counters: dict, count_key: str, start_key: str | None = None) -> float:
+    now = metric_value(counters, "now_s")
+    start = metric_value(counters, start_key, 0.0) if start_key else 0.0
+    if not start:
+        uptime = metric_value(counters, "uptime_s")
+        start = now - uptime if now and uptime else 0.0
+    elapsed = max(now - start, 1e-6) if now and start else 0.0
+    if elapsed <= 0:
+        return 0.0
+    return metric_value(counters, count_key) / elapsed
+
+
+def duration_row(label: str, durations: dict, key: str) -> dict:
+    stat = durations.get(key, {})
+    return {
+        "stage": label,
+        "count": int(stat.get("count", 0)),
+        "last_ms": round(float(stat.get("last_ms", 0.0)), 1),
+        "avg_ms": round(float(stat.get("avg_ms", 0.0)), 1),
+        "max_ms": round(float(stat.get("max_ms", 0.0)), 1),
+    }
+
+
+def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
+    snapshot = pipeline.metrics.snapshot()
+    counters = snapshot["counters"]
+    durations = snapshot["durations"]
+
+    st.subheader("Pipeline diagnostics")
+    chunk_floor_s = metric_value(counters, "streamer_chunk_floor_s")
+    first_motion_latency_s = counters.get("first_motion_latency_s")
+    latency_text = (
+        f"{float(first_motion_latency_s):.2f}s"
+        if first_motion_latency_s is not None
+        else "waiting"
+    )
+    rendered_fps = elapsed_rate(counters, "rendered_frames", "first_motion_s")
+    served_fps = elapsed_rate(counters, "video_frames_served")
+    audio_served_fps = elapsed_rate(counters, "audio_frames_served")
+
+    cols = st.columns(4)
+    cols[0].metric("Model floor", f"{chunk_floor_s:.2f}s")
+    cols[1].metric("First motion", latency_text)
+    cols[2].metric("Rendered FPS", f"{rendered_fps:.1f}")
+    cols[3].metric("Video callback FPS", f"{served_fps:.1f}")
+
+    stage_rows = [
+        duration_row("Resample input", durations, "resample"),
+        duration_row("ARTalk streamer feed", durations, "artalk_streamer_feed"),
+        duration_row("Savgol smoother", durations, "smoother_feed"),
+        duration_row("Avatar render frame", durations, "avatar_render_frame"),
+        duration_row("RGB tensor to ndarray", durations, "rgb_tensor_to_numpy"),
+        duration_row("Render chunk total", durations, "render_chunk_total"),
+    ]
+    st.dataframe(stage_rows, hide_index=True, width="stretch")
+
+    queue_cols = st.columns(4)
+    queue_cols[0].metric("Audio in queue", int(metric_value(counters, "audio_in_queue_depth")))
+    queue_cols[1].metric("Video queue", int(metric_value(counters, "video_queue_depth")))
+    queue_cols[2].metric(
+        "Audio out buffer",
+        f"{metric_value(counters, 'audio_out_buffer_samples') / 16000.0:.2f}s",
+    )
+    queue_cols[3].metric(
+        "Streamer buffer",
+        f"{metric_value(counters, 'streamer_buffer_samples') / 16000.0:.2f}s",
+    )
+
+    output_rows = [
+        {
+            "name": "audio frames pushed",
+            "value": int(metric_value(counters, "audio_frames_pushed")),
+        },
+        {
+            "name": "audio samples fed",
+            "value": int(metric_value(counters, "audio_samples_fed_to_streamer")),
+        },
+        {
+            "name": "motion chunks",
+            "value": int(metric_value(counters, "motion_chunks_produced")),
+        },
+        {
+            "name": "motion frames",
+            "value": int(metric_value(counters, "motion_frames_produced")),
+        },
+        {
+            "name": "smoothed frames",
+            "value": int(metric_value(counters, "smoothed_frames_produced")),
+        },
+        {
+            "name": "rendered frames",
+            "value": int(metric_value(counters, "rendered_frames")),
+        },
+        {
+            "name": "video frames served",
+            "value": int(metric_value(counters, "video_frames_served")),
+        },
+        {
+            "name": "video placeholders",
+            "value": int(metric_value(counters, "video_placeholder_frames")),
+        },
+        {
+            "name": "video frames dropped",
+            "value": int(metric_value(counters, "video_frames_dropped")),
+        },
+        {
+            "name": "audio frames served",
+            "value": int(metric_value(counters, "audio_frames_served")),
+        },
+        {
+            "name": "audio callback FPS",
+            "value": round(audio_served_fps, 1),
+        },
+        {
+            "name": "audio underrun frames",
+            "value": int(metric_value(counters, "audio_underrun_frames")),
+        },
+    ]
+    st.dataframe(output_rows, hide_index=True, width="stretch")
+
+
 def stop_bridge() -> None:
     bridge = st.session_state.pop(BRIDGE_KEY, None)
     if bridge is not None:
@@ -656,6 +782,7 @@ def on_change() -> None:
     if not ctx.state.playing and not ctx.state.signalling:
         if bridge is not None:
             bridge.stop()
+        stop_pipeline()
         video_source_track.stop()
         audio_source_track.stop()
 
@@ -669,6 +796,15 @@ webrtc_streamer(
     media_stream_constraints={"audio": True, "video": False},
     on_change=on_change,
 )
+
+
+@st.fragment(run_every="500ms")
+def render_diagnostics_fragment() -> None:
+    with st.expander("Pipeline diagnostics", expanded=True):
+        render_pipeline_diagnostics(pipeline)
+
+
+render_diagnostics_fragment()
 
 
 if bridge is not None:
