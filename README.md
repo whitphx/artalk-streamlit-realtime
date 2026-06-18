@@ -98,3 +98,7 @@ ssh -L 8501:localhost:8501 <gpu-host>
 
 Interactive mode uses the OpenAI Realtime API. Set `OPENAI_API_KEY` in the
 environment or enter it in the sidebar.
+
+## Notes
+
+- [Realtime performance notes](docs/realtime-performance-notes.md)
