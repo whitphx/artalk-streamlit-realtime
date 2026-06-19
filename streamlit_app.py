@@ -539,14 +539,20 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     )
     rendered_fps = metric_value(counters, "last_render_chunk_fps")
     cumulative_rendered_fps = elapsed_rate(counters, "rendered_frames", "first_motion_s")
-    served_fps = elapsed_rate(counters, "video_frames_served")
-    audio_served_fps = elapsed_rate(counters, "audio_frames_served")
+    video_callback_fps = elapsed_rate(counters, "video_callbacks", "first_video_callback_s")
+    video_real_fps = elapsed_rate(counters, "video_frames_served", "first_video_callback_s")
+    video_placeholder_fps = elapsed_rate(
+        counters,
+        "video_placeholder_frames",
+        "first_video_callback_s",
+    )
+    audio_callback_fps = elapsed_rate(counters, "audio_callbacks", "first_audio_callback_s")
 
     cols = st.columns(4)
     cols[0].metric("Model floor", f"{chunk_floor_s:.2f}s")
     cols[1].metric("First motion", latency_text)
     cols[2].metric("Render chunk FPS", f"{rendered_fps:.1f}")
-    cols[3].metric("Video callback FPS", f"{served_fps:.1f}")
+    cols[3].metric("Video callback FPS", f"{video_callback_fps:.1f}")
 
     stage_rows = [
         duration_row("Resample input", durations, "resample"),
@@ -638,24 +644,44 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": int(metric_value(counters, "rendered_frames")),
         },
         {
+            "name": "video callbacks",
+            "value": int(metric_value(counters, "video_callbacks")),
+        },
+        {
+            "name": "video callback FPS",
+            "value": round(video_callback_fps, 1),
+        },
+        {
             "name": "video frames served",
             "value": int(metric_value(counters, "video_frames_served")),
+        },
+        {
+            "name": "video real-frame FPS",
+            "value": round(video_real_fps, 1),
         },
         {
             "name": "video placeholders",
             "value": int(metric_value(counters, "video_placeholder_frames")),
         },
         {
+            "name": "video placeholder FPS",
+            "value": round(video_placeholder_fps, 1),
+        },
+        {
             "name": "video frames dropped",
             "value": int(metric_value(counters, "video_frames_dropped")),
         },
         {
-            "name": "audio frames served",
-            "value": int(metric_value(counters, "audio_frames_served")),
+            "name": "audio callbacks",
+            "value": int(metric_value(counters, "audio_callbacks")),
         },
         {
             "name": "audio callback FPS",
-            "value": round(audio_served_fps, 1),
+            "value": round(audio_callback_fps, 1),
+        },
+        {
+            "name": "audio frames served",
+            "value": int(metric_value(counters, "audio_frames_served")),
         },
         {
             "name": "audio underrun frames",
