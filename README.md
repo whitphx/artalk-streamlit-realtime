@@ -96,8 +96,15 @@ directly or forward a remote GPU host:
 ssh -L 8501:localhost:8501 <gpu-host>
 ```
 
-Interactive mode uses the OpenAI Realtime API. Set `OPENAI_API_KEY` in the
-environment or enter it in the sidebar.
+Interactive mode uses the OpenAI Realtime API. Store the API key in a local
+Streamlit secrets file:
+
+```toml
+# .streamlit/secrets.toml
+OPENAI_API_KEY = "sk-..."
+```
+
+`.streamlit/secrets.toml` is ignored by git.
 
 ## Notes
 

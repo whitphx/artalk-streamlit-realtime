@@ -23,6 +23,7 @@ import av
 import numpy as np
 import streamlit as st
 import torch
+from streamlit.errors import StreamlitSecretNotFoundError
 from artalk.assets import ARTalkAssets
 from streamlit_webrtc import (
     WebRtcMode,
@@ -60,6 +61,14 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
     "You are speaking through an ARTalk avatar. Keep responses concise "
     "and conversational."
 )
+
+
+def get_secret(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, default)
+    except StreamlitSecretNotFoundError:
+        return default
+    return str(value) if value is not None else default
 
 
 def resolve_gagavatar_assets(args, artalk_assets: ARTalkAssets) -> GAGAvatarAssets:
@@ -386,6 +395,11 @@ class OpenAIRealtimeBridge:
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", default=os.environ.get("ARTALK_DEVICE", "cuda"), type=str)
 parser.add_argument("--render-res", default=int(os.environ.get("ARTALK_RENDER_RES", "512")), type=int)
+parser.add_argument(
+    "--render-batch-size",
+    default=int(os.environ.get("ARTALK_RENDER_BATCH_SIZE", "4")),
+    type=int,
+)
 parser.add_argument("--asset-dir", default=os.environ.get("ARTALK_ASSET_DIR"), type=str)
 parser.add_argument("--gagavatar-asset-dir", default=os.environ.get("GAGAVATAR_ASSET_DIR"), type=str)
 parser.add_argument("--gagavatar-model-path", default=os.environ.get("GAGAVATAR_MODEL_PATH"), type=str)
@@ -457,12 +471,11 @@ with st.sidebar:
     realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
     if mode == "Interactive":
         st.header("OpenAI Realtime")
-        api_key = st.text_input(
-            "OPENAI_API_KEY",
-            value=os.environ.get("OPENAI_API_KEY", ""),
-            type="password",
-            help="Used only by the Streamlit server.",
-        )
+        api_key = get_secret("OPENAI_API_KEY")
+        if api_key:
+            st.success("Secret loaded.")
+        else:
+            st.warning("Secret is not configured.")
         realtime_model = st.text_input("Model", value=DEFAULT_REALTIME_MODEL)
         realtime_voice = st.selectbox(
             "Voice",
@@ -524,14 +537,15 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         if first_motion_latency_s is not None
         else "waiting"
     )
-    rendered_fps = elapsed_rate(counters, "rendered_frames", "first_motion_s")
+    rendered_fps = metric_value(counters, "last_render_chunk_fps")
+    cumulative_rendered_fps = elapsed_rate(counters, "rendered_frames", "first_motion_s")
     served_fps = elapsed_rate(counters, "video_frames_served")
     audio_served_fps = elapsed_rate(counters, "audio_frames_served")
 
     cols = st.columns(4)
     cols[0].metric("Model floor", f"{chunk_floor_s:.2f}s")
     cols[1].metric("First motion", latency_text)
-    cols[2].metric("Rendered FPS", f"{rendered_fps:.1f}")
+    cols[2].metric("Render chunk FPS", f"{rendered_fps:.1f}")
     cols[3].metric("Video callback FPS", f"{served_fps:.1f}")
 
     stage_rows = [
@@ -548,6 +562,11 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("Avatar GPU to CPU copy", durations, "avatar_gpu_to_cpu_copy"),
         duration_row("Avatar render frame", durations, "avatar_render_frame"),
         duration_row("RGB tensor to ndarray", durations, "rgb_tensor_to_numpy"),
+        duration_row("Avatar prepare batch", durations, "avatar_prepare_batch"),
+        duration_row("Avatar forward batch", durations, "avatar_forward_batch"),
+        duration_row("Avatar GPU to CPU batch", durations, "avatar_gpu_to_cpu_batch"),
+        duration_row("Avatar render batch", durations, "avatar_render_batch"),
+        duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
     ]
     st.dataframe(
@@ -589,6 +608,30 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {
             "name": "smoothed frames",
             "value": int(metric_value(counters, "smoothed_frames_produced")),
+        },
+        {
+            "name": "render batch size",
+            "value": int(metric_value(counters, "render_batch_size")),
+        },
+        {
+            "name": "render batches",
+            "value": int(metric_value(counters, "render_batches")),
+        },
+        {
+            "name": "render batch frames",
+            "value": int(metric_value(counters, "render_batch_frames")),
+        },
+        {
+            "name": "last render chunk frames",
+            "value": int(metric_value(counters, "last_render_chunk_frames")),
+        },
+        {
+            "name": "last render chunk seconds",
+            "value": round(metric_value(counters, "last_render_chunk_s"), 3),
+        },
+        {
+            "name": "cumulative rendered FPS",
+            "value": round(cumulative_rendered_fps, 1),
         },
         {
             "name": "rendered frames",
@@ -665,6 +708,7 @@ def get_pipeline() -> ARTalkPipeline:
         args.device,
         mode,
         render_res,
+        args.render_batch_size,
         appearance,
         style_id,
         str(asset_dir),
@@ -683,6 +727,7 @@ def get_pipeline() -> ARTalkPipeline:
             device=args.device,
             style_motion=style_motion,
             render_res=render_res,
+            render_batch_size=args.render_batch_size,
             renderer_mode=renderer_mode,
             gagavatar=gagavatar,
             gagavatar_flame=gagavatar_flame,
@@ -706,7 +751,7 @@ if mode == "Loopback":
 if mode == "Interactive" and not api_key:
     stop_bridge()
     stop_pipeline()
-    st.info("Enter `OPENAI_API_KEY` in the sidebar to use Interactive mode.")
+    st.info("Configure the secret to use Interactive mode.")
     st.stop()
 
 
@@ -811,13 +856,11 @@ if bridge is not None:
         snap = bridge.snapshot()
         if snap["error"]:
             st.error(f"OpenAI Realtime API error: {snap['error']}")
-        st.text_area(
-            "Assistant transcript",
-            snap["assistant"] or "-",
-            height=260,
-            label_visibility="collapsed",
-            disabled=True,
-        )
+        with st.container(height=260, border=True):
+            if snap["assistant"]:
+                st.markdown(snap["assistant"])
+            else:
+                st.caption("Waiting for response...")
 
 
 def render_webrtc_component() -> None:
