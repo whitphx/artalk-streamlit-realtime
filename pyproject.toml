@@ -14,12 +14,12 @@ dependencies = [
   "numpy",
   "openai",
   "streamlit",
-  "streamlit-webrtc",
+  "streamlit-webrtc>=0.72.2",
 ]
 
 [dependency-groups]
 dev = [
-  "streamlit-remote",
+  "streamlit-remote>=0.4.1",
 ]
 
 [tool.setuptools]

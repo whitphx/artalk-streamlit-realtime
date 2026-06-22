@@ -636,6 +636,10 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": round(metric_value(counters, "last_render_chunk_s"), 3),
         },
         {
+            "name": "last audio samples emitted",
+            "value": int(metric_value(counters, "last_audio_samples_emitted")),
+        },
+        {
             "name": "cumulative rendered FPS",
             "value": round(cumulative_rendered_fps, 1),
         },
@@ -686,6 +690,18 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {
             "name": "audio underrun frames",
             "value": int(metric_value(counters, "audio_underrun_frames")),
+        },
+        {
+            "name": "input audio time",
+            "value": round(metric_value(counters, "last_input_audio_time_s"), 3),
+        },
+        {
+            "name": "video source time",
+            "value": round(metric_value(counters, "last_video_source_time_s"), 3),
+        },
+        {
+            "name": "audio source time",
+            "value": round(metric_value(counters, "last_audio_source_time_s"), 3),
         },
     ]
     st.dataframe(
