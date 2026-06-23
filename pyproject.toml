@@ -24,6 +24,7 @@ dev = [
 
 [tool.setuptools]
 py-modules = ["streamlit_app"]
+packages = ["artalk_streamlit_realtime"]
 
 [tool.artalk.assets]
 root = "assets"
