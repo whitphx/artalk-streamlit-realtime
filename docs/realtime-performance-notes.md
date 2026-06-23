@@ -157,3 +157,9 @@ Compare this against the previous defaults:
 
 Use the diagnostics counters to evaluate whether underruns and placeholders drop
 enough to justify the added latency.
+
+The direct end-to-end generation latency metric is `Audio to video publish`.
+It measures from when the ARTalk pipeline accepts an audio frame or sample chunk
+to when the rendered video segment for the matching audio slice is published to
+the output queues. The output counters also expose last/min/max values in
+seconds as `audio-to-video latency`.

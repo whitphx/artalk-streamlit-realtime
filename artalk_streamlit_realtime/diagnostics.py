@@ -84,6 +84,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("Avatar render batch", durations, "avatar_render_batch"),
         duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
+        duration_row("Audio to video publish", durations, "audio_to_video_latency"),
     ]
     st.dataframe(
         stage_rows,
@@ -129,6 +130,9 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "last render chunk seconds", "value": round(metric_value(counters, "last_render_chunk_s"), 3)},
         {"name": "last render media seconds", "value": round(metric_value(counters, "last_render_chunk_media_s"), 3)},
         {"name": "render realtime ratio", "value": round(metric_value(counters, "last_render_realtime_ratio"), 3)},
+        {"name": "last audio-to-video latency seconds", "value": round(metric_value(counters, "last_audio_to_video_latency_s"), 3)},
+        {"name": "min audio-to-video latency seconds", "value": round(metric_value(counters, "min_audio_to_video_latency_s"), 3)},
+        {"name": "max audio-to-video latency seconds", "value": round(metric_value(counters, "max_audio_to_video_latency_s"), 3)},
         {"name": "last audio samples emitted", "value": int(metric_value(counters, "last_audio_samples_emitted"))},
         {"name": "audio playback started", "value": int(metric_value(counters, "audio_playback_started"))},
         {"name": "audio prebuffer seconds", "value": round(metric_value(counters, "output_audio_prebuffer_seconds"), 3)},

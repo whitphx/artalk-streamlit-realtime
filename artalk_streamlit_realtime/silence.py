@@ -69,7 +69,6 @@ class PipelineSilencePump:
             self._input_started = True
             self._last_real_input_s = time.perf_counter()
         self._pipeline.metrics.inc("silence_pump_real_input_marks")
-        self._pipeline.metrics.event("silence_real_input")
 
     def _run(self) -> None:
         while not self._stop_event.wait(0.1):
@@ -91,7 +90,6 @@ class PipelineSilencePump:
                 continue
             if last_pump_s and now - last_pump_s < SILENCE_PUMP_CHUNK_SECONDS:
                 metrics.inc("silence_pump_pacing_skips")
-                metrics.event("silence_pump_skip", reason="pacing", idle_s=idle_s)
                 continue
 
             snapshot = self._pipeline.output_buffer_snapshot()
@@ -105,38 +103,19 @@ class PipelineSilencePump:
             metrics.set("silence_pump_worker_busy", 1 if worker_busy else 0)
             if worker_busy:
                 metrics.inc("silence_pump_worker_busy_skips")
-                metrics.event("silence_pump_skip", reason="worker_busy", idle_s=idle_s)
                 continue
             if audio_in_depth > 0:
                 metrics.inc("silence_pump_input_queue_skips")
-                metrics.event(
-                    "silence_pump_skip",
-                    reason="input_queue",
-                    idle_s=idle_s,
-                    audio_in_depth=audio_in_depth,
-                )
                 continue
             if (
                 audio_buffered >= SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES
                 or video_depth >= SILENCE_PUMP_MAX_VIDEO_FRAMES
             ):
                 metrics.inc("silence_pump_backpressure_skips")
-                metrics.event(
-                    "silence_pump_skip",
-                    reason="backpressure",
-                    idle_s=idle_s,
-                    audio_buffered=audio_buffered,
-                    video_depth=video_depth,
-                )
                 continue
 
             with self._lock:
                 self._last_pump_s = now
             metrics.inc("silence_pump_chunks")
             metrics.inc("silence_pump_samples", SILENCE_PUMP_CHUNK_SAMPLES)
-            metrics.event(
-                "silence_pump",
-                samples=SILENCE_PUMP_CHUNK_SAMPLES,
-                idle_s=idle_s,
-            )
             self._pipeline.push_silence(SILENCE_PUMP_CHUNK_SECONDS)
