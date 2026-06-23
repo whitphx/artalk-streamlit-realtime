@@ -19,7 +19,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "streamlit-remote>=0.4.1",
+  "streamlit-remote>=0.5.0",
 ]
 
 [tool.setuptools]

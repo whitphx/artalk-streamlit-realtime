@@ -397,7 +397,7 @@ parser.add_argument("--device", default=os.environ.get("ARTALK_DEVICE", "cuda"),
 parser.add_argument("--render-res", default=int(os.environ.get("ARTALK_RENDER_RES", "512")), type=int)
 parser.add_argument(
     "--render-batch-size",
-    default=int(os.environ.get("ARTALK_RENDER_BATCH_SIZE", "4")),
+    default=int(os.environ.get("ARTALK_RENDER_BATCH_SIZE", "8")),
     type=int,
 )
 parser.add_argument("--asset-dir", default=os.environ.get("ARTALK_ASSET_DIR"), type=str)
@@ -636,8 +636,36 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": round(metric_value(counters, "last_render_chunk_s"), 3),
         },
         {
+            "name": "last render media seconds",
+            "value": round(metric_value(counters, "last_render_chunk_media_s"), 3),
+        },
+        {
+            "name": "render realtime ratio",
+            "value": round(metric_value(counters, "last_render_realtime_ratio"), 3),
+        },
+        {
             "name": "last audio samples emitted",
             "value": int(metric_value(counters, "last_audio_samples_emitted")),
+        },
+        {
+            "name": "audio playback started",
+            "value": int(metric_value(counters, "audio_playback_started")),
+        },
+        {
+            "name": "audio prebuffer samples",
+            "value": int(metric_value(counters, "output_audio_prebuffer_samples")),
+        },
+        {
+            "name": "output segment min frames",
+            "value": int(metric_value(counters, "output_segment_min_frames")),
+        },
+        {
+            "name": "synced audio samples served",
+            "value": int(metric_value(counters, "synced_audio_samples_served")),
+        },
+        {
+            "name": "synced audio frame index",
+            "value": int(metric_value(counters, "synced_audio_frame_index")),
         },
         {
             "name": "cumulative rendered FPS",
@@ -646,6 +674,26 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {
             "name": "rendered frames",
             "value": int(metric_value(counters, "rendered_frames")),
+        },
+        {
+            "name": "output segments",
+            "value": int(metric_value(counters, "output_segments_published")),
+        },
+        {
+            "name": "output segment frames",
+            "value": int(metric_value(counters, "output_segment_frames")),
+        },
+        {
+            "name": "output segment audio samples",
+            "value": int(metric_value(counters, "output_segment_audio_samples")),
+        },
+        {
+            "name": "last output segment frames",
+            "value": int(metric_value(counters, "last_output_segment_frames")),
+        },
+        {
+            "name": "last output segment audio samples",
+            "value": int(metric_value(counters, "last_output_segment_audio_samples")),
         },
         {
             "name": "video callbacks",
@@ -676,6 +724,22 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": int(metric_value(counters, "video_frames_dropped")),
         },
         {
+            "name": "video frames dropped for sync",
+            "value": int(metric_value(counters, "video_frames_dropped_for_sync")),
+        },
+        {
+            "name": "video target frame index",
+            "value": int(metric_value(counters, "last_video_target_frame_index")),
+        },
+        {
+            "name": "video frame index served",
+            "value": int(metric_value(counters, "last_video_frame_index_served")),
+        },
+        {
+            "name": "video frame index enqueued",
+            "value": int(metric_value(counters, "last_video_frame_index_enqueued")),
+        },
+        {
             "name": "audio callbacks",
             "value": int(metric_value(counters, "audio_callbacks")),
         },
@@ -688,8 +752,16 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "value": int(metric_value(counters, "audio_frames_served")),
         },
         {
-            "name": "audio underrun frames",
-            "value": int(metric_value(counters, "audio_underrun_frames")),
+            "name": "audio pre-playback silence frames",
+            "value": int(metric_value(counters, "audio_preplayback_silence_frames")),
+        },
+        {
+            "name": "audio short-buffer frames",
+            "value": int(metric_value(counters, "audio_short_buffer_frames")),
+        },
+        {
+            "name": "audio playback underrun frames",
+            "value": int(metric_value(counters, "audio_playback_underrun_frames")),
         },
         {
             "name": "input audio time",
