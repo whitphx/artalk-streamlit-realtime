@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import av
 import numpy as np
@@ -61,6 +61,16 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
     "You are speaking through an ARTalk avatar. Keep responses concise "
     "and conversational."
 )
+ARTALK_SAMPLE_RATE = 16000
+ARTALK_FPS = 25
+SILENCE_PUMP_CHUNK_SECONDS = 0.25
+SILENCE_PUMP_CHUNK_SAMPLES = int(ARTALK_SAMPLE_RATE * SILENCE_PUMP_CHUNK_SECONDS)
+SILENCE_PUMP_IDLE_SECONDS = 1.00
+SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS = 3.00
+SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES = int(
+    ARTALK_SAMPLE_RATE * SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS
+)
+SILENCE_PUMP_MAX_VIDEO_FRAMES = int(ARTALK_FPS * SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS)
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -160,6 +170,111 @@ class StreamingGAGAvatarAdapter:
         return self.runtime.render_rgb_batch(batch)
 
 
+class PipelineSilencePump:
+    """App-level idle audio filler for ARTalk's chunked streaming model.
+
+    OpenAI Realtime and browser loopback both deliver audio only while the
+    upstream source is producing sound. ARTalk, however, emits motion only after
+    enough samples have accumulated for its model chunk. If the source goes
+    silent, the final partial chunk can sit below that threshold forever, which
+    stops new frames. The app owns this glue policy because it knows the upstream
+    transport semantics; ARTalk only exposes ``push_silence`` as a sample input.
+    """
+
+    def __init__(self, pipeline: ARTalkPipeline) -> None:
+        self._pipeline = pipeline
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._input_started = False
+        self._last_real_input_s = 0.0
+        self._last_pump_s = 0.0
+        self._thread: threading.Thread | None = None
+
+        metrics = self._pipeline.metrics
+        metrics.set("silence_pump_chunk_seconds", SILENCE_PUMP_CHUNK_SECONDS)
+        metrics.set("silence_pump_chunk_samples", SILENCE_PUMP_CHUNK_SAMPLES)
+        metrics.set("silence_pump_idle_seconds", SILENCE_PUMP_IDLE_SECONDS)
+        metrics.set(
+            "silence_pump_max_audio_buffer_samples",
+            SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES,
+        )
+        metrics.set("silence_pump_max_video_frames", SILENCE_PUMP_MAX_VIDEO_FRAMES)
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ARTalkSilencePump",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+        self._thread = None
+
+    def mark_input(self) -> None:
+        with self._lock:
+            self._input_started = True
+            self._last_real_input_s = time.perf_counter()
+        self._pipeline.metrics.inc("silence_pump_real_input_marks")
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(0.1):
+            if self._pipeline.is_stopped:
+                return
+            with self._lock:
+                input_started = self._input_started
+                last_real_input_s = self._last_real_input_s
+                last_pump_s = self._last_pump_s
+            if not input_started:
+                continue
+
+            now = time.perf_counter()
+            idle_s = now - last_real_input_s if last_real_input_s else 0.0
+            metrics = self._pipeline.metrics
+            metrics.set("silence_pump_input_idle_s", idle_s)
+            if idle_s < SILENCE_PUMP_IDLE_SECONDS:
+                metrics.inc("silence_pump_recent_input_skips")
+                continue
+            if last_pump_s and now - last_pump_s < SILENCE_PUMP_CHUNK_SECONDS:
+                metrics.inc("silence_pump_pacing_skips")
+                continue
+
+            snapshot = self._pipeline.output_buffer_snapshot()
+            audio_buffered = snapshot["audio_out_buffer_samples"]
+            video_depth = snapshot["video_queue_depth"]
+            audio_in_depth = snapshot["audio_in_queue_depth"]
+            worker_busy = bool(snapshot.get("worker_busy"))
+            metrics.set("silence_pump_audio_buffer_samples", audio_buffered)
+            metrics.set("silence_pump_video_queue_depth", video_depth)
+            metrics.set("silence_pump_audio_in_queue_depth", audio_in_depth)
+            metrics.set("silence_pump_worker_busy", 1 if worker_busy else 0)
+            if worker_busy:
+                metrics.inc("silence_pump_worker_busy_skips")
+                continue
+            if audio_in_depth > 0:
+                metrics.inc("silence_pump_input_queue_skips")
+                continue
+            if (
+                audio_buffered >= SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES
+                or video_depth >= SILENCE_PUMP_MAX_VIDEO_FRAMES
+            ):
+                metrics.inc("silence_pump_backpressure_skips")
+                continue
+
+            with self._lock:
+                self._last_pump_s = now
+            metrics.inc("silence_pump_chunks")
+            metrics.inc("silence_pump_samples", SILENCE_PUMP_CHUNK_SAMPLES)
+            self._pipeline.push_silence(SILENCE_PUMP_CHUNK_SECONDS)
+
+
 @st.cache_resource
 def load_gagavatar(device: str, model_path: str, tracked_path: str | None, flame_model_path: str | None):
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
@@ -183,12 +298,14 @@ class OpenAIRealtimeBridge:
         *,
         api_key: str,
         pipeline: ARTalkPipeline,
+        on_audio_output: Callable[[], None] | None,
         model: str,
         voice: str,
         instructions: str,
     ) -> None:
         self._api_key = api_key
         self._pipeline = pipeline
+        self._on_audio_output = on_audio_output
         self._model = model
         self._voice = voice
         self._instructions = instructions
@@ -389,6 +506,8 @@ class OpenAIRealtimeBridge:
             samples[np.newaxis, :], format="s16", layout="mono"
         )
         frame.sample_rate = OPENAI_REALTIME_SAMPLE_RATE
+        if self._on_audio_output is not None:
+            self._on_audio_output()
         self._pipeline.push_audio_frame(frame)
 
 
@@ -491,6 +610,8 @@ with st.sidebar:
 
 PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
+SILENCE_PUMP_KEY = "artalk_silence_pump"
+SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 BRIDGE_SHUTDOWN_OBSERVER_KEY = "openai_realtime_bridge_shutdown_observer"
@@ -602,6 +723,54 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {
             "name": "audio samples fed",
             "value": int(metric_value(counters, "audio_samples_fed_to_streamer")),
+        },
+        {
+            "name": "silence samples queued",
+            "value": int(metric_value(counters, "silence_pump_samples")),
+        },
+        {
+            "name": "silence pump chunks",
+            "value": int(metric_value(counters, "silence_pump_chunks")),
+        },
+        {
+            "name": "silence pump skips",
+            "value": int(metric_value(counters, "silence_pump_backpressure_skips")),
+        },
+        {
+            "name": "silence pump input-queue skips",
+            "value": int(metric_value(counters, "silence_pump_input_queue_skips")),
+        },
+        {
+            "name": "silence pump worker-busy skips",
+            "value": int(metric_value(counters, "silence_pump_worker_busy_skips")),
+        },
+        {
+            "name": "silence pump recent-input skips",
+            "value": int(metric_value(counters, "silence_pump_recent_input_skips")),
+        },
+        {
+            "name": "silence pump pacing skips",
+            "value": int(metric_value(counters, "silence_pump_pacing_skips")),
+        },
+        {
+            "name": "silence pump input idle seconds",
+            "value": round(metric_value(counters, "silence_pump_input_idle_s"), 3),
+        },
+        {
+            "name": "silence pump idle threshold",
+            "value": round(metric_value(counters, "silence_pump_idle_seconds"), 3),
+        },
+        {
+            "name": "silence pump audio buffer",
+            "value": int(metric_value(counters, "silence_pump_audio_buffer_samples")),
+        },
+        {
+            "name": "silence pump video queue",
+            "value": int(metric_value(counters, "silence_pump_video_queue_depth")),
+        },
+        {
+            "name": "silence pump worker busy",
+            "value": int(metric_value(counters, "silence_pump_worker_busy")),
         },
         {
             "name": "motion chunks",
@@ -784,6 +953,27 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     )
 
 
+def stop_silence_pump() -> None:
+    pump = st.session_state.pop(SILENCE_PUMP_KEY, None)
+    if pump is not None:
+        pump.stop()
+    st.session_state.pop(SILENCE_PUMP_CONFIG_KEY, None)
+
+
+def get_silence_pump(pipeline: ARTalkPipeline) -> PipelineSilencePump:
+    config = id(pipeline)
+    pump = st.session_state.get(SILENCE_PUMP_KEY)
+    if pump is not None and st.session_state.get(SILENCE_PUMP_CONFIG_KEY) != config:
+        pump.stop()
+        pump = None
+    if pump is None:
+        pump = PipelineSilencePump(pipeline)
+        pump.start()
+        st.session_state[SILENCE_PUMP_KEY] = pump
+        st.session_state[SILENCE_PUMP_CONFIG_KEY] = config
+    return pump
+
+
 def stop_bridge() -> None:
     bridge = st.session_state.pop(BRIDGE_KEY, None)
     if bridge is not None:
@@ -831,6 +1021,7 @@ def get_pipeline() -> ARTalkPipeline:
     )
     pipeline = st.session_state.get(PIPELINE_KEY)
     if pipeline is not None and st.session_state.get(PIPELINE_CONFIG_KEY) != config:
+        stop_silence_pump()
         pipeline.stop()
         pipeline = None
     if pipeline is None:
@@ -853,6 +1044,7 @@ def get_pipeline() -> ARTalkPipeline:
 
 
 def stop_pipeline() -> None:
+    stop_silence_pump()
     pipeline = st.session_state.pop(PIPELINE_KEY, None)
     if pipeline is not None:
         pipeline.stop()
@@ -875,6 +1067,8 @@ except Exception as exc:
     st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
     st.stop()
 
+silence_pump = get_silence_pump(pipeline)
+
 
 def get_bridge() -> OpenAIRealtimeBridge:
     config = (
@@ -892,6 +1086,7 @@ def get_bridge() -> OpenAIRealtimeBridge:
         bridge = OpenAIRealtimeBridge(
             api_key=api_key,
             pipeline=pipeline,
+            on_audio_output=silence_pump.mark_input,
             model=realtime_model,
             voice=realtime_voice,
             instructions=realtime_instructions,
@@ -917,6 +1112,7 @@ if bridge is not None and not bridge.is_running:
 
 
 def on_loopback_audio_frame(frame: av.AudioFrame) -> None:
+    silence_pump.mark_input()
     pipeline.push_audio_frame(frame)
 
 
