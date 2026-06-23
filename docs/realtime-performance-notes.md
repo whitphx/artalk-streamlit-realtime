@@ -127,3 +127,33 @@ The goal is to reduce Python/kernel-launch overhead and improve GPU utilization.
 The tradeoff is a small additional mini-batch latency, but current chunk render
 times are already far above the realtime budget, so throughput is the immediate
 constraint.
+
+## 2026-06-23: Output buffering knobs
+
+The pipeline now exposes two runtime tuning knobs:
+
+- `--output-prebuffer-seconds`: delayed audio required before playback starts.
+  Higher values add startup latency but reduce underruns if chunk rendering is
+  only slightly slower than realtime.
+- `--output-segment-seconds`: minimum rendered segment size published from the
+  render worker to WebRTC. Lower values refill the output buffer sooner, but too
+  small a value can increase chunk-boundary jitter.
+
+First comparison target:
+
+```bash
+scripts/run_app.sh --no-remote -- \
+  --device cuda \
+  --render-res 512 \
+  --render-batch-size 8 \
+  --output-prebuffer-seconds 2.0 \
+  --output-segment-seconds 0.5
+```
+
+Compare this against the previous defaults:
+
+- `--output-prebuffer-seconds 1.0`
+- `--output-segment-seconds 1.0`
+
+Use the diagnostics counters to evaluate whether underruns and placeholders drop
+enough to justify the added latency.

@@ -28,6 +28,8 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
 
 ARTALK_SAMPLE_RATE = 16000
 ARTALK_FPS = 25
+DEFAULT_OUTPUT_AUDIO_PREBUFFER_SECONDS = 1.00
+DEFAULT_OUTPUT_SEGMENT_SECONDS = 1.00
 
 SILENCE_PUMP_CHUNK_SECONDS = 0.25
 SILENCE_PUMP_CHUNK_SAMPLES = int(ARTALK_SAMPLE_RATE * SILENCE_PUMP_CHUNK_SECONDS)
@@ -57,6 +59,26 @@ def parse_args() -> argparse.Namespace:
         type=int,
     )
     parser.add_argument(
+        "--output-prebuffer-seconds",
+        default=float(
+            os.environ.get(
+                "ARTALK_OUTPUT_PREBUFFER_SECONDS",
+                str(DEFAULT_OUTPUT_AUDIO_PREBUFFER_SECONDS),
+            )
+        ),
+        type=float,
+    )
+    parser.add_argument(
+        "--output-segment-seconds",
+        default=float(
+            os.environ.get(
+                "ARTALK_OUTPUT_SEGMENT_SECONDS",
+                str(DEFAULT_OUTPUT_SEGMENT_SECONDS),
+            )
+        ),
+        type=float,
+    )
+    parser.add_argument(
         "--asset-dir",
         default=os.environ.get("ARTALK_ASSET_DIR"),
         type=str,
@@ -83,4 +105,3 @@ def parse_args() -> argparse.Namespace:
     )
     args, _ = parser.parse_known_args()
     return args
-

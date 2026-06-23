@@ -86,7 +86,23 @@ Pass `st-remote` options before `--`, and `streamlit_app.py` options after
 ARTALK_STREAMLIT_PYTHON=/path/to/python \
   scripts/run_app.sh --no-remote -- \
     --device cuda \
-    --render-res 512
+    --render-res 512 \
+    --render-batch-size 8
+```
+
+The realtime output buffer can be tuned when rendering is close to, but not
+always faster than, realtime. Increasing prebuffer adds latency but gives the
+renderer more slack; reducing segment size publishes rendered audio/video back
+to WebRTC sooner.
+
+```bash
+ARTALK_STREAMLIT_PYTHON=/path/to/python \
+  scripts/run_app.sh --no-remote -- \
+    --device cuda \
+    --render-res 512 \
+    --render-batch-size 8 \
+    --output-prebuffer-seconds 2.0 \
+    --output-segment-seconds 0.5
 ```
 
 Browser microphone access requires a secure context. Use `http://localhost:8501`

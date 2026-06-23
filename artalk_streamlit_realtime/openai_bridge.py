@@ -197,7 +197,8 @@ class OpenAIRealtimeBridge:
         async for event in conn:
             etype = getattr(event, "type", "")
             if etype == "response.output_audio.delta":
-                self._push_response_audio(base64.b64decode(event.delta))
+                pcm = base64.b64decode(event.delta)
+                self._push_response_audio(pcm)
             elif etype == "response.output_audio_transcript.delta":
                 with self._state_lock:
                     self._assistant_transcript += getattr(event, "delta", "") or ""
@@ -237,4 +238,3 @@ class OpenAIRealtimeBridge:
         if self._on_audio_output is not None:
             self._on_audio_output()
         self._pipeline.push_audio_frame(frame)
-
