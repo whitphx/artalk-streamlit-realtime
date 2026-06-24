@@ -34,6 +34,34 @@ def duration_row(label: str, durations: dict, key: str) -> dict:
     }
 
 
+def duration_stat(durations: dict, key: str) -> dict:
+    stat = durations.get(key, {})
+    return {
+        "count": int(stat.get("count", 0)),
+        "last_ms": float(stat.get("last_ms", 0.0)),
+        "avg_ms": float(stat.get("avg_ms", 0.0)),
+        "max_ms": float(stat.get("max_ms", 0.0)),
+    }
+
+
+def duration_text(stat: dict, field: str = "last_ms") -> str:
+    if int(stat.get("count", 0)) <= 0:
+        return "-"
+    return f"{float(stat.get(field, 0.0)) / 1000.0:.2f}s"
+
+
+def seconds_text(value: float) -> str:
+    return f"{value:.2f}s"
+
+
+def fixed_metric_value(value: str) -> str:
+    return f"{value:>7}"
+
+
+def latency_label(name: str, value: str) -> str:
+    return f"{name:<23} [{fixed_metric_value(value)}]"
+
+
 def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     snapshot = pipeline.metrics.snapshot()
     counters = snapshot["counters"]
@@ -41,11 +69,15 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
 
     st.subheader("Pipeline diagnostics")
     chunk_floor_s = metric_value(counters, "streamer_chunk_floor_s")
+    total_latency = duration_stat(durations, "audio_midpoint_to_video_latency")
+    post_model_latency = duration_stat(durations, "post_model_latency")
+    pre_render_wait_latency = duration_stat(durations, "pre_render_wait_latency")
+    render_latency = duration_stat(durations, "segment_render_latency")
     first_motion_latency_s = counters.get("first_motion_latency_s")
     latency_text = (
         f"{float(first_motion_latency_s):.2f}s"
         if first_motion_latency_s is not None
-        else "waiting"
+        else "-"
     )
     rendered_fps = metric_value(counters, "last_render_chunk_fps")
     cumulative_rendered_fps = elapsed_rate(counters, "rendered_frames", "first_motion_s")
@@ -58,11 +90,29 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     )
     audio_callback_fps = elapsed_rate(counters, "audio_callbacks", "first_audio_callback_s")
 
-    cols = st.columns(4)
-    cols[0].metric("Model floor", f"{chunk_floor_s:.2f}s")
-    cols[1].metric("First motion", latency_text)
-    cols[2].metric("Render chunk FPS", f"{rendered_fps:.1f}")
-    cols[3].metric("Video callback FPS", f"{video_callback_fps:.1f}")
+    st.caption("Overview")
+    overview_cols = st.columns(4)
+    overview_cols[0].metric("Latency", duration_text(total_latency))
+    overview_cols[1].metric(
+        "Render realtime ratio",
+        f"{metric_value(counters, 'last_render_realtime_ratio'):.2f}x",
+    )
+    overview_cols[2].metric("Video real FPS", f"{video_real_fps:.1f}")
+    overview_cols[3].metric(
+        "Audio out buffer",
+        seconds_text(metric_value(counters, "audio_out_buffer_samples") / 16000.0),
+    )
+
+    detail_cols = st.columns(6)
+    detail_cols[0].metric("Post-model", duration_text(post_model_latency))
+    detail_cols[1].metric("Pre-render wait", duration_text(pre_render_wait_latency))
+    detail_cols[2].metric("Render", duration_text(render_latency))
+    detail_cols[3].metric("Model floor", seconds_text(chunk_floor_s))
+    detail_cols[4].metric("First motion", latency_text)
+    detail_cols[5].metric(
+        "Audio underruns",
+        int(metric_value(counters, "audio_playback_underrun_frames")),
+    )
 
     stage_rows = [
         duration_row("Resample input", durations, "resample"),
@@ -85,26 +135,12 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
         duration_row("Audio to video publish", durations, "audio_to_video_latency"),
+        duration_row("Midpoint audio to video", durations, "audio_midpoint_to_video_latency"),
+        duration_row("Pre-model latency", durations, "pre_model_latency"),
+        duration_row("Post-model latency", durations, "post_model_latency"),
+        duration_row("Pre-render wait", durations, "pre_render_wait_latency"),
+        duration_row("Segment render latency", durations, "segment_render_latency"),
     ]
-    st.dataframe(
-        stage_rows,
-        hide_index=True,
-        width="stretch",
-        key="pipeline_stage_metrics",
-    )
-
-    queue_cols = st.columns(4)
-    queue_cols[0].metric("Audio in queue", int(metric_value(counters, "audio_in_queue_depth")))
-    queue_cols[1].metric("Video queue", int(metric_value(counters, "video_queue_depth")))
-    queue_cols[2].metric(
-        "Audio out buffer",
-        f"{metric_value(counters, 'audio_out_buffer_samples') / 16000.0:.2f}s",
-    )
-    queue_cols[3].metric(
-        "Streamer buffer",
-        f"{metric_value(counters, 'streamer_buffer_samples') / 16000.0:.2f}s",
-    )
-
     output_rows = [
         {"name": "audio frames pushed", "value": int(metric_value(counters, "audio_frames_pushed"))},
         {"name": "audio samples fed", "value": int(metric_value(counters, "audio_samples_fed_to_streamer"))},
@@ -131,6 +167,11 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "last render media seconds", "value": round(metric_value(counters, "last_render_chunk_media_s"), 3)},
         {"name": "render realtime ratio", "value": round(metric_value(counters, "last_render_realtime_ratio"), 3)},
         {"name": "last audio-to-video latency seconds", "value": round(metric_value(counters, "last_audio_to_video_latency_s"), 3)},
+        {"name": "last midpoint audio-to-video latency seconds", "value": round(metric_value(counters, "last_midpoint_audio_to_video_latency_s"), 3)},
+        {"name": "last pre-model latency seconds", "value": round(metric_value(counters, "last_pre_model_latency_s"), 3)},
+        {"name": "last post-model latency seconds", "value": round(metric_value(counters, "last_post_model_latency_s"), 3)},
+        {"name": "last pre-render wait latency seconds", "value": round(metric_value(counters, "last_pre_render_wait_latency_s"), 3)},
+        {"name": "last segment render latency seconds", "value": round(metric_value(counters, "last_segment_render_latency_s"), 3)},
         {"name": "min audio-to-video latency seconds", "value": round(metric_value(counters, "min_audio_to_video_latency_s"), 3)},
         {"name": "max audio-to-video latency seconds", "value": round(metric_value(counters, "max_audio_to_video_latency_s"), 3)},
         {"name": "last audio samples emitted", "value": int(metric_value(counters, "last_audio_samples_emitted"))},
@@ -184,9 +225,127 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "video source time", "value": round(metric_value(counters, "last_video_source_time_s"), 3)},
         {"name": "audio source time", "value": round(metric_value(counters, "last_audio_source_time_s"), 3)},
     ]
-    st.dataframe(
-        output_rows,
-        hide_index=True,
-        width="stretch",
-        key="pipeline_output_counters",
+    latency_rows = [
+        duration_row("Midpoint audio to video", durations, "audio_midpoint_to_video_latency"),
+        duration_row("Audio to video publish", durations, "audio_to_video_latency"),
+        duration_row("Pre-model latency", durations, "pre_model_latency"),
+        duration_row("ARTalk streamer feed", durations, "artalk_streamer_feed"),
+        duration_row("Savgol smoother", durations, "smoother_feed"),
+        duration_row("Post-model latency", durations, "post_model_latency"),
+        duration_row("Pre-render wait", durations, "pre_render_wait_latency"),
+        duration_row("Segment render latency", durations, "segment_render_latency"),
+        duration_row("Avatar prepare batch", durations, "avatar_prepare_batch"),
+        duration_row("Avatar forward batch", durations, "avatar_forward_batch"),
+        duration_row("Avatar GPU to CPU batch", durations, "avatar_gpu_to_cpu_batch"),
+        duration_row("Avatar render batch", durations, "avatar_render_batch"),
+        duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
+    ]
+    throughput_rows = [
+        {"name": "render realtime ratio", "value": round(metric_value(counters, "last_render_realtime_ratio"), 3)},
+        {"name": "render chunk FPS", "value": round(rendered_fps, 1)},
+        {"name": "cumulative rendered FPS", "value": round(cumulative_rendered_fps, 1)},
+        {"name": "video real-frame FPS", "value": round(video_real_fps, 1)},
+        {"name": "video callback FPS", "value": round(video_callback_fps, 1)},
+        {"name": "audio callback FPS", "value": round(audio_callback_fps, 1)},
+        {"name": "render batch size", "value": int(metric_value(counters, "render_batch_size"))},
+        {"name": "render batches", "value": int(metric_value(counters, "render_batches"))},
+        {"name": "render batch frames", "value": int(metric_value(counters, "render_batch_frames"))},
+        {"name": "last render chunk frames", "value": int(metric_value(counters, "last_render_chunk_frames"))},
+        {"name": "last render chunk seconds", "value": round(metric_value(counters, "last_render_chunk_s"), 3)},
+        {"name": "last render media seconds", "value": round(metric_value(counters, "last_render_chunk_media_s"), 3)},
+        {"name": "output segment seconds", "value": round(metric_value(counters, "output_segment_seconds"), 3)},
+        {"name": "output segment min frames", "value": int(metric_value(counters, "output_segment_min_frames"))},
+        {"name": "rendered frames", "value": int(metric_value(counters, "rendered_frames"))},
+    ]
+    buffer_rows = [
+        {"name": "audio out buffer seconds", "value": round(metric_value(counters, "audio_out_buffer_seconds"), 3)},
+        {"name": "min audio out buffer seconds", "value": round(metric_value(counters, "min_audio_out_buffer_seconds"), 3)},
+        {"name": "max audio out buffer seconds", "value": round(metric_value(counters, "max_audio_out_buffer_seconds"), 3)},
+        {"name": "audio in queue", "value": int(metric_value(counters, "audio_in_queue_depth"))},
+        {"name": "video queue", "value": int(metric_value(counters, "video_queue_depth"))},
+        {"name": "video lead seconds", "value": round(metric_value(counters, "video_lead_seconds"), 3)},
+        {"name": "video queue span seconds", "value": round(metric_value(counters, "video_queue_span_seconds"), 3)},
+        {"name": "video served lag seconds", "value": round(metric_value(counters, "last_video_served_lag_seconds"), 3)},
+        {"name": "audio playback underrun frames", "value": int(metric_value(counters, "audio_playback_underrun_frames"))},
+        {"name": "audio short-buffer frames", "value": int(metric_value(counters, "audio_short_buffer_frames"))},
+        {"name": "video placeholders", "value": int(metric_value(counters, "video_placeholder_frames"))},
+        {"name": "video frames dropped for sync", "value": int(metric_value(counters, "video_frames_dropped_for_sync"))},
+        {"name": "video frames dropped", "value": int(metric_value(counters, "video_frames_dropped"))},
+        {"name": "silence pump worker-busy skips", "value": int(metric_value(counters, "silence_pump_worker_busy_skips"))},
+        {"name": "silence pump recent-input skips", "value": int(metric_value(counters, "silence_pump_recent_input_skips"))},
+    ]
+
+    latency_tab, throughput_tab, buffers_tab, raw_tab = st.tabs(
+        ["Latency", "Throughput", "Buffers / sync", "Raw"]
     )
+
+    with latency_tab:
+        first_sample_total = duration_text(duration_stat(durations, "audio_to_video_latency"))
+        midpoint_total = duration_text(duration_stat(durations, "audio_midpoint_to_video_latency"))
+        pre_model = duration_text(duration_stat(durations, "pre_model_latency"))
+        post_model = duration_text(duration_stat(durations, "post_model_latency"))
+        pre_render_wait = duration_text(duration_stat(durations, "pre_render_wait_latency"))
+        render = duration_text(duration_stat(durations, "segment_render_latency"))
+        st.caption("Metric relationships")
+        st.code(
+            "timeline          total latency                         breakdown\n"
+            "----------------  ------------------------------------  ------------------------------------\n"
+            "audio accepted    +                                    +\n"
+            f"  |               | {latency_label('Midpoint total', midpoint_total)} | {latency_label('Pre-model', pre_model)}\n"
+            f"  |               | {latency_label('First-sample total', first_sample_total)} |\n"
+            "motion produced   |                                    +\n"
+            f"  |               |                                    | {latency_label('Post-model', post_model)}\n"
+            f"  |               |                                    | {latency_label('Pre-render wait', pre_render_wait)}\n"
+            "render/publish    |                                    +\n"
+            f"  |               |                                    | {latency_label('Render', render)}\n"
+            "published         +                                    +",
+            language="text",
+        )
+        st.caption(
+            "Midpoint audio to video is the representative total latency. "
+            "Pre-model plus Post-model is the additive breakdown. "
+            "Audio to video publish is another total latency variant using the first "
+            "audio sample in the segment, so do not add it to the others."
+        )
+        st.caption("Latency breakdown")
+        st.dataframe(
+            latency_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_latency_breakdown",
+        )
+
+    with throughput_tab:
+        st.caption("Throughput breakdown")
+        st.dataframe(
+            throughput_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_throughput_breakdown",
+        )
+
+    with buffers_tab:
+        st.caption("Buffer and sync health")
+        st.dataframe(
+            buffer_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_buffer_health",
+        )
+
+    with raw_tab:
+        st.caption("All stage timings")
+        st.dataframe(
+            stage_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_stage_metrics",
+        )
+
+        st.caption("Raw counters")
+        st.dataframe(
+            output_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_output_counters",
+        )
