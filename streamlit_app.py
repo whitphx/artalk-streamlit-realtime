@@ -381,7 +381,8 @@ def main() -> None:
         render_pipeline_diagnostics(pipeline)
 
     with diagnostics_col:
-        render_diagnostics_fragment()
+        with st.container(height=720, width="stretch", border=True, autoscroll=False):
+            render_diagnostics_fragment()
 
 
 main()
