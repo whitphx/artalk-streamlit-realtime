@@ -21,7 +21,6 @@ from streamlit_webrtc import (
     create_video_source_track,
     webrtc_streamer,
 )
-from streamlit_webrtc.shutdown import SessionShutdownObserver
 
 from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
 from artalk_streamlit_realtime.config import (
@@ -52,7 +51,6 @@ SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
-BRIDGE_SHUTDOWN_OBSERVER_KEY = "openai_realtime_bridge_shutdown_observer"
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -97,9 +95,6 @@ def stop_bridge() -> None:
     bridge = st.session_state.pop(BRIDGE_KEY, None)
     if bridge is not None:
         bridge.stop()
-    observer = st.session_state.pop(BRIDGE_SHUTDOWN_OBSERVER_KEY, None)
-    if isinstance(observer, SessionShutdownObserver):
-        observer.stop()
     st.session_state.pop(BRIDGE_CONFIG_KEY, None)
 
 
@@ -290,9 +285,6 @@ def main() -> None:
             )
             st.session_state[BRIDGE_KEY] = bridge
             st.session_state[BRIDGE_CONFIG_KEY] = config
-            st.session_state[BRIDGE_SHUTDOWN_OBSERVER_KEY] = SessionShutdownObserver(
-                bridge.stop
-            )
         return bridge
 
     bridge = get_bridge() if mode == "Interactive" else None
@@ -347,8 +339,6 @@ def main() -> None:
             if bridge is not None:
                 bridge.stop()
             stop_pipeline()
-            video_source_track.stop()
-            audio_source_track.stop()
 
     if bridge is not None:
 

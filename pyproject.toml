@@ -13,8 +13,8 @@ dependencies = [
   "gagavatar",
   "numpy",
   "openai",
-  "streamlit",
-  "streamlit-webrtc>=0.72.2",
+  "streamlit>=1.58.0",
+  "streamlit-webrtc>=0.74.0",
 ]
 
 [dependency-groups]

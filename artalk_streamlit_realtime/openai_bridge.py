@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import logging
 import threading
 import time
@@ -41,8 +42,10 @@ class OpenAIRealtimeBridge:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._input_queue: Optional["asyncio.Queue[bytes]"] = None
         self._stop_event: Optional[asyncio.Event] = None
+        self._conn = None
         self._ready_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._stop_lock = threading.Lock()
         self._resampler = av.AudioResampler(
             format="s16", layout="mono", rate=OPENAI_REALTIME_SAMPLE_RATE
         )
@@ -60,9 +63,12 @@ class OpenAIRealtimeBridge:
     def start(self) -> None:
         if self.is_running:
             return
+        if self._thread is not None and not self._thread.is_alive():
+            self._thread = None
         self._ready_event.clear()
         with self._state_lock:
             self._error = None
+            self._connected = False
         self._thread = threading.Thread(
             target=self._run,
             name="OpenAIRealtimeBridge",
@@ -83,13 +89,29 @@ class OpenAIRealtimeBridge:
         return False
 
     def stop(self) -> None:
-        loop, stop_event = self._loop, self._stop_event
-        if loop is not None and stop_event is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(stop_event.set)
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=3.0)
-        self._thread = None
+        with self._stop_lock:
+            loop = self._loop
+            thread = self._thread
+            if threading.current_thread() is thread:
+                if self._stop_event is not None:
+                    self._stop_event.set()
+            elif loop is not None and not loop.is_closed():
+                try:
+                    close_future = asyncio.run_coroutine_threadsafe(
+                        self._close_realtime_session(),
+                        loop,
+                    )
+                    close_future.result(timeout=3.0)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("Timed out while closing OpenAI Realtime session")
+                except Exception:
+                    logger.debug("Failed to request OpenAI Realtime close", exc_info=True)
+            if thread is not None and threading.current_thread() is not thread:
+                thread.join(timeout=3.0)
+            if thread is None or not thread.is_alive():
+                self._thread = None
+            else:
+                logger.warning("OpenAI Realtime bridge thread did not stop cleanly")
         with self._state_lock:
             self._connected = False
 
@@ -144,6 +166,9 @@ class OpenAIRealtimeBridge:
                 loop.close()
             finally:
                 self._loop = None
+                self._input_queue = None
+                self._stop_event = None
+                self._conn = None
 
     async def _session(self) -> None:
         try:
@@ -157,32 +182,47 @@ class OpenAIRealtimeBridge:
             raise RuntimeError("Realtime bridge loop is not initialized")
 
         client = AsyncOpenAI(api_key=self._api_key)
-        async with client.realtime.connect(model=self._model) as conn:
-            await conn.session.update(
-                session={
-                    "type": "realtime",
-                    "model": self._model,
-                    "instructions": self._instructions,
-                    "audio": {
-                        "input": {"turn_detection": {"type": "server_vad"}},
-                        "output": {"voice": self._voice},
-                    },
-                }
-            )
-            with self._state_lock:
-                self._connected = True
+        try:
+            async with client.realtime.connect(model=self._model) as conn:
+                self._conn = conn
+                await conn.session.update(
+                    session={
+                        "type": "realtime",
+                        "model": self._model,
+                        "instructions": self._instructions,
+                        "audio": {
+                            "input": {"turn_detection": {"type": "server_vad"}},
+                            "output": {"voice": self._voice},
+                        },
+                    }
+                )
+                with self._state_lock:
+                    self._connected = True
 
-            tasks = [
-                asyncio.create_task(self._send_loop(conn), name="openai-send"),
-                asyncio.create_task(self._recv_loop(conn), name="openai-recv"),
-                asyncio.create_task(self._stop_event.wait(), name="openai-stop"),
-            ]
+                tasks = [
+                    asyncio.create_task(self._send_loop(conn), name="openai-send"),
+                    asyncio.create_task(self._recv_loop(conn), name="openai-recv"),
+                    asyncio.create_task(self._stop_event.wait(), name="openai-stop"),
+                ]
+                try:
+                    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._conn = None
+            await client.close()
+
+    async def _close_realtime_session(self) -> None:
+        if self._stop_event is not None:
+            self._stop_event.set()
+        conn = self._conn
+        if conn is not None:
             try:
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await conn.close()
+            except Exception:
+                logger.debug("OpenAI Realtime websocket close failed", exc_info=True)
 
     async def _send_loop(self, conn) -> None:
         if self._input_queue is None:
