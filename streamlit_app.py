@@ -9,11 +9,14 @@ environment variables.
 
 from __future__ import annotations
 
+from typing import Any
+
 import av
 import streamlit as st
 from artalk.assets import ARTalkAssets
 from artalk.realtime_pipeline import ARTalkPipeline
 from streamlit.errors import StreamlitSecretNotFoundError
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 from streamlit_webrtc import (
     WebRtcMode,
     create_audio_sink_track,
@@ -51,6 +54,44 @@ SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
+MEDIA_SESSION_TOKEN_KEY = "artalk_media_session_token"
+
+
+def get_current_session_state() -> Any:
+    """Capture the real session state for callbacks outside the script thread."""
+    ctx = get_script_run_ctx()
+    if ctx is not None:
+        session_state = getattr(ctx, "session_state", None)
+        if session_state is not None:
+            return session_state
+    return st.session_state
+
+
+def session_state_pop(session_state: Any, key: str) -> Any:
+    if key in session_state:
+        value = session_state[key]
+        del session_state[key]
+        return value
+    return None
+
+
+def clear_stale_webrtc_answer(ctx: Any) -> None:
+    """Clear idle SDP state left behind by streamlit-webrtc 0.74.0."""
+    get_worker = getattr(ctx, "_get_worker", None)
+    worker = get_worker() if callable(get_worker) else None
+    if worker is not None or ctx.state.playing or ctx.state.signalling:
+        return
+    if not getattr(ctx, "_sdp_answer_json", None) and not getattr(
+        ctx, "_is_sdp_answer_sent", False
+    ):
+        return
+    # streamlit-webrtc resets this state when an idle context still has a
+    # worker, but a stopped session can leave only stale SDP-answer fields.
+    # Without a rerun, the next START may reuse that stale answer and stall.
+    ctx._sdp_answer_json = None
+    ctx._is_sdp_answer_sent = False
+    ctx._component_value_snapshot = None
+    st.rerun()
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -70,11 +111,12 @@ def split_appearance(value: str) -> tuple[str, str | None]:
     return source, avatar_id
 
 
-def stop_silence_pump() -> None:
-    pump = st.session_state.pop(SILENCE_PUMP_KEY, None)
+def stop_silence_pump(session_state: Any | None = None) -> None:
+    session_state = session_state if session_state is not None else st.session_state
+    pump = session_state_pop(session_state, SILENCE_PUMP_KEY)
     if pump is not None:
         pump.stop()
-    st.session_state.pop(SILENCE_PUMP_CONFIG_KEY, None)
+    session_state_pop(session_state, SILENCE_PUMP_CONFIG_KEY)
 
 
 def get_silence_pump(pipeline: ARTalkPipeline) -> PipelineSilencePump:
@@ -91,19 +133,21 @@ def get_silence_pump(pipeline: ARTalkPipeline) -> PipelineSilencePump:
     return pump
 
 
-def stop_bridge() -> None:
-    bridge = st.session_state.pop(BRIDGE_KEY, None)
+def stop_bridge(session_state: Any | None = None) -> None:
+    session_state = session_state if session_state is not None else st.session_state
+    bridge = session_state_pop(session_state, BRIDGE_KEY)
     if bridge is not None:
         bridge.stop()
-    st.session_state.pop(BRIDGE_CONFIG_KEY, None)
+    session_state_pop(session_state, BRIDGE_CONFIG_KEY)
 
 
-def stop_pipeline() -> None:
-    stop_silence_pump()
-    pipeline = st.session_state.pop(PIPELINE_KEY, None)
+def stop_pipeline(session_state: Any | None = None) -> None:
+    session_state = session_state if session_state is not None else st.session_state
+    stop_silence_pump(session_state)
+    pipeline = session_state_pop(session_state, PIPELINE_KEY)
     if pipeline is not None:
         pipeline.stop()
-    st.session_state.pop(PIPELINE_CONFIG_KEY, None)
+    session_state_pop(session_state, PIPELINE_CONFIG_KEY)
 
 
 def main() -> None:
@@ -310,25 +354,38 @@ def main() -> None:
         if bridge is not None:
             bridge.push_input(frame)
 
-    def on_audio_ended() -> None:
-        stop_bridge()
-        stop_pipeline()
+    session_state = get_current_session_state()
+    media_session_token = object()
+    session_state[MEDIA_SESSION_TOKEN_KEY] = media_session_token
+
+    def on_media_ended() -> None:
+        current_token = (
+            session_state[MEDIA_SESSION_TOKEN_KEY]
+            if MEDIA_SESSION_TOKEN_KEY in session_state
+            else None
+        )
+        if current_token is not media_session_token:
+            return
+        stop_bridge(session_state)
+        stop_pipeline(session_state)
 
     video_source_track = create_video_source_track(
         pipeline.video_source_callback,
         key=f"artalk_video_source_{mode.lower()}",
         fps=ARTALK_FPS,
+        on_ended=on_media_ended,
     )
     audio_source_track = create_audio_source_track(
         pipeline.audio_source_callback,
         key=f"artalk_audio_source_{mode.lower()}",
         sample_rate=ARTALK_SAMPLE_RATE,
         ptime=0.020,
+        on_ended=on_media_ended,
     )
     audio_sink_track = create_audio_sink_track(
         on_loopback_audio_frame if mode == "Loopback" else on_interactive_audio_frame,
         key=f"artalk_audio_sink_{mode.lower()}",
-        on_ended=on_audio_ended,
+        on_ended=on_media_ended,
     )
 
     streamer_key = f"artalk_{mode.lower()}"
@@ -340,8 +397,7 @@ def main() -> None:
         if mode == "Interactive" and ctx.state.playing and bridge is not None:
             bridge.start()
         if not ctx.state.playing and not ctx.state.signalling:
-            if bridge is not None:
-                bridge.stop()
+            stop_bridge()
             stop_pipeline()
 
     if bridge is not None:
@@ -358,7 +414,7 @@ def main() -> None:
                     st.caption("Waiting for response...")
 
     def render_webrtc_component() -> None:
-        webrtc_streamer(
+        ctx = webrtc_streamer(
             key=streamer_key,
             mode=WebRtcMode.SENDRECV,
             source_video_track=video_source_track,
@@ -367,6 +423,7 @@ def main() -> None:
             media_stream_constraints={"audio": True, "video": False},
             on_change=on_change,
         )
+        clear_stale_webrtc_answer(ctx)
 
     avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
 
