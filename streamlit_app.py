@@ -115,7 +115,11 @@ def main() -> None:
     model_path = gagavatar_assets.model_path
     flame_model_path = gagavatar_assets.flame_model_path
 
-    st.set_page_config(page_title="ARTalk Realtime", page_icon=":speech_balloon:")
+    st.set_page_config(
+        page_title="ARTalk Realtime",
+        page_icon=":speech_balloon:",
+        layout="wide",
+    )
     st.title("ARTalk Realtime")
     st.caption(
         "Speak into the microphone — the avatar starts moving "
@@ -165,7 +169,7 @@ def main() -> None:
             [DEFAULT_STYLE, *style_ids],
             index=default_style_index,
         )
-        mode = st.radio("Mode", ["Loopback", "Interactive"], horizontal=True)
+        mode = st.radio("Mode", ["Loopback", "Interactive"], index=1, horizontal=True)
 
         api_key = ""
         realtime_model = DEFAULT_REALTIME_MODEL
@@ -364,21 +368,20 @@ def main() -> None:
             on_change=on_change,
         )
 
-    if bridge is not None:
-        video_col, preview_col = st.columns([2, 1])
-        with video_col:
-            render_webrtc_component()
-        with preview_col:
-            render_interactive_status()
-    else:
+    avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
+
+    with avatar_col:
+        st.subheader("Avatar")
         render_webrtc_component()
+        if bridge is not None:
+            render_interactive_status()
 
     @st.fragment(run_every="500ms")
     def render_diagnostics_fragment() -> None:
-        with st.expander("Pipeline diagnostics", expanded=(mode == "Loopback")):
-            render_pipeline_diagnostics(pipeline)
+        render_pipeline_diagnostics(pipeline)
 
-    render_diagnostics_fragment()
+    with diagnostics_col:
+        render_diagnostics_fragment()
 
 
 main()

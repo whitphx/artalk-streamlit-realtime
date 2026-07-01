@@ -90,6 +90,16 @@ def diagnostic_line(name: str, value: str) -> str:
     return f"    * {name:<28} {fixed_metric_value(value)}"
 
 
+def diagram_note(line: str, note: str = "") -> str:
+    if not note:
+        return line
+    return f"{line:<118} # {note}"
+
+
+def diagram_columns(total_col: str = "", breakdown_col: str = "", note: str = "") -> str:
+    return diagram_note(f"  |               | {total_col:<36} | {breakdown_col}", note)
+
+
 def duration_value(durations: dict, key: str) -> str:
     return duration_text(duration_stat(durations, key))
 
@@ -150,55 +160,61 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     )
     audio_callback_fps = elapsed_rate(counters, "audio_callbacks", "first_audio_callback_s")
 
-    st.caption("Overview")
-    overview_cols = st.columns(4)
-    overview_cols[0].metric("Frame served latency", duration_text(total_latency))
-    overview_cols[1].metric(
-        "Render realtime ratio",
-        f"{metric_value(counters, 'last_render_realtime_ratio'):.2f}x",
-    )
-    overview_cols[2].metric("Video real FPS", f"{video_real_fps:.1f}")
-    overview_cols[3].metric(
-        "Audio out buffer",
-        seconds_text(metric_value(counters, "audio_out_buffer_samples") / 16000.0),
-    )
+    with st.expander("Overview", expanded=False):
+        overview_cols = st.columns(4)
+        overview_cols[0].metric("Frame served latency", duration_text(total_latency))
+        overview_cols[1].metric(
+            "Render realtime ratio",
+            f"{metric_value(counters, 'last_render_realtime_ratio'):.2f}x",
+        )
+        overview_cols[2].metric("Video real FPS", f"{video_real_fps:.1f}")
+        overview_cols[3].metric(
+            "Audio out buffer",
+            seconds_text(metric_value(counters, "audio_out_buffer_samples") / 16000.0),
+        )
 
-    latency_cols = st.columns(4)
-    latency_cols[0].metric("Frame published", duration_text(published_latency))
-    latency_cols[1].metric("Published first", duration_text(frame_first_latency))
-    latency_cols[2].metric("Published last", duration_text(frame_last_latency))
-    latency_cols[3].metric("Post-ARTalk", duration_text(post_artalk_latency))
+        latency_cols = st.columns(4)
+        latency_cols[0].metric("Frame published", duration_text(published_latency))
+        latency_cols[1].metric("Published first", duration_text(frame_first_latency))
+        latency_cols[2].metric("Published last", duration_text(frame_last_latency))
+        latency_cols[3].metric("Post-ARTalk", duration_text(post_artalk_latency))
 
-    post_artalk_cols = st.columns(4)
-    post_artalk_cols[0].metric("Post-ARTalk excess", duration_text(post_artalk_excess_latency))
-    post_artalk_cols[1].metric("Pre-render excess", duration_text(pre_render_excess_latency))
-    post_artalk_cols[2].metric("Render", duration_text(render_latency))
-    post_artalk_cols[3].metric(
-        "Serve wait",
-        duration_text(duration_stat(durations, "frame_publish_to_serve_latency")),
-    )
+        post_artalk_cols = st.columns(4)
+        post_artalk_cols[0].metric(
+            "Post-ARTalk excess",
+            duration_text(post_artalk_excess_latency),
+        )
+        post_artalk_cols[1].metric(
+            "Pre-render excess",
+            duration_text(pre_render_excess_latency),
+        )
+        post_artalk_cols[2].metric("Render", duration_text(render_latency))
+        post_artalk_cols[3].metric(
+            "Serve wait",
+            duration_text(duration_stat(durations, "frame_publish_to_serve_latency")),
+        )
 
-    segment_cols = st.columns(4)
-    segment_cols[0].metric(
-        "Segment",
-        "#{} f{}+{}".format(
-            int(metric_value(counters, "last_pre_render_wait_segment_index")),
-            int(metric_value(counters, "last_pre_render_wait_segment_start_frame")),
-            int(metric_value(counters, "last_pre_render_wait_segment_frames")),
-        ),
-    )
-    segment_cols[1].metric(
-        "Audio underruns",
-        int(metric_value(counters, "audio_playback_underrun_frames")),
-    )
-    segment_cols[2].metric(
-        "Render to publish",
-        duration_text(duration_stat(durations, "frame_render_to_publish_latency")),
-    )
-    segment_cols[3].metric(
-        "Render to serve",
-        duration_text(duration_stat(durations, "frame_render_to_serve_latency")),
-    )
+        segment_cols = st.columns(4)
+        segment_cols[0].metric(
+            "Segment",
+            "#{} f{}+{}".format(
+                int(metric_value(counters, "last_pre_render_wait_segment_index")),
+                int(metric_value(counters, "last_pre_render_wait_segment_start_frame")),
+                int(metric_value(counters, "last_pre_render_wait_segment_frames")),
+            ),
+        )
+        segment_cols[1].metric(
+            "Audio underruns",
+            int(metric_value(counters, "audio_playback_underrun_frames")),
+        )
+        segment_cols[2].metric(
+            "Render to publish",
+            duration_text(duration_stat(durations, "frame_render_to_publish_latency")),
+        )
+        segment_cols[3].metric(
+            "Render to serve",
+            duration_text(duration_stat(durations, "frame_render_to_serve_latency")),
+        )
 
     stage_rows = [
         duration_row("Resample input", durations, "resample"),
@@ -626,18 +642,18 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         st.caption("Metric relationships")
         st.code(
             "legend: [-] additive elapsed window, [*] diagnostic/non-additive sample\n"
-            "timeline          frame-based elapsed latency           breakdown\n"
-            "----------------  ------------------------------------  ----------------------------------------\n"
+            "timeline          frame-based elapsed latency           breakdown                               meaning\n"
+            "----------------  ------------------------------------  ----------------------------------------  ----------------------------\n"
             "audio accepted    +                                    +\n"
-            f"  |               | {latency_label('Frame served total', frame_served_total)} | {latency_label('Frame pre-ARTalk', pre_artalk)}\n"
-            f"  |               | {latency_label('Frame published midpoint', frame_midpoint_total)} |\n"
-            f"  |               | {latency_label('Frame published first', frame_first_total)} |\n"
-            f"  |               | {latency_label('Frame published last', frame_last_total)} |\n"
-            f"  |               | {diagnostic_line('legacy segment first total', legacy_first_sample_total)}\n"
-            f"  |               | {diagnostic_line('legacy segment midpoint total', legacy_midpoint_total)}\n"
-            f"  |               |                                    | {diagnostic_line('legacy pre-ARTalk', legacy_pre_artalk)}\n"
-            f"  |               |                                    | {metric_line('frame wait / ARTalk floor', pre_artalk_wait)}\n"
-            f"  |               |                                    | {metric_line('streamer compute total', pre_streamer_compute)}\n"
+            f"{diagram_columns(latency_label('Frame served total', frame_served_total), latency_label('Frame pre-ARTalk', pre_artalk), 'audio midpoint -> video callback')}\n"
+            f"{diagram_columns(latency_label('Frame published midpoint', frame_midpoint_total), '', 'audio midpoint -> output queue')}\n"
+            f"{diagram_columns(latency_label('Frame published first', frame_first_total), '', 'first frame in segment')}\n"
+            f"{diagram_columns(latency_label('Frame published last', frame_last_total), '', 'last frame in segment')}\n"
+            f"{diagram_columns(diagnostic_line('Segment total from first audio', legacy_first_sample_total), '', 'legacy segment-level view')}\n"
+            f"{diagram_columns(diagnostic_line('Segment total from midpoint', legacy_midpoint_total), '', 'legacy segment-level view')}\n"
+            f"{diagram_columns('', diagnostic_line('Segment pre-ARTalk', legacy_pre_artalk), 'legacy segment-level view')}\n"
+            f"{diagram_columns('', metric_line('wait for ARTalk chunk', pre_artalk_wait), 'chunk fill/model floor')}\n"
+            f"{diagram_columns('', metric_line('ARTalk compute total', pre_streamer_compute), 'model execution')}\n"
             f"  |               |                                    | {diagnostic_line('audio to device', ar_audio_to_device)}\n"
             f"  |               |                                    | {diagnostic_line('audio encoder', ar_audio_encoder)}\n"
             f"  |               |                                    | {diagnostic_line('audio cond resample', ar_audio_resample)}\n"
@@ -647,11 +663,11 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             f"  |               |                                    | {diagnostic_line('smoother to CPU', smoother_cpu)}\n"
             f"  |               |                                    | {diagnostic_line('smoother filter', smoother_filter)}\n"
             "motion produced   |                                    +\n"
-            f"  |               |                                    | {latency_label('Post-ARTalk', post_artalk)}\n"
-            f"  |               |                                    | {latency_label('Post-ARTalk excess', post_artalk_excess)}\n"
-            f"  |               |                                    | {metric_line('pre-render wait', pre_render_wait)}\n"
-            f"  |               |                                    | {metric_line('render window', post_render_window)}\n"
-            f"  |               |                                    | {metric_line('publish overhead residual', post_publish_overhead)}\n"
+            f"{diagram_columns('', latency_label('Post-ARTalk', post_artalk), 'motion produced -> published')}\n"
+            f"{diagram_columns('', latency_label('Post-ARTalk excess', post_artalk_excess), 'minus expected segment offset')}\n"
+            f"{diagram_columns('', metric_line('wait before render starts', pre_render_wait), 'queue/backlog before render')}\n"
+            f"{diagram_columns('', metric_line('render window', post_render_window), 'render start -> publish')}\n"
+            f"{diagram_columns('', metric_line('publish residual', post_publish_overhead), 'unattributed publish time')}\n"
             f"  |               |                                    | {diagnostic_line('smoother', post_smoother)}\n"
             f"  |               |                                    | {diagnostic_line('audio emit prepare', post_audio_emit)}\n"
             f"  |               |                                    | {diagnostic_line('segment audio pairing', post_audio_pairing)}\n"
@@ -659,12 +675,12 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             f"  |               |                                    | {diagnostic_line('publish video queue', post_publish_video)}\n"
             f"  |               |                                    | {diagnostic_line('publish audio buffer', post_publish_audio)}\n"
             f"  |               |                                    | {diagnostic_line('publish metrics', post_publish_metrics)}\n"
-            f"  |               |                                    | {diagnostic_line('first render start delay', pre_first_render)}\n"
-            f"  |               |                                    | {diagnostic_line('segment start offset', pre_segment_offset)}\n"
-            f"  |               |                                    | {diagnostic_line('segment media offset', pre_segment_media_offset)}\n"
-            f"  |               |                                    | {diagnostic_line('excess over media offset', pre_segment_excess)}\n"
-            f"  |               |                                    | {diagnostic_line('prior-render backlog view', pre_prior_backlog)}\n"
-            f"  |               |                                    | {diagnostic_line('segment index / frames', pre_segment_context)}\n"
+            f"{diagram_columns('', diagnostic_line('first render start delay', pre_first_render), 'chunk first render delay')}\n"
+            f"{diagram_columns('', diagnostic_line('segment render start offset', pre_segment_offset), 'motion -> this segment render')}\n"
+            f"{diagram_columns('', diagnostic_line('segment position in chunk', pre_segment_media_offset), 'expected media offset')}\n"
+            f"{diagram_columns('', diagnostic_line('extra render-start delay', pre_segment_excess), 'start offset minus position')}\n"
+            f"{diagram_columns('', diagnostic_line('render backlog from first segment', pre_prior_backlog), 'alternate non-additive view')}\n"
+            f"{diagram_columns('', diagnostic_line('segment index / frames', pre_segment_context), 'chunk segment identity')}\n"
             "render/publish    |                                    +\n"
             f"  |               |                                    | {latency_label('Render', render)}\n"
             f"  |               |                                    | {diagnostic_line('motion batch to device', renderer_to_device)}\n"
@@ -678,9 +694,9 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             f"  |               |                                    | {diagnostic_line('GPU to CPU', render_gpu_cpu)}\n"
             f"  |               |                                    | {diagnostic_line('RGB to ndarray', rgb_to_numpy)}\n"
             "published         |                                    +\n"
-            f"  |               |                                    | {metric_line('publish to serve', publish_to_serve)}\n"
-            f"  |               |                                    | {diagnostic_line('render to publish', render_to_publish)}\n"
-            f"  |               |                                    | {diagnostic_line('render to serve', render_to_serve)}\n"
+            f"{diagram_columns('', metric_line('publish to serve', publish_to_serve), 'output queue -> callback')}\n"
+            f"{diagram_columns('', diagnostic_line('render to publish', render_to_publish), 'frame render end -> enqueue')}\n"
+            f"{diagram_columns('', diagnostic_line('render to serve', render_to_serve), 'frame render end -> callback')}\n"
             "served            +                                    +",
             language="text",
         )
