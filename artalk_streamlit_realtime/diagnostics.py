@@ -86,13 +86,43 @@ def duration_value(durations: dict, key: str) -> str:
     return duration_text(duration_stat(durations, key))
 
 
+def spike_context_text(context: dict) -> str:
+    if not context:
+        return "-"
+    preferred_keys = [
+        "pipeline_call",
+        "segment_index",
+        "segment_start_frame",
+        "segment_frames",
+        "render_batch_index",
+        "render_start_frame",
+        "render_batch_frames",
+        "segment_excess_s",
+        "audio_in_queue_depth",
+        "video_queue_depth",
+        "audio_out_buffer_s",
+    ]
+    parts = []
+    for key in preferred_keys:
+        if key not in context:
+            continue
+        value = context[key]
+        if isinstance(value, float):
+            value = round(value, 3)
+        parts.append(f"{key}={value}")
+    return ", ".join(parts) if parts else str(context)
+
+
 def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     snapshot = pipeline.metrics_snapshot()
     counters = snapshot["counters"]
     durations = snapshot["durations"]
+    spikes = snapshot.get("spikes", [])
 
     st.subheader("Pipeline diagnostics")
-    total_latency = duration_stat(durations, "audio_midpoint_to_video_latency")
+    total_latency = duration_stat(durations, "frame_audio_to_video_midpoint_latency")
+    frame_first_latency = duration_stat(durations, "frame_audio_to_video_first_latency")
+    frame_last_latency = duration_stat(durations, "frame_audio_to_video_last_latency")
     post_model_latency = duration_stat(durations, "post_model_latency")
     post_model_excess_latency = duration_stat(durations, "post_model_excess_latency")
     pre_render_excess_latency = duration_stat(
@@ -113,7 +143,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
 
     st.caption("Overview")
     overview_cols = st.columns(4)
-    overview_cols[0].metric("Latency", duration_text(total_latency))
+    overview_cols[0].metric("Frame latency", duration_text(total_latency))
     overview_cols[1].metric(
         "Render realtime ratio",
         f"{metric_value(counters, 'last_render_realtime_ratio'):.2f}x",
@@ -124,12 +154,16 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         seconds_text(metric_value(counters, "audio_out_buffer_samples") / 16000.0),
     )
 
-    detail_cols = st.columns(6)
-    detail_cols[0].metric("Post-model", duration_text(post_model_latency))
-    detail_cols[1].metric("Post-model excess", duration_text(post_model_excess_latency))
-    detail_cols[2].metric("Pre-render excess", duration_text(pre_render_excess_latency))
-    detail_cols[3].metric("Render", duration_text(render_latency))
-    detail_cols[4].metric(
+    latency_cols = st.columns(4)
+    latency_cols[0].metric("Frame first", duration_text(frame_first_latency))
+    latency_cols[1].metric("Frame last", duration_text(frame_last_latency))
+    latency_cols[2].metric("Post-model", duration_text(post_model_latency))
+    latency_cols[3].metric("Post-model excess", duration_text(post_model_excess_latency))
+
+    segment_cols = st.columns(4)
+    segment_cols[0].metric("Pre-render excess", duration_text(pre_render_excess_latency))
+    segment_cols[1].metric("Render", duration_text(render_latency))
+    segment_cols[2].metric(
         "Segment",
         "#{} f{}+{}".format(
             int(metric_value(counters, "last_pre_render_wait_segment_index")),
@@ -137,7 +171,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             int(metric_value(counters, "last_pre_render_wait_segment_frames")),
         ),
     )
-    detail_cols[5].metric(
+    segment_cols[3].metric(
         "Audio underruns",
         int(metric_value(counters, "audio_playback_underrun_frames")),
     )
@@ -162,6 +196,17 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("Avatar render batch", durations, "avatar_render_batch"),
         duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
+        duration_row("Frame audio to video", durations, "frame_audio_to_video_latency"),
+        duration_row("Frame audio to video first", durations, "frame_audio_to_video_first_latency"),
+        duration_row("Frame audio to video midpoint", durations, "frame_audio_to_video_midpoint_latency"),
+        duration_row("Frame audio to video last", durations, "frame_audio_to_video_last_latency"),
+        duration_row("Frame pre-model", durations, "frame_pre_model_latency"),
+        duration_row("Frame pre-model first", durations, "frame_pre_model_first_latency"),
+        duration_row("Frame pre-model midpoint", durations, "frame_pre_model_midpoint_latency"),
+        duration_row("Frame pre-model last", durations, "frame_pre_model_last_latency"),
+        duration_row("Frame pre-model wait first", durations, "frame_pre_model_wait_first"),
+        duration_row("Frame pre-model wait midpoint", durations, "frame_pre_model_wait_midpoint"),
+        duration_row("Frame pre-model wait last", durations, "frame_pre_model_wait_last"),
         duration_row("Audio to video publish", durations, "audio_to_video_latency"),
         duration_row("Midpoint audio to video", durations, "audio_midpoint_to_video_latency"),
         duration_row("Pre-model latency", durations, "pre_model_latency"),
@@ -211,6 +256,17 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "last render chunk seconds", "value": round(metric_value(counters, "last_render_chunk_s"), 3)},
         {"name": "last render media seconds", "value": round(metric_value(counters, "last_render_chunk_media_s"), 3)},
         {"name": "render realtime ratio", "value": round(metric_value(counters, "last_render_realtime_ratio"), 3)},
+        {"name": "last frame audio-to-video first latency seconds", "value": round(metric_value(counters, "last_frame_audio_to_video_first_latency_s"), 3)},
+        {"name": "last frame audio-to-video midpoint latency seconds", "value": round(metric_value(counters, "last_frame_audio_to_video_midpoint_latency_s"), 3)},
+        {"name": "last frame audio-to-video last latency seconds", "value": round(metric_value(counters, "last_frame_audio_to_video_last_latency_s"), 3)},
+        {"name": "last frame pre-model first latency seconds", "value": round(metric_value(counters, "last_frame_pre_model_first_latency_s"), 3)},
+        {"name": "last frame pre-model midpoint latency seconds", "value": round(metric_value(counters, "last_frame_pre_model_midpoint_latency_s"), 3)},
+        {"name": "last frame pre-model last latency seconds", "value": round(metric_value(counters, "last_frame_pre_model_last_latency_s"), 3)},
+        {"name": "last frame pre-model wait first seconds", "value": round(metric_value(counters, "last_frame_pre_model_wait_first_s"), 3)},
+        {"name": "last frame pre-model wait midpoint seconds", "value": round(metric_value(counters, "last_frame_pre_model_wait_midpoint_s"), 3)},
+        {"name": "last frame pre-model wait last seconds", "value": round(metric_value(counters, "last_frame_pre_model_wait_last_s"), 3)},
+        {"name": "min frame audio-to-video latency seconds", "value": round(metric_value(counters, "min_frame_audio_to_video_latency_s"), 3)},
+        {"name": "max frame audio-to-video latency seconds", "value": round(metric_value(counters, "max_frame_audio_to_video_latency_s"), 3)},
         {"name": "last audio-to-video latency seconds", "value": round(metric_value(counters, "last_audio_to_video_latency_s"), 3)},
         {"name": "last midpoint audio-to-video latency seconds", "value": round(metric_value(counters, "last_midpoint_audio_to_video_latency_s"), 3)},
         {"name": "last pre-model latency seconds", "value": round(metric_value(counters, "last_pre_model_latency_s"), 3)},
@@ -278,6 +334,13 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "audio source time", "value": round(metric_value(counters, "last_audio_source_time_s"), 3)},
     ]
     latency_rows = [
+        duration_row("Frame audio to video", durations, "frame_audio_to_video_latency"),
+        duration_row("Frame audio to video first", durations, "frame_audio_to_video_first_latency"),
+        duration_row("Frame audio to video midpoint", durations, "frame_audio_to_video_midpoint_latency"),
+        duration_row("Frame audio to video last", durations, "frame_audio_to_video_last_latency"),
+        duration_row("Frame pre-model", durations, "frame_pre_model_latency"),
+        duration_row("Frame pre-model midpoint", durations, "frame_pre_model_midpoint_latency"),
+        duration_row("Frame pre-model wait midpoint", durations, "frame_pre_model_wait_midpoint"),
         duration_row("Midpoint audio to video", durations, "audio_midpoint_to_video_latency"),
         duration_row("Audio to video publish", durations, "audio_to_video_latency"),
         duration_row("Pre-model latency", durations, "pre_model_latency"),
@@ -346,6 +409,17 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         "avatar_render_batch",
         "rgb_batch_to_numpy",
         "render_chunk_total",
+        "frame_audio_to_video_latency",
+        "frame_audio_to_video_first_latency",
+        "frame_audio_to_video_midpoint_latency",
+        "frame_audio_to_video_last_latency",
+        "frame_pre_model_latency",
+        "frame_pre_model_first_latency",
+        "frame_pre_model_midpoint_latency",
+        "frame_pre_model_last_latency",
+        "frame_pre_model_wait_first",
+        "frame_pre_model_wait_midpoint",
+        "frame_pre_model_wait_last",
         "audio_to_video_latency",
         "audio_midpoint_to_video_latency",
         "pre_model_latency",
@@ -389,20 +463,71 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             or key.startswith("gaussian_")
         ],
     )
+    recent_spike_rows = [
+        {
+            "age_s": round(float(spike.get("age_s", 0.0)), 1),
+            "metric": spike.get("metric", ""),
+            "elapsed_ms": round(float(spike.get("elapsed_ms", 0.0)), 1),
+            "baseline_ms": round(float(spike.get("baseline_ms", 0.0)), 1),
+            "delta_ms": round(float(spike.get("delta_ms", 0.0)), 1),
+            "ratio": round(float(spike.get("ratio", 0.0)), 2),
+            "context": spike_context_text(spike.get("context", {})),
+        }
+        for spike in reversed(spikes[-25:])
+    ]
+    spike_summary: dict[str, dict] = {}
+    for spike in spikes:
+        metric = str(spike.get("metric", ""))
+        if not metric:
+            continue
+        elapsed_ms = float(spike.get("elapsed_ms", 0.0))
+        ratio = float(spike.get("ratio", 0.0))
+        summary = spike_summary.setdefault(
+            metric,
+            {
+                "metric": metric,
+                "count": 0,
+                "max_ms": 0.0,
+                "latest_ms": 0.0,
+                "latest_ratio": 0.0,
+            },
+        )
+        summary["count"] += 1
+        summary["max_ms"] = max(summary["max_ms"], elapsed_ms)
+        summary["latest_ms"] = elapsed_ms
+        summary["latest_ratio"] = ratio
+    spike_summary_rows = [
+        {
+            "metric": row["metric"],
+            "count": row["count"],
+            "max_ms": round(row["max_ms"], 1),
+            "latest_ms": round(row["latest_ms"], 1),
+            "latest_ratio": round(row["latest_ratio"], 2),
+        }
+        for row in sorted(
+            spike_summary.values(),
+            key=lambda item: (item["count"], item["max_ms"]),
+            reverse=True,
+        )
+    ]
 
-    latency_tab, throughput_tab, buffers_tab, internals_tab, raw_tab = st.tabs(
-        ["Latency", "Throughput", "Buffers / sync", "Internals", "Raw"]
+    latency_tab, throughput_tab, buffers_tab, spikes_tab, internals_tab, raw_tab = st.tabs(
+        ["Latency", "Throughput", "Buffers / sync", "Spikes", "Internals", "Raw"]
     )
 
     with latency_tab:
-        first_sample_total = duration_text(duration_stat(durations, "audio_to_video_latency"))
-        midpoint_total = duration_text(duration_stat(durations, "audio_midpoint_to_video_latency"))
-        pre_model = duration_text(duration_stat(durations, "pre_model_latency"))
+        frame_first_total = duration_text(duration_stat(durations, "frame_audio_to_video_first_latency"))
+        frame_midpoint_total = duration_text(duration_stat(durations, "frame_audio_to_video_midpoint_latency"))
+        frame_last_total = duration_text(duration_stat(durations, "frame_audio_to_video_last_latency"))
+        legacy_first_sample_total = duration_text(duration_stat(durations, "audio_to_video_latency"))
+        legacy_midpoint_total = duration_text(duration_stat(durations, "audio_midpoint_to_video_latency"))
+        pre_model = duration_text(duration_stat(durations, "frame_pre_model_midpoint_latency"))
+        pre_model_wait = duration_text(duration_stat(durations, "frame_pre_model_wait_midpoint"))
+        legacy_pre_model = duration_text(duration_stat(durations, "pre_model_latency"))
         post_model = duration_text(duration_stat(durations, "post_model_latency"))
         post_model_excess = duration_text(duration_stat(durations, "post_model_excess_latency"))
         pre_render_wait = duration_text(duration_stat(durations, "pre_render_wait_latency"))
         render = duration_text(duration_stat(durations, "segment_render_latency"))
-        pre_chunk_wait = duration_value(durations, "pre_model_chunk_wait")
         pre_streamer_compute = duration_value(durations, "pre_model_streamer_compute")
         post_render_window = duration_value(durations, "post_model_render_window")
         post_publish_overhead = duration_value(durations, "post_model_publish_overhead")
@@ -447,12 +572,16 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         st.caption("Metric relationships")
         st.code(
             "legend: [-] additive elapsed window, [*] diagnostic/non-additive sample\n"
-            "timeline          elapsed latency window                breakdown\n"
+            "timeline          frame-based elapsed latency           breakdown\n"
             "----------------  ------------------------------------  ----------------------------------------\n"
             "audio accepted    +                                    +\n"
-            f"  |               | {latency_label('Midpoint total', midpoint_total)} | {latency_label('Pre-model', pre_model)}\n"
-            f"  |               | {latency_label('First-sample total', first_sample_total)} |\n"
-            f"  |               |                                    | {metric_line('chunk fill / model floor wait', pre_chunk_wait)}\n"
+            f"  |               | {latency_label('Frame midpoint total', frame_midpoint_total)} | {latency_label('Frame pre-model', pre_model)}\n"
+            f"  |               | {latency_label('Frame first total', frame_first_total)} |\n"
+            f"  |               | {latency_label('Frame last total', frame_last_total)} |\n"
+            f"  |               | {diagnostic_line('legacy segment first total', legacy_first_sample_total)}\n"
+            f"  |               | {diagnostic_line('legacy segment midpoint total', legacy_midpoint_total)}\n"
+            f"  |               |                                    | {diagnostic_line('legacy pre-model', legacy_pre_model)}\n"
+            f"  |               |                                    | {metric_line('frame wait / model floor', pre_model_wait)}\n"
             f"  |               |                                    | {metric_line('streamer compute total', pre_streamer_compute)}\n"
             f"  |               |                                    | {diagnostic_line('audio to device', ar_audio_to_device)}\n"
             f"  |               |                                    | {diagnostic_line('audio encoder', ar_audio_encoder)}\n"
@@ -497,10 +626,11 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             language="text",
         )
         st.caption(
-            "Midpoint audio to video is the representative total latency. "
-            "It is an elapsed window from audio acceptance to publication, so it "
-            "includes queueing and chunk-fill time, not just compute time. "
-            "Pre-model plus Post-model is the top-level additive breakdown. "
+            "Frame midpoint total is the representative per-frame latency. "
+            "It uses the audio midpoint corresponding to a rendered video frame, "
+            "so it is less sensitive to large parent audio chunks or late segments "
+            "than the legacy segment first-sample metrics. "
+            "Frame pre-model plus Post-model is the top-level additive breakdown. "
             "Rows marked with '-' are additive child windows for their parent. "
             "Rows marked with '*' are diagnostic samples or alternate views; "
             "for example, segment start offset and prior-render backlog describe "
@@ -510,8 +640,9 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             "inside the current ARTalk chunk, so it is the main pre-render spike "
             "signal to watch. Post-model excess subtracts that segment media "
             "offset from Post-model and is the main actionable post-model signal. "
-            "Audio to video publish is another total latency variant using the first "
-            "audio sample in the segment, so do not add it to the others."
+            "Legacy segment totals use the first or midpoint audio sample in the "
+            "published segment and are kept for comparison, but they can become "
+            "very large when backlog accumulates."
         )
         st.caption("Latency breakdown")
         st.dataframe(
@@ -537,6 +668,26 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             hide_index=True,
             width="stretch",
             key="pipeline_buffer_health",
+        )
+
+    with spikes_tab:
+        st.caption(
+            "Recent duration spikes. Detection uses each metric's rolling median "
+            "baseline, ignores the first few samples, and records only bounded "
+            "event data instead of a full timeline."
+        )
+        st.dataframe(
+            recent_spike_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_recent_spikes",
+        )
+        st.caption("Spike summary by metric")
+        st.dataframe(
+            spike_summary_rows,
+            hide_index=True,
+            width="stretch",
+            key="pipeline_spike_summary",
         )
 
     with internals_tab:
