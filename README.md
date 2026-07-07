@@ -71,6 +71,17 @@ For non-standard layouts, pass `--gagavatar-asset-dir`,
 
 ## Run
 
+For the prepared local runtime environment in this checkout:
+
+```bash
+source scripts/activate_runtime.sh
+streamlit run streamlit_app.py
+```
+
+The activation helper prepends `.mamba-env/bin` to `PATH`, sets
+`PYTHONNOUSERSITE=1` so global user-site packages do not override the runtime
+stack, and keeps Hugging Face and package-manager caches under this checkout.
+
 ```bash
 ARTALK_STREAMLIT_PYTHON=/path/to/python scripts/run_app.sh
 ```

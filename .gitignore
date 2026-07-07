@@ -2,6 +2,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.mamba-env/
+.micromamba/
+.uv-cache/
+.pip-cache/
+.cache/
 .env
 .streamlit/secrets.toml
 assets

@@ -3,7 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PYTHON_BIN="${ARTALK_STREAMLIT_PYTHON:-python}"
+REPO_ROOT="$PWD"
+if [[ -z "${ARTALK_STREAMLIT_PYTHON:-}" && -x "$REPO_ROOT/.mamba-env/bin/python" ]]; then
+  PYTHON_BIN="$REPO_ROOT/.mamba-env/bin/python"
+else
+  PYTHON_BIN="${ARTALK_STREAMLIT_PYTHON:-python}"
+fi
+export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.cache/huggingface}"
+
 if [[ -z "${ST_REMOTE_BIN:-}" ]]; then
   PYTHON_PATH="$(command -v "$PYTHON_BIN" || true)"
   if [[ -n "$PYTHON_PATH" && -x "$(dirname "$PYTHON_PATH")/st-remote" ]]; then
