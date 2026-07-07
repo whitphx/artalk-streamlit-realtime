@@ -86,7 +86,10 @@ stack, and keeps Hugging Face and package-manager caches under this checkout.
 ARTALK_STREAMLIT_PYTHON=/path/to/python scripts/run_app.sh
 ```
 
-The launcher uses `st-remote` from the selected Python environment. Set
+The launcher uses `st-remote` from the selected Python environment and defaults
+to an ngrok HTTPS tunnel so the browser gets the secure context that microphone
+access requires. Set `ST_REMOTE_PROVIDER` or pass `--provider` to use another
+tunnel provider, or pass `--no-remote` to serve locally only. Set
 `ST_REMOTE_BIN` to override the executable, and set `STREAMLIT_SERVER_ADDRESS`
 or `STREAMLIT_SERVER_PORT` to change the local bind address.
 
@@ -115,6 +118,42 @@ ARTALK_STREAMLIT_PYTHON=/path/to/python \
     --output-prebuffer-seconds 2.0 \
     --output-segment-seconds 0.5
 ```
+
+## Profiling
+
+Capture PyTorch Profiler traces of the pipeline worker to inspect per-op
+CPU/GPU timing and synchronization points:
+
+```bash
+ARTALK_STREAMLIT_PYTHON=/path/to/python \
+  scripts/run_app.sh --no-remote -- \
+    --device cuda \
+    --profile-trace-dir profiles
+```
+
+Profiling is chunk-scoped: only worker iterations that cross ARTalk's 4-second
+model chunk boundary (the ones that run inference and rendering) are profiled.
+By default the first chunk is skipped as warm-up and the next two are captured
+(`--profile-skip-chunks`, `--profile-max-chunks`). Note that in Interactive
+mode chunks fill only while the assistant is speaking, so short test
+conversations may never reach the second chunk — hold a longer conversation or
+pass `--profile-skip-chunks 0`. Capture counters reset when the pipeline
+restarts (session stop or settings change). Each capture writes one
+Chrome trace under a per-run subdirectory of `--profile-trace-dir`; open the
+JSON files in <https://ui.perfetto.dev> or `chrome://tracing`. Pipeline stages
+are labeled `artalk.*` in the trace. Trace export happens on the worker thread
+and can stall the pipeline for a moment, so keep profiling off in normal runs.
+
+When profiling is enabled, the app shows a **Torch profiler** panel above the
+diagnostics column with a per-chunk operator summary (`key_averages`, sorted by
+self CUDA time) and a download button for each Chrome trace — useful when the
+app runs on a remote GPU host.
+
+The renderer normally calls `torch.cuda.synchronize()` at stage boundaries so
+the per-stage diagnostics timings are attributable. Those syncs serialize GPU
+work and can themselves distort end-to-end behavior; disable them with
+`--no-renderer-stage-sync` (per-stage timings then measure only kernel launch)
+to A/B the production path against the instrumented one.
 
 Browser microphone access requires a secure context. Use `http://localhost:8501`
 directly or forward a remote GPU host:

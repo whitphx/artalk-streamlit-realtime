@@ -34,7 +34,10 @@ from artalk_streamlit_realtime.config import (
     REALTIME_VOICES,
     parse_args,
 )
-from artalk_streamlit_realtime.diagnostics import render_pipeline_diagnostics
+from artalk_streamlit_realtime.diagnostics import (
+    render_pipeline_diagnostics,
+    render_profiler_panel,
+)
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -218,6 +221,10 @@ def main() -> None:
             args.render_batch_size,
             args.output_prebuffer_seconds,
             args.output_segment_seconds,
+            args.renderer_stage_sync,
+            args.profile_trace_dir,
+            args.profile_skip_chunks,
+            args.profile_max_chunks,
             appearance,
             style_id,
             str(asset_dir),
@@ -240,6 +247,10 @@ def main() -> None:
                 render_batch_size=args.render_batch_size,
                 output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
                 output_segment_seconds=args.output_segment_seconds,
+                renderer_stage_sync=args.renderer_stage_sync,
+                profile_trace_dir=args.profile_trace_dir,
+                profile_skip_chunks=args.profile_skip_chunks,
+                profile_max_chunks=args.profile_max_chunks,
                 renderer_mode=renderer_mode,
                 gagavatar=gagavatar,
                 gagavatar_flame=gagavatar_flame,
@@ -380,7 +391,14 @@ def main() -> None:
     def render_diagnostics_fragment() -> None:
         render_pipeline_diagnostics(pipeline)
 
+    @st.fragment(run_every="2s")
+    def render_profiler_fragment() -> None:
+        render_profiler_panel(pipeline, trace_root=args.profile_trace_dir)
+
     with diagnostics_col:
+        if args.profile_trace_dir:
+            with st.expander("Torch profiler", expanded=True):
+                render_profiler_fragment()
         with st.container(height=720, width="stretch", border=True, autoscroll=False):
             render_diagnostics_fragment()
 

@@ -30,22 +30,36 @@ fi
 ST_REMOTE_ARGS=()
 APP_ARGS=()
 TARGET_ARGS=ST_REMOTE_ARGS
+HAS_PROVIDER_ARG=0
+HAS_NO_REMOTE_ARG=0
 for arg in "$@"; do
   if [[ "$arg" == "--" ]]; then
     TARGET_ARGS=APP_ARGS
     continue
   fi
   if [[ "$TARGET_ARGS" == "ST_REMOTE_ARGS" ]]; then
+    case "$arg" in
+      --provider|--provider=*) HAS_PROVIDER_ARG=1 ;;
+      --no-remote) HAS_NO_REMOTE_ARG=1 ;;
+    esac
     ST_REMOTE_ARGS+=("$arg")
   else
     APP_ARGS+=("$arg")
   fi
 done
 
+# Default to an HTTPS tunnel provider: browser microphone access needs a
+# secure context, and st-remote's own default is "first available".
+PROVIDER_ARGS=()
+if [[ "$HAS_PROVIDER_ARG" -eq 0 && "$HAS_NO_REMOTE_ARG" -eq 0 ]]; then
+  PROVIDER_ARGS=(--provider "${ST_REMOTE_PROVIDER:-ngrok}")
+fi
+
 COMMAND=(
   "$ST_REMOTE_BIN"
   --host "${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}"
   --port "${STREAMLIT_SERVER_PORT:-8501}"
+  "${PROVIDER_ARGS[@]}"
   "${ST_REMOTE_ARGS[@]}"
   streamlit_app.py
 )

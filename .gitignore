@@ -10,3 +10,5 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 assets
+profiles/
+AGENTS.local.md

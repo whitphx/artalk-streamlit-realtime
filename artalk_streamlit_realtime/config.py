@@ -41,6 +41,13 @@ SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES = int(
 SILENCE_PUMP_MAX_VIDEO_FRAMES = int(ARTALK_FPS * SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -77,6 +84,37 @@ def parse_args() -> argparse.Namespace:
             )
         ),
         type=float,
+    )
+    parser.add_argument(
+        "--renderer-stage-sync",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", True),
+        help=(
+            "Synchronize CUDA at renderer stage boundaries so per-stage "
+            "diagnostics timings are attributable. Disable to measure "
+            "production behavior without the sync observer effect."
+        ),
+    )
+    parser.add_argument(
+        "--profile-trace-dir",
+        default=os.environ.get("ARTALK_PROFILE_TRACE_DIR"),
+        type=str,
+        help=(
+            "Enable PyTorch Profiler capture and write one Chrome trace per "
+            "profiled ARTalk motion chunk under this directory."
+        ),
+    )
+    parser.add_argument(
+        "--profile-skip-chunks",
+        default=int(os.environ.get("ARTALK_PROFILE_SKIP_CHUNKS", "1")),
+        type=int,
+        help="Motion chunks to skip as warm-up before capturing traces.",
+    )
+    parser.add_argument(
+        "--profile-max-chunks",
+        default=int(os.environ.get("ARTALK_PROFILE_MAX_CHUNKS", "2")),
+        type=int,
+        help="Maximum number of motion-chunk traces to capture per pipeline.",
     )
     parser.add_argument(
         "--asset-dir",

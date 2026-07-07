@@ -163,3 +163,41 @@ It measures from when the ARTalk pipeline accepts an audio frame or sample chunk
 to when the rendered video segment for the matching audio slice is published to
 the output queues. The output counters also expose last/min/max values in
 seconds as `audio-to-video latency`.
+
+## 2026-07-07: PyTorch Profiler capture and stage-sync toggle
+
+Two measurement knobs were added to chase the reported latency spikes in
+GPU↔CPU transfer and inter-stage buffering:
+
+- `--profile-trace-dir DIR`: opt-in PyTorch Profiler capture in the pipeline
+  worker. Only worker iterations that cross ARTalk's 4-second chunk boundary
+  are profiled (profiler start/stop on every 20 ms audio item would be too
+  expensive). Each profiled chunk exports one Chrome trace to a per-run
+  subdirectory. Pipeline stages carry `artalk.*` labels
+  (`streamer_feed`, `smoother_feed`, `render_batch`, `rgb_batch_to_numpy`,
+  `publish_segment`, `resample`). `--profile-skip-chunks` (default 1) and
+  `--profile-max-chunks` (default 2) control which chunks are captured.
+- `--no-renderer-stage-sync`: disables the `torch.cuda.synchronize()` calls at
+  renderer stage boundaries. The syncs make the wall-clock stage timings above
+  attributable, but they also serialize GPU work in the production path — a
+  possible contributor to the spikes being measured. With syncs off, per-stage
+  timings only measure kernel launch; use end-to-end metrics
+  (`audio-to-video latency`, underruns, placeholders) for comparison instead.
+
+Both settings surface in diagnostics as `renderer_stage_sync` and
+`profiler_enabled`, and trace exports count as `profiler_traces_captured`
+(export runs on the worker thread; its cost shows as `profiler_trace_export`,
+and the operator-summary build as `profiler_summary_build`).
+
+When profiling is enabled the app renders a "Torch profiler" panel above the
+diagnostics column with each captured chunk's `key_averages` operator table
+(sorted by self CUDA time) and a download button for the Chrome trace.
+
+Suggested A/B procedure:
+
+1. Run with defaults (syncs on, no profiler) and note baseline diagnostics.
+2. Re-run with `--no-renderer-stage-sync` and compare `audio-to-video latency`
+   and underrun/placeholder counters to quantify the sync observer effect.
+3. Re-run with `--profile-trace-dir profiles` (both sync modes) and inspect
+   the traces in Perfetto for cudaMemcpy/cudaStreamSynchronize stalls around
+   the `artalk.*` spans.

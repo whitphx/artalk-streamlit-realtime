@@ -2,8 +2,126 @@
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
+
 import streamlit as st
 from artalk.realtime_pipeline import ARTalkPipeline
+
+
+@st.cache_data(show_spinner=False)
+def _read_trace_bytes(path: str, size: int) -> bytes:
+    # Trace files are written once and never modified; `size` busts the cache
+    # in the unlikely case a path is reused.
+    return Path(path).read_bytes()
+
+
+MAX_PROFILER_TRACES_LISTED = 6
+
+
+def render_profiler_panel(
+    pipeline: ARTalkPipeline, trace_root: str | None = None
+) -> None:
+    status = pipeline.profiler_status()
+    run_dir = status["run_dir"]
+    if run_dir is None:
+        st.caption(
+            "Torch profiler is off. Launch with `--profile-trace-dir` to "
+            "capture traces."
+        )
+        return
+
+    if status["last_error"]:
+        st.error(f"Profiler capture failed: {status['last_error']}")
+
+    counters = pipeline.metrics_snapshot()["counters"]
+    chunk_samples = int(metric_value(counters, "streamer_chunk_samples", 64000.0))
+    buffered = int(metric_value(counters, "streamer_buffer_samples"))
+    skip = status["skip_chunks"]
+    st.progress(
+        min(buffered / max(chunk_samples, 1), 1.0),
+        text=(
+            f"Next ARTalk chunk: {buffered}/{chunk_samples} audio samples "
+            f"buffered — chunks so far: {status['chunks_seen']} "
+            f"(first {skip} skipped as warm-up), captured "
+            f"{status['chunks_captured']}/{status['max_chunks']} this session"
+        ),
+    )
+
+    # Pipelines are recycled on session stop/restart, and each new pipeline
+    # writes to a fresh run directory. List traces from the whole trace root
+    # so captures survive restarts in the UI.
+    root = Path(trace_root) if trace_root else Path(run_dir).parent
+    traces = (
+        sorted(
+            root.glob("*/chunk-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if root.exists()
+        else []
+    )
+
+    if not traces:
+        st.info(
+            "Capturing starts when a 4-second ARTalk chunk fills with audio. "
+            "In **Loopback** mode the microphone stream fills one chunk every "
+            "~4 s. In **Interactive** mode chunks fill only while the "
+            "**assistant** is speaking (trailing silence is filled slowly by "
+            "the silence pump), so hold a conversation with responses longer "
+            "than ~8 s or launch with `--profile-skip-chunks 0` to capture "
+            "the first chunk. Stopping the session or changing settings "
+            "restarts the capture counters."
+        )
+        st.caption(f"Traces will be written to `{run_dir}` on the server.")
+        return
+
+    if len(traces) > MAX_PROFILER_TRACES_LISTED:
+        st.caption(
+            f"Showing the latest {MAX_PROFILER_TRACES_LISTED} of "
+            f"{len(traces)} traces under `{root}`."
+        )
+    for trace_path in traces[:MAX_PROFILER_TRACES_LISTED]:
+        run_name = trace_path.parent.name
+        is_current = Path(run_dir) == trace_path.parent
+        captured_at = time.strftime(
+            "%H:%M:%S", time.localtime(trace_path.stat().st_mtime)
+        )
+        label = f"{run_name} / {trace_path.name} — {captured_at}"
+        if is_current:
+            label += " (current session)"
+        with st.expander(label, expanded=is_current):
+            summary_path = trace_path.with_name(trace_path.stem + "-summary.txt")
+            widget_key = f"{run_name}_{trace_path.stem}"
+            if summary_path.exists():
+                summary_table = summary_path.read_text()
+                st.code(summary_table, language="text")
+                st.download_button(
+                    "Download operator summary (.txt)",
+                    data=summary_table,
+                    file_name=f"{run_name}-{summary_path.name}",
+                    mime="text/plain",
+                    key=f"profiler_summary_dl_{widget_key}",
+                )
+            else:
+                st.caption("No operator summary was saved for this capture.")
+            st.download_button(
+                f"Download full Chrome trace ({trace_path.stat().st_size / 1e6:.1f} MB)",
+                data=_read_trace_bytes(str(trace_path), trace_path.stat().st_size),
+                file_name=f"{run_name}-{trace_path.name}",
+                mime="application/json",
+                key=f"profiler_trace_dl_{widget_key}",
+            )
+    st.markdown(
+        "The table in each capture is the per-operator summary "
+        "(`key_averages`, sorted by self CUDA time). The **full log** is the "
+        "Chrome trace JSON: download it and open it in "
+        "<https://ui.perfetto.dev> (drag & drop) or `chrome://tracing`. "
+        "Pipeline stages appear as `artalk.*` spans; look for `cudaMemcpy` / "
+        "`cudaStreamSynchronize` blocks inside them. Traces are also on the "
+        f"server under `{root}`."
+    )
 
 
 def metric_value(counters: dict, key: str, default: float = 0.0) -> float:
