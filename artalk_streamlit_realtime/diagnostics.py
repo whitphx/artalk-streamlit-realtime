@@ -106,13 +106,24 @@ def render_profiler_panel(
                 )
             else:
                 st.caption("No operator summary was saved for this capture.")
-            st.download_button(
-                f"Download full Chrome trace ({trace_path.stat().st_size / 1e6:.1f} MB)",
-                data=_read_trace_bytes(str(trace_path), trace_path.stat().st_size),
-                file_name=f"{run_name}-{trace_path.name}",
-                mime="application/json",
-                key=f"profiler_trace_dl_{widget_key}",
-            )
+            trace_mb = trace_path.stat().st_size / 1e6
+            # Streamlit hashes download_button payloads on every fragment
+            # rerun; doing that for tens of MB every 2 s starves the WebRTC
+            # callback threads of the GIL. Only mount the button on demand.
+            if st.toggle(
+                f"Prepare full Chrome trace download ({trace_mb:.1f} MB)",
+                key=f"profiler_trace_prep_{widget_key}",
+            ):
+                st.download_button(
+                    f"Download full Chrome trace ({trace_mb:.1f} MB)",
+                    data=_read_trace_bytes(
+                        str(trace_path), trace_path.stat().st_size
+                    ),
+                    file_name=f"{run_name}-{trace_path.name}",
+                    mime="application/json",
+                    key=f"profiler_trace_dl_{widget_key}",
+                )
+                st.caption("Turn the toggle off after downloading to keep the app responsive.")
     st.markdown(
         "The table in each capture is the per-operator summary "
         "(`key_averages`, sorted by self CUDA time). The **full log** is the "
