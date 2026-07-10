@@ -1,2 +1,9 @@
 [browser]
 gatherUsageStats = false
+
+[runner]
+# Streamlit runs gc.collect(2) after every script/fragment run by default.
+# With periodic diagnostics fragments and a torch-sized object graph, that is
+# ~5 full 150 ms stop-the-world collections per second, starving the realtime
+# pipeline worker (see docs/realtime-performance-notes.md, 2026-07-10).
+postScriptGC = false

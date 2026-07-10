@@ -201,3 +201,54 @@ Suggested A/B procedure:
 3. Re-run with `--profile-trace-dir profiles` (both sync modes) and inspect
    the traces in Perfetto for cudaMemcpy/cudaStreamSynchronize stalls around
    the `artalk.*` spans.
+
+## 2026-07-09: Worker-thread pauses dominate; GC pause probe
+
+Analysis of the first profiler capture (`chunk-002`, GAGAvatar mode, render
+batch size 8) reframed the bottleneck:
+
+- The chunk took 7.2 s wall for 4.0 s of media, but GPU kernels were busy for
+  only 1.2 s (17%). GPU compute is not the constraint.
+- 69% of the wall time (5.0 s) was 34 gaps in which the pipeline worker thread
+  executed nothing — median 151 ms each, recurring every ~160–340 ms, starting
+  at arbitrary points in the op stream (including inside `streamer_feed`).
+- Stage timings that previously looked like GPU↔CPU transfer spikes were these
+  pauses landing inside whichever stage was being timed. Actual DtoH copy time
+  for the whole chunk was 66 ms, and the streaming smoother pass was 1.5 ms.
+- Without the pauses the chunk would have rendered in ~2.2 s, faster than
+  realtime.
+
+The uniform ~150 ms pause duration and allocation-correlated cadence point at
+CPython gen-2 GC passes: the collector holds the GIL for the entire pass, so
+one pass freezes every pipeline thread at once. To confirm before changing GC
+behavior, the app installs a `gc.callbacks` probe
+(`artalk_streamlit_realtime/gc_probe.py`) that times every collection, and the
+diagnostics column shows a "GC pauses" panel with per-generation stats and
+recent ≥10 ms pauses.
+
+If the probe confirms GC as the source, the candidate fix is `gc.freeze()`
+after model load plus raised collection thresholds, re-measured with the same
+profiler capture procedure.
+
+## 2026-07-10: GC verdict — Streamlit's post-script gc.collect(2)
+
+The probe convicted the garbage collector, with an unexpected shape: **510
+gen-2 collections vs only 30 gen-1** over one session, ~151 ms each, arriving
+every ~186 ms — 77 s of total pause, roughly 80% of session wall time. That
+ratio is impossible for threshold-driven GC (gen-2 fires once per ~10 gen-1
+passes); it means something calls `gc.collect()` explicitly and continuously.
+
+The caller is Streamlit: `ScriptRunner._on_script_finished` runs `gc.collect(2)`
+after **every script and fragment run** (streamlit 1.58,
+`runtime/scriptrunner/script_runner.py:884`). The diagnostics fragments rerun
+every 500 ms / 1 s / 2 s, so the app generates ~5 full stop-the-world
+collections per second, each traversing the whole torch object graph while
+holding the GIL. This is also why heavier diagnostics UI made playback worse,
+and why the pauses appeared as "GPU transfer spikes" in wall-clock stage
+timings.
+
+Fix: `runner.postScriptGC = false` in `.streamlit/config.toml` (the collect is
+config-gated). Organic threshold-driven GC stays enabled; if occasional
+threshold-triggered gen-2 passes still show up as ~150 ms hiccups in the GC
+panel, the follow-up is `gc.freeze()` after model load to shrink the traversed
+object graph.

@@ -35,9 +35,11 @@ from artalk_streamlit_realtime.config import (
     parse_args,
 )
 from artalk_streamlit_realtime.diagnostics import (
+    render_gc_panel,
     render_pipeline_diagnostics,
     render_profiler_panel,
 )
+from artalk_streamlit_realtime.gc_probe import gc_pause_probe
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -110,6 +112,7 @@ def stop_pipeline() -> None:
 
 
 def main() -> None:
+    gc_pause_probe.install()
     args = parse_args()
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
@@ -395,10 +398,16 @@ def main() -> None:
     def render_profiler_fragment() -> None:
         render_profiler_panel(pipeline, trace_root=args.profile_trace_dir)
 
+    @st.fragment(run_every="1s")
+    def render_gc_fragment() -> None:
+        render_gc_panel(gc_pause_probe)
+
     with diagnostics_col:
         if args.profile_trace_dir:
             with st.expander("Torch profiler", expanded=True):
                 render_profiler_fragment()
+        with st.expander("GC pauses", expanded=True):
+            render_gc_fragment()
         with st.container(height=720, width="stretch", border=True, autoscroll=False):
             render_diagnostics_fragment()
 

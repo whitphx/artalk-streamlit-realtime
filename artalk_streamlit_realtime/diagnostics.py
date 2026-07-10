@@ -9,6 +9,58 @@ from pathlib import Path
 import streamlit as st
 from artalk.realtime_pipeline import ARTalkPipeline
 
+from .gc_probe import PAUSE_EVENT_MIN_MS, GcPauseProbe
+
+
+def render_gc_panel(probe: GcPauseProbe) -> None:
+    snap = probe.snapshot()
+    generations = snap["generations"]
+    gen2 = generations[2]
+    total_pause_ms = sum(stat["total_ms"] for stat in generations.values())
+    cols = st.columns(4)
+    cols[0].metric("Gen2 collections", int(gen2["count"]))
+    cols[1].metric("Gen2 last", f"{gen2['last_ms']:.0f} ms")
+    cols[2].metric("Gen2 max", f"{gen2['max_ms']:.0f} ms")
+    cols[3].metric("Total GC pause", f"{total_pause_ms / 1000.0:.2f} s")
+    st.dataframe(
+        [
+            {
+                "generation": generation,
+                "count": int(stat["count"]),
+                "last_ms": round(stat["last_ms"], 1),
+                "avg_ms": (
+                    round(stat["total_ms"] / stat["count"], 1) if stat["count"] else 0.0
+                ),
+                "max_ms": round(stat["max_ms"], 1),
+                "total_s": round(stat["total_ms"] / 1000.0, 2),
+            }
+            for generation, stat in sorted(generations.items())
+        ],
+        hide_index=True,
+        width="stretch",
+        key="gc_generation_stats",
+    )
+    st.caption(
+        f"Collections pausing ≥{PAUSE_EVENT_MIN_MS:.0f} ms (newest first) — "
+        f"enabled={snap['enabled']}, thresholds={snap['thresholds']}, "
+        f"frozen objects={snap['frozen']}"
+    )
+    st.dataframe(
+        [
+            {
+                "age_s": round(event["age_s"], 1),
+                "generation": event["generation"],
+                "pause_ms": round(event["elapsed_ms"], 1),
+                "collected": event["collected"],
+                "uncollectable": event["uncollectable"],
+            }
+            for event in reversed(snap["recent"])
+        ],
+        hide_index=True,
+        width="stretch",
+        key="gc_recent_pauses",
+    )
+
 
 @st.cache_data(show_spinner=False)
 def _read_trace_bytes(path: str, size: int) -> bytes:
