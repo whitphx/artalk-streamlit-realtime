@@ -252,3 +252,36 @@ config-gated). Organic threshold-driven GC stays enabled; if occasional
 threshold-triggered gen-2 passes still show up as ~150 ms hiccups in the GC
 panel, the follow-up is `gc.freeze()` after model load to shrink the traversed
 object graph.
+
+## 2026-07-13: Post-GC-fix profile and stage-sync A/B
+
+Re-baseline after the GC fix (GAGAvatar, 512, batch 8, syncs on): a 4-second
+chunk processes in 1.78 s wall (was 7.2 s), render batches are uniform
+106–128 ms (was 87–1276 ms), worker-thread gaps >20 ms dropped from 34 to 0,
+GPU is ~74% busy while processing, and the realtime ratio is 0.42x with zero
+audio underruns. Organic GC now costs ~1% of wall time and the multi-second
+output buffer absorbs individual passes without underruns. Throughput is no
+longer the constraint; remaining end-to-end latency is dominated by the 4 s
+model chunk floor, chunk fill time (speech pauses), and startup backlog that
+strictly-realtime playback never drains (Interactive mode drains it during
+silent gaps between responses).
+
+Stage-sync A/B results:
+
+- Mesh mode (headless, 256 px): disabling the syncs halves chunk render time,
+  1.61 s → 0.80 s (realtime ratio 0.42x → 0.21x).
+- GAGAvatar mode (live app + trace): end-to-end chunk time is roughly
+  unchanged (~2.0 s incl. profiler overhead; batch medians slightly faster).
+  The path is GPU-bound and each batch ends in a GPU-to-CPU copy that forces
+  a sync anyway, so removing the 27 intermediate syncs mostly re-attributes
+  time rather than saving it. No underruns or jitter regressions.
+
+Default flipped: `--renderer-stage-sync` is now off by default and becomes an
+opt-in for reading per-stage timings. With syncs off, queued GPU work shows up
+in whichever stage forces the next sync (typically `avatar_gpu_to_cpu_batch`).
+
+Side observation while reproducing GAGAvatar headless: a mis-prepared
+rasterizer batch made `diff_gaussian_rasterization` request an absurd
+allocation (131,067 GiB "CUDA out of memory"). If a huge nonsensical OOM like
+this appears (as in the 2026-07-02 meeting's A100 attempt), suspect corrupted
+rasterizer inputs (avatar/camera setup), not actual memory pressure.

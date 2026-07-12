@@ -149,11 +149,13 @@ diagnostics column with a per-chunk operator summary (`key_averages`, sorted by
 self CUDA time) and a download button for each Chrome trace — useful when the
 app runs on a remote GPU host.
 
-The renderer normally calls `torch.cuda.synchronize()` at stage boundaries so
-the per-stage diagnostics timings are attributable. Those syncs serialize GPU
-work and can themselves distort end-to-end behavior; disable them with
-`--no-renderer-stage-sync` (per-stage timings then measure only kernel launch)
-to A/B the production path against the instrumented one.
+The renderer can call `torch.cuda.synchronize()` at stage boundaries so the
+per-stage diagnostics timings are attributable. This is **off by default**
+because the syncs serialize GPU work (measured 2x slower mesh chunk renders);
+without them, per-stage timings only measure kernel launch, and queued GPU
+work is attributed to whichever stage forces the next sync (typically the
+GPU-to-CPU copy). Enable with `--renderer-stage-sync` when reading per-stage
+timings or profiler traces.
 
 Browser microphone access requires a secure context. Use `http://localhost:8501`
 directly or forward a remote GPU host:

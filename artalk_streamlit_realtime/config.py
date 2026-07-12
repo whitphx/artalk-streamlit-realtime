@@ -88,11 +88,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--renderer-stage-sync",
         action=argparse.BooleanOptionalAction,
-        default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", True),
+        default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", False),
         help=(
             "Synchronize CUDA at renderer stage boundaries so per-stage "
-            "diagnostics timings are attributable. Disable to measure "
-            "production behavior without the sync observer effect."
+            "diagnostics timings are attributable. Off by default: the syncs "
+            "serialize GPU work (measured 2x slower mesh chunk renders) and "
+            "production runs should not pay for timing attribution."
         ),
     )
     parser.add_argument(
