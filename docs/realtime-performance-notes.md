@@ -285,3 +285,21 @@ rasterizer batch made `diff_gaussian_rasterization` request an absurd
 allocation (131,067 GiB "CUDA out of memory"). If a huge nonsensical OOM like
 this appears (as in the 2026-07-02 meeting's A100 attempt), suspect corrupted
 rasterizer inputs (avatar/camera setup), not actual memory pressure.
+
+## 2026-07-13: Silence pump flush budget for turn latency
+
+With throughput solved, measured turn latency was dominated by queued
+silence: the silence pump kept injecting idle silence up to its 3 s output
+buffer cap, so playback always ran ~3 s behind and every new response queued
+behind that backlog (observed `Audio out buffer` 3.6–3.8 s and `Serve wait`
+~1.7 s even with `--output-prebuffer-seconds 0.5 --output-segment-seconds
+0.5`).
+
+The pump now stops after injecting one model chunk's worth (4 s) of silence
+per idle period — enough to flush any partial chunk containing trailing real
+speech, which is the pump's actual job — and resumes only on new real input.
+During idle the output buffer drains to zero, so a new response queues behind
+nothing and turn latency approaches the floor (chunk fill + prebuffer +
+render). Cost: the avatar freezes on its last frame during long idle instead
+of continuously idling. New counters: `silence_pump_samples_since_input`,
+`silence_pump_flush_complete_skips`.

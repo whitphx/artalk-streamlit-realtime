@@ -9,6 +9,7 @@ from artalk.metrics import current_pipeline_metrics
 from artalk.realtime_pipeline import ARTalkPipeline
 
 from .config import (
+    ARTALK_SAMPLE_RATE,
     SILENCE_PUMP_CHUNK_SAMPLES,
     SILENCE_PUMP_CHUNK_SECONDS,
     SILENCE_PUMP_IDLE_SECONDS,
@@ -26,15 +27,28 @@ class PipelineSilencePump:
     final partial chunk can sit below that threshold forever. This belongs in
     the caller layer because it is glue between the upstream transport and the
     ARTalk package's sample input API.
+
+    Pumping stops after one chunk's worth of silence per idle period: that is
+    enough to flush any partial chunk containing trailing real audio, and
+    pumping beyond it keeps a multi-second silence backlog in the output
+    buffer that the strictly-realtime playback never drains — queueing every
+    subsequent response behind it and adding directly to turn latency.
     """
 
     def __init__(self, pipeline: ARTalkPipeline) -> None:
         self._pipeline = pipeline
+        self._flush_budget_samples = int(
+            pipeline.metrics_snapshot()["counters"].get(
+                "streamer_chunk_samples",
+                4 * ARTALK_SAMPLE_RATE,
+            )
+        )
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._input_started = False
         self._last_real_input_s = 0.0
         self._last_pump_s = 0.0
+        self._pumped_since_input_samples = 0
         self._thread: threading.Thread | None = None
 
         with self._pipeline.metrics_context() as metrics:
@@ -69,6 +83,7 @@ class PipelineSilencePump:
         with self._lock:
             self._input_started = True
             self._last_real_input_s = time.perf_counter()
+            self._pumped_since_input_samples = 0
         with self._pipeline.metrics_context():
             current_pipeline_metrics().inc("silence_pump_real_input_marks")
 
@@ -81,6 +96,7 @@ class PipelineSilencePump:
                     input_started = self._input_started
                     last_real_input_s = self._last_real_input_s
                     last_pump_s = self._last_pump_s
+                    pumped_since_input = self._pumped_since_input_samples
                 if not input_started:
                     continue
 
@@ -88,8 +104,15 @@ class PipelineSilencePump:
                 idle_s = now - last_real_input_s if last_real_input_s else 0.0
                 metrics = current_pipeline_metrics()
                 metrics.set("silence_pump_input_idle_s", idle_s)
+                metrics.set(
+                    "silence_pump_samples_since_input",
+                    pumped_since_input,
+                )
                 if idle_s < SILENCE_PUMP_IDLE_SECONDS:
                     metrics.inc("silence_pump_recent_input_skips")
+                    continue
+                if pumped_since_input >= self._flush_budget_samples:
+                    metrics.inc("silence_pump_flush_complete_skips")
                     continue
                 if last_pump_s and now - last_pump_s < SILENCE_PUMP_CHUNK_SECONDS:
                     metrics.inc("silence_pump_pacing_skips")
@@ -119,6 +142,7 @@ class PipelineSilencePump:
 
                 with self._lock:
                     self._last_pump_s = now
+                    self._pumped_since_input_samples += SILENCE_PUMP_CHUNK_SAMPLES
                 metrics.inc("silence_pump_chunks")
                 metrics.inc("silence_pump_samples", SILENCE_PUMP_CHUNK_SAMPLES)
                 self._pipeline.push_silence(SILENCE_PUMP_CHUNK_SECONDS)
