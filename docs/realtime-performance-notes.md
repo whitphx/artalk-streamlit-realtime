@@ -356,3 +356,36 @@ Caveat: in Loopback mode the browser microphone streams continuously
 (including room silence), so only the first turn registers; the metric is
 meaningful in Interactive mode, where only assistant response audio enters
 the pipeline.
+
+## 2026-07-14: Full-path warm-up pre-roll
+
+The first response of a fresh session paid one-time costs (CUDA allocations,
+cuDNN autotuning, audio encoder first pass) that later turns did not. The
+pipeline now runs one silent model chunk through the full streamer → smoother
+→ renderer path at construction and discards the output; the streamer and
+smoother are reset afterwards so real inference starts from the same state as
+an un-warmed pipeline. These costs are process-global, so warm-up runs once
+per (device, renderer mode, resolution, batch size) per process — pipelines
+recreated by settings changes skip it.
+
+Measured headless (mesh 256): warm-up costs 1.6 s at init and cuts the first
+turn's first-frame latency from 1.26 s to 0.49 s, making turn 1 the fastest
+turn instead of the slowest. This replaces the previous single-frame
+GAGAvatar-only renderer warm-up; warm-up timings appear in diagnostics as
+`pipeline_warmup` / `warmup_*` stages.
+
+Operational note: Streamlit's file watcher hot-reloads app-local modules but
+not the editable-installed `artalk` package — after ARTalk-package changes,
+restart the app server or the running process keeps executing the old
+pipeline code under the new UI.
+
+## 2026-07-14: Underrun counter vs idle silence
+
+Since the silence pump flush budget, the output buffer is intentionally empty
+during idle, and the audio callback was counting every idle frame as a
+playback underrun (~50/s of noise). Empty-buffer frames now count as
+`audio_playback_underrun_frames` only while content is in flight (queued
+input, busy worker, queued video, or real audio accepted within the last
+model-chunk window); otherwise they count as `audio_idle_silence_frames`.
+Verified headless: chunk-fill starvation still registers as underruns; six
+seconds of true idle registers zero.
