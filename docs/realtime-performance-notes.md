@@ -303,3 +303,34 @@ nothing and turn latency approaches the floor (chunk fill + prebuffer +
 render). Cost: the avatar freezes on its last frame during long idle instead
 of continuously idling. New counters: `silence_pump_samples_since_input`,
 `silence_pump_flush_complete_skips`.
+
+## 2026-07-14: Barge-in freeze — bounded video queue vs unbounded audio
+
+Reported symptom: interrupt the assistant mid-response, and when the next
+response's audio starts after the gap, the face is frozen and only recovers
+later.
+
+Root cause: video frames and audio samples are published in paired amounts,
+but the video queue is bounded (200 frames = 8 s, overflow drops the *oldest*
+frames) while the audio buffer is unbounded. OpenAI delivers response audio in
+bursts and nothing cancelled a superseded response, so a barge-in stacks the
+old response's unplayed remainder + pump silence + the new response — easily
+past 8 s of unplayed media. The queue then evicts the earliest video frames
+(including the new response's start) while their audio still plays; the
+video-serving clock (`synced_audio_samples_served`) sits behind the surviving
+frame indices until that orphaned audio finishes — the freeze. The same
+mechanism fires on any single response whose unplayed backlog exceeds 8 s.
+Diagnostic signature: `video frames dropped` > 0.
+
+Fixes (verified headless with simulated playback callbacks):
+
+- `ARTalkPipeline.flush_output()` — drops queued-but-unplayed output and
+  credits the flushed samples to the served clock so later frame indices stay
+  reachable. The bridge calls it on `input_audio_buffer.speech_started`
+  (server VAD barge-in), so the assistant now stops talking when interrupted
+  instead of playing out its buffered answer. Staleness after a flush is
+  bounded by the model chunk already inside the worker.
+- Paired eviction — when the video queue overflows, the matching audio is now
+  removed from the buffer front and credited to the clock, so overflow
+  degrades to a content skip that stays in sync instead of a frozen face.
+  Counter: `audio_samples_skipped_for_dropped_video`.

@@ -239,6 +239,12 @@ class OpenAIRealtimeBridge:
             if etype == "response.output_audio.delta":
                 pcm = base64.b64decode(event.delta)
                 self._push_response_audio(pcm)
+            elif etype == "input_audio_buffer.speech_started":
+                # Barge-in: server VAD detected the user talking over the
+                # assistant. OpenAI cancels its in-flight response; drop the
+                # already-buffered remainder on our side too so the avatar
+                # stops speaking instead of playing it out.
+                self._pipeline.flush_output()
             elif etype == "response.output_audio_transcript.delta":
                 with self._state_lock:
                     self._assistant_transcript += getattr(event, "delta", "") or ""
