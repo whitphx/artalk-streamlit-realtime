@@ -14,7 +14,7 @@ import av
 import numpy as np
 from artalk.realtime_pipeline import ARTalkPipeline
 
-from .config import OPENAI_REALTIME_SAMPLE_RATE
+from .config import ARTALK_SAMPLE_RATE, OPENAI_REALTIME_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,16 @@ class OpenAIRealtimeBridge:
         self._error: Optional[str] = None
         self._user_transcript = ""
         self._assistant_transcript = ""
+
+        # Current assistant audio item, tracked on the receive loop only.
+        # play_start is the pipeline served-samples position at which this
+        # item's audio begins playing (served + everything queued ahead of it
+        # when its first delta arrived), so heard time can be read off the
+        # served clock at barge-in.
+        self._assistant_item_id: Optional[str] = None
+        self._assistant_item_content_index = 0
+        self._assistant_item_pushed_ms = 0.0
+        self._assistant_item_play_start_16k = 0
 
     @property
     def is_running(self) -> bool:
@@ -238,13 +248,15 @@ class OpenAIRealtimeBridge:
             etype = getattr(event, "type", "")
             if etype == "response.output_audio.delta":
                 pcm = base64.b64decode(event.delta)
+                self._track_response_item(event, pcm)
                 self._push_response_audio(pcm)
             elif etype == "input_audio_buffer.speech_started":
                 # Barge-in: server VAD detected the user talking over the
                 # assistant. OpenAI cancels its in-flight response; drop the
                 # already-buffered remainder on our side too so the avatar
-                # stops speaking instead of playing it out.
-                self._pipeline.flush_output()
+                # stops speaking instead of playing it out, and truncate the
+                # conversation item to what was actually heard.
+                await self._handle_barge_in(conn)
             elif etype == "response.output_audio_transcript.delta":
                 with self._state_lock:
                     self._assistant_transcript += getattr(event, "delta", "") or ""
@@ -268,6 +280,63 @@ class OpenAIRealtimeBridge:
                 logger.warning("OpenAI Realtime API error: %s", msg)
                 with self._state_lock:
                     self._error = msg
+
+    def _track_response_item(self, event, pcm: bytes) -> None:
+        item_id = getattr(event, "item_id", None)
+        if item_id is None:
+            return
+        if item_id != self._assistant_item_id:
+            counters = self._pipeline.metrics_snapshot()["counters"]
+            queued_ahead_16k = (
+                counters.get("audio_out_buffer_samples", 0)
+                + counters.get("pending_audio_for_output_samples", 0)
+                + counters.get("streamer_buffer_samples", 0)
+            )
+            self._assistant_item_id = item_id
+            self._assistant_item_content_index = int(
+                getattr(event, "content_index", 0) or 0
+            )
+            self._assistant_item_pushed_ms = 0.0
+            self._assistant_item_play_start_16k = int(
+                counters.get("synced_audio_samples_served", 0) + queued_ahead_16k
+            )
+        self._assistant_item_pushed_ms += (
+            (len(pcm) // 2) * 1000.0 / OPENAI_REALTIME_SAMPLE_RATE
+        )
+
+    async def _handle_barge_in(self, conn) -> None:
+        item_id = self._assistant_item_id
+        heard_ms = 0.0
+        if item_id is not None:
+            # Read the served clock before flush_output(): the flush credits
+            # the discarded samples to that clock.
+            counters = self._pipeline.metrics_snapshot()["counters"]
+            heard_16k = (
+                counters.get("synced_audio_samples_served", 0)
+                - self._assistant_item_play_start_16k
+            )
+            heard_ms = min(
+                max(heard_16k * 1000.0 / ARTALK_SAMPLE_RATE, 0.0),
+                self._assistant_item_pushed_ms,
+            )
+        self._pipeline.flush_output()
+        if (
+            item_id is not None
+            and heard_ms < self._assistant_item_pushed_ms - 100.0
+        ):
+            try:
+                await conn.conversation.item.truncate(
+                    item_id=item_id,
+                    content_index=self._assistant_item_content_index,
+                    audio_end_ms=int(heard_ms),
+                )
+            except Exception:
+                logger.warning(
+                    "conversation.item.truncate failed for %s", item_id,
+                    exc_info=True,
+                )
+        self._assistant_item_id = None
+        self._assistant_item_pushed_ms = 0.0
 
     def _push_response_audio(self, pcm: bytes) -> None:
         if len(pcm) < 2:

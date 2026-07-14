@@ -379,6 +379,20 @@ not the editable-installed `artalk` package — after ARTalk-package changes,
 restart the app server or the running process keeps executing the old
 pipeline code under the new UI.
 
+## 2026-07-14: Truncate interrupted responses in OpenAI conversation state
+
+After a barge-in flush, OpenAI's conversation state still contained the full
+assistant answer, so follow-up replies could reference audio the user never
+heard. The bridge now tracks the current response item and where its audio
+begins on the pipeline's served-samples clock (served + everything queued
+ahead when its first delta arrives); on `speech_started` it computes the
+actually-heard duration from that clock — read before `flush_output()`, which
+credits the discarded samples — and sends `conversation.item.truncate` with
+`audio_end_ms` clamped to the received duration. Verified headless with a
+fake connection: 10 s pushed, interrupted mid-playback, truncated to the
+served duration exactly. Truncation is skipped when everything played
+(within 100 ms) and failures are logged, never fatal.
+
 ## 2026-07-14: Underrun counter vs idle silence
 
 Since the silence pump flush budget, the output buffer is intentionally empty
