@@ -375,6 +375,13 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
             duration_text(duration_stat(durations, "frame_publish_to_serve_latency")),
         )
 
+        turn_latency = duration_stat(durations, "turn_first_frame_latency")
+        turn_cols = st.columns(4)
+        turn_cols[0].metric("Turn first frame", duration_text(turn_latency))
+        turn_cols[1].metric("Turn first frame avg", duration_text(turn_latency, "avg_ms"))
+        turn_cols[2].metric("Turn first frame max", duration_text(turn_latency, "max_ms"))
+        turn_cols[3].metric("Turns served", int(metric_value(counters, "turns_served")))
+
         segment_cols = st.columns(4)
         segment_cols[0].metric(
             "Segment",
@@ -417,6 +424,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         duration_row("Avatar render batch", durations, "avatar_render_batch"),
         duration_row("RGB batch to ndarray", durations, "rgb_batch_to_numpy"),
         duration_row("Render chunk total", durations, "render_chunk_total"),
+        duration_row("Turn first frame", durations, "turn_first_frame_latency"),
         duration_row("Frame audio to video", durations, "frame_audio_to_video_latency"),
         duration_row("Frame audio to video first", durations, "frame_audio_to_video_first_latency"),
         duration_row("Frame audio to video midpoint", durations, "frame_audio_to_video_midpoint_latency"),
@@ -569,6 +577,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         {"name": "audio source time", "value": round(metric_value(counters, "last_audio_source_time_s"), 3)},
     ]
     latency_rows = [
+        duration_row("Turn first frame", durations, "turn_first_frame_latency"),
         duration_row("Frame audio to video", durations, "frame_audio_to_video_latency"),
         duration_row("Frame audio to video first", durations, "frame_audio_to_video_first_latency"),
         duration_row("Frame audio to video midpoint", durations, "frame_audio_to_video_midpoint_latency"),
@@ -649,6 +658,7 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
         "avatar_render_batch",
         "rgb_batch_to_numpy",
         "render_chunk_total",
+        "turn_first_frame_latency",
         "frame_audio_to_video_latency",
         "frame_audio_to_video_first_latency",
         "frame_audio_to_video_midpoint_latency",

@@ -334,3 +334,25 @@ Fixes (verified headless with simulated playback callbacks):
   removed from the buffer front and credited to the clock, so overflow
   degrades to a content skip that stays in sync instead of a frozen face.
   Counter: `audio_samples_skipped_for_dropped_video`.
+
+## 2026-07-14: Turn-start latency metric
+
+Session-average latency metrics mislead in Interactive mode: OpenAI delivers
+response audio in bursts, so frames deep inside a response are "accepted"
+long before they can possibly play, inflating averages regardless of pipeline
+performance. The honest per-turn KPI is the time from a turn's first real
+audio to the first video frame served for it.
+
+Implementation: `push_silence` now marks its samples as filler
+(`push_audio_samples(..., is_filler=True)`), so the pipeline can detect a
+turn start at acceptance time — real audio arriving after ≥1 s (`TURN_GAP_S`)
+without real audio. The first published frame whose audio midpoint reaches
+the turn start carries a tag; when that frame (or, if it was sync-dropped,
+the frame served in its place) is served, the pipeline records
+`turn_first_frame_latency`. Surfaced in the diagnostics Overview as
+"Turn first frame" (last/avg/max) and "Turns served".
+
+Caveat: in Loopback mode the browser microphone streams continuously
+(including room silence), so only the first turn registers; the metric is
+meaningful in Interactive mode, where only assistant response audio enters
+the pipeline.
