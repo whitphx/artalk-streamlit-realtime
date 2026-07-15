@@ -84,3 +84,21 @@ class GcPauseProbe:
 
 
 gc_pause_probe = GcPauseProbe()
+
+_frozen = False
+
+
+def freeze_loaded_objects() -> None:
+    """Collect once, then move all currently tracked objects into the
+    permanent generation so periodic gen-2 passes stop traversing the loaded
+    model graphs (each pass holds the GIL for its full duration, stalling the
+    realtime worker). Reference counting still frees frozen objects when
+    their refcounts drop; only cycle-trapped frozen objects would persist.
+    Call after the heavy runtimes are loaded; the "frozen objects" readout in
+    the GC panel confirms the effect."""
+    global _frozen
+    if _frozen:
+        return
+    _frozen = True
+    gc.collect()
+    gc.freeze()

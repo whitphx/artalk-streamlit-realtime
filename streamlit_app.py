@@ -39,7 +39,7 @@ from artalk_streamlit_realtime.diagnostics import (
     render_pipeline_diagnostics,
     render_profiler_panel,
 )
-from artalk_streamlit_realtime.gc_probe import gc_pause_probe
+from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -277,6 +277,8 @@ def main() -> None:
     except Exception as exc:
         st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
         st.stop()
+
+    freeze_loaded_objects()
 
     silence_pump = get_silence_pump(pipeline)
 

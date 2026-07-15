@@ -393,6 +393,29 @@ fake connection: 10 s pushed, interrupted mid-playback, truncated to the
 served duration exactly. Truncation is skipped when everything played
 (within 100 ms) and failures are logged, never fatal.
 
+## 2026-07-15: Windowed smoother and gc.freeze
+
+Two long-session protections:
+
+- `CausalSavgolSmoother` re-filtered its entire history on every feed
+  (O(n²) cumulative) and round-tripped the whole growing buffer through the
+  GPU↔CPU boundary. It now filters only a small window around the frames
+  being emitted — savgol interior frames need just 4 frames of context per
+  side, and edge-fitted frames are computed from slices whose edges coincide
+  with the true sequence edges — and drops frames that can no longer
+  influence output. Verified: `scripts/check_streaming_parity.py` passes
+  with max abs diff 0.0, and a 20,000-frame stress run (13+ min of session,
+  irregular feed sizes) is bit-exact with one-shot filtering while retaining
+  at most 9 frames and flat ~1–2 ms per feed.
+- The app now calls `gc.collect()` + `gc.freeze()` once after the runtimes
+  and first pipeline are loaded, moving the loaded model graphs (~317k
+  objects) into the permanent generation. Measured in a loaded process:
+  a gen-2 pass costs 129–162 ms before freeze — exactly the pause size the
+  probe kept recording — and ~0 ms after. Organic gen-2 passes can no longer
+  stall the worker for a visible duration; the GC panel's "frozen objects"
+  readout confirms the freeze took effect. Trade-off: frozen objects are
+  never cycle-collected, which is fine for process-lifetime model graphs.
+
 ## 2026-07-14: Underrun counter vs idle silence
 
 Since the silence pump flush budget, the output buffer is intentionally empty
