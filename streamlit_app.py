@@ -9,6 +9,8 @@ environment variables.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import av
 import streamlit as st
 from artalk.assets import ARTalkAssets
@@ -23,6 +25,11 @@ from streamlit_webrtc import (
 )
 
 from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
+from artalk_streamlit_realtime.avatar_registry import (
+    AvatarRegistrationError,
+    UserAvatarRegistry,
+    slugify_avatar_id,
+)
 from artalk_streamlit_realtime.config import (
     ARTALK_FPS,
     ARTALK_SAMPLE_RATE,
@@ -145,10 +152,18 @@ def main() -> None:
     model = artalk_runtime.model
     flame_model = artalk_runtime.flame_model
 
+    user_registry = UserAvatarRegistry(
+        args.user_avatar_dir,
+        track_python=args.gagavatar_track_python,
+        track_dir=args.gagavatar_track_dir,
+        track_device=args.gagavatar_track_device,
+    )
+
     with st.sidebar:
         gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
+        user_avatar_ids = user_registry.list_ids()
         style_ids = list_style_ids(str(asset_dir))
-        if not gagavatar_ids:
+        if not gagavatar_ids and not user_avatar_ids:
             with st.expander("GAGAvatar assets", expanded=True):
                 st.write(f"Asset dir: `{asset_dir}`")
                 st.write(f"Tracked: `{tracked_path}`")
@@ -165,6 +180,7 @@ def main() -> None:
         appearance_options = [
             DEFAULT_APPEARANCE,
             *[f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids],
+            *[f"gagavatar:{avatar_id}" for avatar_id in user_avatar_ids],
         ]
         appearance = st.selectbox("Appearance", appearance_options, index=0)
         default_style_index = (
@@ -200,6 +216,72 @@ def main() -> None:
                 height=120,
             )
 
+        with st.expander("Register avatar"):
+            if not user_registry.can_register:
+                st.caption(
+                    "Avatar registration needs the GAGAvatar tracker. Set "
+                    "`GAGAVATAR_TRACK_PYTHON` and `GAGAVATAR_TRACK_DIR` (or "
+                    "pass `--gagavatar-track-python` / `--gagavatar-track-dir`)."
+                )
+            else:
+                upload = st.file_uploader(
+                    "Face image",
+                    type=["jpg", "jpeg", "png"],
+                    key="avatar_upload",
+                )
+                if upload is not None:
+                    avatar_name = st.text_input(
+                        "Avatar name",
+                        value=Path(upload.name).stem,
+                        key="avatar_name",
+                    )
+                    ctx = st.session_state.get(f"artalk_{mode.lower()}")
+                    if (
+                        ctx is not None
+                        and ctx.state.playing
+                        and user_registry.track_device.startswith("cuda")
+                    ):
+                        st.warning(
+                            "A session is playing. Tracking shares the GPU and "
+                            "may cause a brief hiccup or fail on low memory."
+                        )
+                    if st.button("Register", key="avatar_register"):
+                        avatar_id = slugify_avatar_id(avatar_name)
+                        if not avatar_id:
+                            st.error("Avatar name is empty after sanitizing.")
+                        elif avatar_id in gagavatar_ids or avatar_id in user_avatar_ids:
+                            st.error(f"Avatar `{avatar_id}` already exists.")
+                        else:
+                            suffix = Path(upload.name).suffix.lower() or ".png"
+                            try:
+                                with st.spinner("Tracking face (takes ~10-30 s)..."):
+                                    entry = user_registry.register(
+                                        avatar_id, upload.getvalue(), suffix
+                                    )
+                            except AvatarRegistrationError as exc:
+                                st.error(str(exc))
+                            else:
+                                st.success(
+                                    f"Registered — select `gagavatar:{avatar_id}` "
+                                    "under Appearance."
+                                )
+                                st.image(
+                                    entry["vis_image"].numpy().transpose(1, 2, 0),
+                                    clamp=True,
+                                    caption=f"Tracked fit: {avatar_id}",
+                                )
+            if user_avatar_ids:
+                delete_id = st.selectbox(
+                    "Delete registered avatar",
+                    ["(select)", *user_avatar_ids],
+                    key="avatar_delete_select",
+                )
+                if delete_id != "(select)" and st.button(
+                    f"Delete {delete_id}", key="avatar_delete"
+                ):
+                    user_registry.delete(delete_id)
+                    st.rerun()
+
     def get_pipeline() -> ARTalkPipeline:
         renderer_mode, avatar_id = split_appearance(appearance)
         style_motion = load_style_motion(str(asset_dir), style_id)
@@ -216,6 +298,7 @@ def main() -> None:
                 str(model_path),
                 str(tracked_path) if tracked_path else None,
                 str(flame_model_path) if flame_model_path else None,
+                args.user_avatar_dir,
             )
         config = (
             args.device,

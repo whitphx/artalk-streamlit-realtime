@@ -142,5 +142,34 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("GAGAVATAR_FLAME_MODEL_PATH"),
         type=str,
     )
+    parser.add_argument(
+        "--user-avatar-dir",
+        default=os.environ.get("ARTALK_USER_AVATAR_DIR", "user_avatars"),
+        type=str,
+        help="Directory holding user-registered GAGAvatar avatars.",
+    )
+    parser.add_argument(
+        "--gagavatar-track-python",
+        default=os.environ.get("GAGAVATAR_TRACK_PYTHON"),
+        type=str,
+        help="Python interpreter of the GAGAvatar_track environment.",
+    )
+    parser.add_argument(
+        "--gagavatar-track-dir",
+        default=os.environ.get("GAGAVATAR_TRACK_DIR"),
+        type=str,
+        help="GAGAvatar_track checkout directory.",
+    )
+    parser.add_argument(
+        "--gagavatar-track-device",
+        default=os.environ.get("GAGAVATAR_TRACK_DEVICE", "cpu"),
+        type=str,
+        help=(
+            "Device for the tracking subprocess. Defaults to cpu: one-shot "
+            "tracking finishes in well under a minute there, avoids GPU "
+            "memory contention with a live session, and works with torch "
+            "builds that lack kernels for older GPUs."
+        ),
+    )
     args, _ = parser.parse_known_args()
     return args

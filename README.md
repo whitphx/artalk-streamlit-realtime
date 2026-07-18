@@ -164,6 +164,29 @@ directly or forward a remote GPU host:
 ssh -L 8501:localhost:8501 <gpu-host>
 ```
 
+## Registering avatars from face images
+
+The sidebar's **Register avatar** expander accepts an uploaded face image and
+builds a new GAGAvatar avatar from it on demand. Tracking (face detection,
+FLAME fitting, matting) runs in the separate
+[GAGAvatar_track](https://github.com/xg-chu/GAGAvatar_track) environment as a
+subprocess, because its dependency stack conflicts with the realtime runtime
+environment. Point the app at that environment:
+
+```bash
+export GAGAVATAR_TRACK_PYTHON=/path/to/gagavatar-track-env/bin/python
+export GAGAVATAR_TRACK_DIR=/path/to/GAGAvatar_track
+```
+
+(or pass `--gagavatar-track-python` / `--gagavatar-track-dir` as app
+arguments). Registered avatars are stored one directory per avatar under
+`--user-avatar-dir` (default `user_avatars/`, git-ignored) and appear as
+`gagavatar:<name>` under **Appearance**, persisting across restarts. The
+built-in `tracked.pt` asset is never modified. Tracking runs on CPU by
+default (`--gagavatar-track-device`), taking well under a minute per image
+with no GPU memory contention; switch to `cuda` for faster tracking on GPUs
+supported by the tracker environment's torch build.
+
 Interactive mode uses the OpenAI Realtime API. Store the API key in a local
 Streamlit secrets file:
 

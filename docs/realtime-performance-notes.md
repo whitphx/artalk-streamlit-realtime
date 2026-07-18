@@ -393,6 +393,35 @@ fake connection: 10 s pushed, interrupted mid-playback, truncated to the
 served duration exactly. Truncation is skipped when everything played
 (within 100 ms) and failures are logged, never fatal.
 
+## 2026-07-18: The 131,000-GiB rasterizer "OOM" solved — GPU-arch mismatch
+
+The absurd `diff_gaussian_rasterization` allocation failures (seen headless
+here, and in the 2026-07-02 meeting's A100 attempt) were a GPU-architecture
+mismatch made invisible by upstream error handling. The installed
+`diff_gaussian_rasterization_32d` binary contained SASS and PTX for
+**sm_75 only** — the home directory is NFS-shared across GPU hosts, and the
+binary had been built on the Turing host. On other architectures the kernels
+cannot launch at all, but the rasterizer's `CHECK_CUDA(A, debug)` macro only
+checks errors when `debug=True` (GAGAvatar passes `debug=False`), so the
+failed launches left buffer-size computations reading garbage and the
+failure surfaced as `Tried to allocate 131,0xx GiB` — or occasionally as
+silent black frames. Sessions "worked" or "died" depending on which host the
+app happened to run on.
+
+Fix applied: rebuilt the extension in the shared env as a fat binary with
+`TORCH_CUDA_ARCH_LIST="6.0;7.5;8.0+PTX"` (P100 + Turing + A100), using a
+throwaway conda `cuda-nvcc 12.1` toolchain to match torch's cu121. Renders
+are now correct and deterministic on the P100 host; the A100 host should be
+re-tested (its previous failure was almost certainly this same binary).
+
+Upstream-patchable, independently of anything here: an unconditional
+`cudaGetLastError()` check after kernel launches (cheap, no device sync;
+keep the sync-based deep check behind `debug`) would turn this silent
+corruption into a clear "no kernel image is available" error. Applies to
+xg-chu/diff-gaussian-rasterization and its upstream
+graphdeco-inria/diff-gaussian-rasterization, where this failure mode is a
+recurring user report.
+
 ## 2026-07-15: Windowed smoother and gc.freeze
 
 Two long-session protections:

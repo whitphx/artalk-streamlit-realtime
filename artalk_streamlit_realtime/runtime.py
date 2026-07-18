@@ -64,10 +64,20 @@ def load_style_motion(asset_dir: str, style_id: str):
 class StreamingGAGAvatarAdapter:
     """Adapter from packaged ``gagavatar.runtime`` to ARTalk's renderer API."""
 
-    def __init__(self, runtime):
+    def __init__(self, runtime, user_registry=None):
         self.runtime = runtime
+        self.user_registry = user_registry
 
     def set_avatar_id(self, avatar_id: str):
+        if (
+            avatar_id not in self.runtime.tracked_avatars
+            and self.user_registry is not None
+            and avatar_id in self.user_registry.list_ids()
+        ):
+            self.runtime.set_tracked_avatar(
+                self.user_registry.load(avatar_id), avatar_id
+            )
+            return
         self.runtime.set_avatar_id(avatar_id)
 
     def build_forward_batch(self, motion_code: torch.Tensor, _flame_model=None):
@@ -83,8 +93,11 @@ def load_gagavatar(
     model_path: str,
     tracked_path: str | None,
     flame_model_path: str | None,
+    user_avatar_dir: str | None = None,
 ):
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
+
+    from .avatar_registry import UserAvatarRegistry
 
     runtime = GAGAvatarRuntime(
         GAGAvatarRuntimeConfig(
@@ -94,5 +107,8 @@ def load_gagavatar(
             device=device,
         )
     )
-    return StreamingGAGAvatarAdapter(runtime), runtime.flame_model
+    user_registry = (
+        UserAvatarRegistry(user_avatar_dir) if user_avatar_dir else None
+    )
+    return StreamingGAGAvatarAdapter(runtime, user_registry), runtime.flame_model
 
