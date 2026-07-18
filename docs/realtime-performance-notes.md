@@ -414,13 +414,15 @@ throwaway conda `cuda-nvcc 12.1` toolchain to match torch's cu121. Renders
 are now correct and deterministic on the P100 host; the A100 host should be
 re-tested (its previous failure was almost certainly this same binary).
 
-Upstream-patchable, independently of anything here: an unconditional
-`cudaGetLastError()` check after kernel launches (cheap, no device sync;
-keep the sync-based deep check behind `debug`) would turn this silent
-corruption into a clear "no kernel image is available" error. Applies to
-xg-chu/diff-gaussian-rasterization and its upstream
-graphdeco-inria/diff-gaussian-rasterization, where this failure mode is a
-recurring user report.
+Upstream fix submitted:
+<https://github.com/xg-chu/diff-gaussian-rasterization/pull/1>. Deeper
+analysis there: besides the debug-gated launch checks, the cub size queries
+in `fromChunk` discard their error status, so on failure the buffer size is
+an uninitialized stack `size_t` (~2^47) — which is exactly where the
+131,0xx-GiB number and its per-process "nondeterminism" came from. The same
+defect exists in the root graphdeco-inria/diff-gaussian-rasterization, where
+this failure mode is a recurring user report. The shared env's installed
+extension is built from the patched source (fat binary, sm_60/75/80+PTX).
 
 ## 2026-07-15: Windowed smoother and gc.freeze
 
