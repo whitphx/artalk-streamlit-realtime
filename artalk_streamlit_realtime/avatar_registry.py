@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import torch
@@ -65,6 +67,24 @@ class UserAvatarRegistry:
     def delete(self, avatar_id: str) -> None:
         shutil.rmtree(self.root / avatar_id)
 
+    def last_track_seconds(self) -> float | None:
+        """Duration of the most recent successful tracking run, persisted so
+        the UI can show a measured estimate instead of a guess."""
+        try:
+            return float((self.root / ".last_track_seconds").read_text())
+        except (OSError, ValueError):
+            return None
+
+    def allocate_id(self, base_id: str, reserved: Iterable[str] = ()) -> str:
+        """``base_id`` if free, else the first free ``base_id-N``."""
+        taken = set(self.list_ids()) | set(reserved)
+        if base_id not in taken:
+            return base_id
+        n = 2
+        while f"{base_id}-{n}" in taken:
+            n += 1
+        return f"{base_id}-{n}"
+
     def register(self, avatar_id: str, image_bytes: bytes, suffix: str) -> dict:
         if not self.can_register:
             raise AvatarRegistrationError(
@@ -72,7 +92,16 @@ class UserAvatarRegistry:
                 "and GAGAVATAR_TRACK_DIR (or the matching CLI options)."
             )
         avatar_dir = self.root / avatar_id
-        avatar_dir.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            # Creating the directory reserves the id; callers pick a free one
+            # via allocate_id(), and this converts races into a clean error
+            # instead of an overwrite.
+            avatar_dir.mkdir()
+        except FileExistsError:
+            raise AvatarRegistrationError(
+                f"Avatar `{avatar_id}` already exists."
+            ) from None
         source_path = avatar_dir / f"source{suffix}"
         source_path.write_bytes(image_bytes)
         tracked_path = avatar_dir / "tracked.pt"
@@ -88,6 +117,7 @@ class UserAvatarRegistry:
             "--device",
             self.track_device,
         ]
+        track_started = time.monotonic()
         try:
             proc = subprocess.run(
                 command,
@@ -105,4 +135,9 @@ class UserAvatarRegistry:
             lines = (proc.stderr or proc.stdout or "").strip().splitlines()
             detail = lines[-1] if lines else f"exit code {proc.returncode}"
             raise AvatarRegistrationError(f"Avatar tracking failed: {detail}")
+        elapsed_s = time.monotonic() - track_started
+        try:
+            (self.root / ".last_track_seconds").write_text(f"{elapsed_s:.1f}")
+        except OSError:
+            pass
         return self.load(avatar_id)

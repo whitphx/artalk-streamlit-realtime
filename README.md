@@ -181,7 +181,9 @@ export GAGAVATAR_TRACK_DIR=/path/to/GAGAvatar_track
 (or pass `--gagavatar-track-python` / `--gagavatar-track-dir` as app
 arguments). Registered avatars are stored one directory per avatar under
 `--user-avatar-dir` (default `user_avatars/`, git-ignored) and appear as
-`gagavatar:<name>` under **Appearance**, persisting across restarts. The
+`gagavatar:<name>` under **Appearance**, persisting across restarts. Names
+are slugified, and a name that is already taken gets an automatic `-2` /
+`-3` suffix instead of overwriting the existing avatar. The
 built-in `tracked.pt` asset is never modified. Tracking runs on CPU by
 default (`--gagavatar-track-device`), taking well under a minute per image
 with no GPU memory contention; switch to `cuda` for faster tracking on GPUs

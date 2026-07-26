@@ -9,6 +9,10 @@ environment variables.
 
 from __future__ import annotations
 
+import faulthandler
+import signal
+import threading
+import time
 from pathlib import Path
 
 import av
@@ -73,6 +77,49 @@ def get_secret(name: str, default: str = "") -> str:
     return str(value) if value is not None else default
 
 
+def register_avatar_with_progress(
+    registry: UserAvatarRegistry,
+    avatar_id: str,
+    image_bytes: bytes,
+    suffix: str,
+    reference_s: float,
+) -> dict:
+    """Run the blocking tracking subprocess in a worker thread while the
+    script thread animates a progress bar against the measured duration of
+    the previous run."""
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            outcome["entry"] = registry.register(avatar_id, image_bytes, suffix)
+        except Exception as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, name="AvatarTracking", daemon=True)
+    started = time.monotonic()
+    worker.start()
+    bar = st.progress(0.0)
+    while worker.is_alive():
+        elapsed = time.monotonic() - started
+        bar.progress(
+            min(elapsed / reference_s, 0.99),
+            text=(
+                f"Tracking face... {elapsed:.0f} s "
+                f"(took {reference_s:.0f} s last time)"
+            ),
+        )
+        time.sleep(0.25)
+    worker.join()
+    if "error" in outcome:
+        bar.empty()
+        raise outcome["error"]
+    bar.progress(
+        1.0,
+        text=f"Tracking face... done in {time.monotonic() - started:.0f} s",
+    )
+    return outcome["entry"]
+
+
 def split_appearance(value: str) -> tuple[str, str | None]:
     if value == DEFAULT_APPEARANCE:
         return "mesh", None
@@ -120,6 +167,9 @@ def stop_pipeline() -> None:
 
 def main() -> None:
     gc_pause_probe.install()
+    # `kill -USR1 <pid>` dumps every thread's Python stack to stderr (the
+    # launcher terminal) — the first thing to reach for when the app hangs.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     args = parse_args()
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
@@ -217,6 +267,19 @@ def main() -> None:
             )
 
         with st.expander("Register avatar"):
+            registered_flash = st.session_state.pop("avatar_registered_flash", None)
+            if registered_flash is not None:
+                elapsed_s = registered_flash.get("elapsed_s")
+                took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
+                st.success(
+                    f"Registered{took} — select "
+                    f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
+                )
+                st.image(
+                    registered_flash["vis_image"],
+                    clamp=True,
+                    caption=f"Tracked fit: {registered_flash['avatar_id']}",
+                )
             if not user_registry.can_register:
                 st.caption(
                     "Avatar registration needs the GAGAvatar tracker. Set "
@@ -249,27 +312,41 @@ def main() -> None:
                         avatar_id = slugify_avatar_id(avatar_name)
                         if not avatar_id:
                             st.error("Avatar name is empty after sanitizing.")
-                        elif avatar_id in gagavatar_ids or avatar_id in user_avatar_ids:
-                            st.error(f"Avatar `{avatar_id}` already exists.")
                         else:
+                            avatar_id = user_registry.allocate_id(
+                                avatar_id, reserved=gagavatar_ids
+                            )
                             suffix = Path(upload.name).suffix.lower() or ".png"
+                            last_track_s = user_registry.last_track_seconds()
                             try:
-                                with st.spinner("Tracking face (takes ~10-30 s)..."):
-                                    entry = user_registry.register(
-                                        avatar_id, upload.getvalue(), suffix
+                                if last_track_s is None:
+                                    with st.spinner("Tracking face (may take a minute)..."):
+                                        entry = user_registry.register(
+                                            avatar_id, upload.getvalue(), suffix
+                                        )
+                                else:
+                                    entry = register_avatar_with_progress(
+                                        user_registry,
+                                        avatar_id,
+                                        upload.getvalue(),
+                                        suffix,
+                                        last_track_s,
                                     )
                             except AvatarRegistrationError as exc:
                                 st.error(str(exc))
                             else:
-                                st.success(
-                                    f"Registered — select `gagavatar:{avatar_id}` "
-                                    "under Appearance."
-                                )
-                                st.image(
-                                    entry["vis_image"].numpy().transpose(1, 2, 0),
-                                    clamp=True,
-                                    caption=f"Tracked fit: {avatar_id}",
-                                )
+                                # The Appearance selectbox above rendered before
+                                # this handler ran; rerun so it includes the new
+                                # avatar, carrying the confirmation across as a
+                                # flash.
+                                st.session_state["avatar_registered_flash"] = {
+                                    "avatar_id": avatar_id,
+                                    "vis_image": entry["vis_image"]
+                                    .numpy()
+                                    .transpose(1, 2, 0),
+                                    "elapsed_s": user_registry.last_track_seconds(),
+                                }
+                                st.rerun()
             if user_avatar_ids:
                 delete_id = st.selectbox(
                     "Delete registered avatar",
