@@ -52,6 +52,7 @@ from artalk_streamlit_realtime.diagnostics import (
     save_diagnostics_snapshot,
 )
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
+from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -83,11 +84,11 @@ def register_avatar_with_progress(
     avatar_id: str,
     image_bytes: bytes,
     suffix: str,
-    reference_s: float,
+    reference_s: float | None,
 ) -> dict:
     """Run the blocking tracking subprocess in a worker thread while the
     script thread animates a progress bar against the measured duration of
-    the previous run."""
+    the previous run (or elapsed time only, on the first run)."""
     outcome: dict = {}
 
     def run() -> None:
@@ -101,14 +102,21 @@ def register_avatar_with_progress(
     worker.start()
     bar = st.progress(0.0)
     while worker.is_alive():
+        script_hang_watchdog.beat()
         elapsed = time.monotonic() - started
-        bar.progress(
-            min(elapsed / reference_s, 0.99),
-            text=(
-                f"Tracking face... {elapsed:.0f} s "
-                f"(took {reference_s:.0f} s last time)"
-            ),
-        )
+        if reference_s is not None:
+            bar.progress(
+                min(elapsed / reference_s, 0.99),
+                text=(
+                    f"Tracking face... {elapsed:.0f} s "
+                    f"(took {reference_s:.0f} s last time)"
+                ),
+            )
+        else:
+            bar.progress(
+                min(elapsed / 60.0, 0.99),
+                text=f"Tracking face... {elapsed:.0f} s (first run, may take a minute)",
+            )
         time.sleep(0.25)
     worker.join()
     if "error" in outcome:
@@ -318,21 +326,14 @@ def main() -> None:
                                 avatar_id, reserved=gagavatar_ids
                             )
                             suffix = Path(upload.name).suffix.lower() or ".png"
-                            last_track_s = user_registry.last_track_seconds()
                             try:
-                                if last_track_s is None:
-                                    with st.spinner("Tracking face (may take a minute)..."):
-                                        entry = user_registry.register(
-                                            avatar_id, upload.getvalue(), suffix
-                                        )
-                                else:
-                                    entry = register_avatar_with_progress(
-                                        user_registry,
-                                        avatar_id,
-                                        upload.getvalue(),
-                                        suffix,
-                                        last_track_s,
-                                    )
+                                entry = register_avatar_with_progress(
+                                    user_registry,
+                                    avatar_id,
+                                    upload.getvalue(),
+                                    suffix,
+                                    user_registry.last_track_seconds(),
+                                )
                             except AvatarRegistrationError as exc:
                                 st.error(str(exc))
                             else:
@@ -589,4 +590,9 @@ def main() -> None:
             render_diagnostics_fragment()
 
 
-main()
+script_hang_watchdog.start()
+script_hang_watchdog.mark_run_start()
+try:
+    main()
+finally:
+    script_hang_watchdog.mark_run_end()
