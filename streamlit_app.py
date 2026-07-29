@@ -421,6 +421,7 @@ def main() -> None:
             )
             st.session_state[PIPELINE_KEY] = pipeline
             st.session_state[PIPELINE_CONFIG_KEY] = config
+            freeze_loaded_objects(force=True)
         return pipeline
 
     if mode == "Loopback":

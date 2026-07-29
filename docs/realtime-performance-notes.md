@@ -393,6 +393,50 @@ fake connection: 10 s pushed, interrupted mid-playback, truncated to the
 served duration exactly. Truncation is skipped when everything played
 (within 100 ms) and failures are logged, never fatal.
 
+## 2026-07-29: Fast-forward audio at long avatar turns — render backpressure
+
+Diagnostics snapshots from production sessions (captured with the new
+"Save diagnostics snapshot" button) identified two distinct residual
+problems:
+
+1. **Co-tenant GPU contention**: `avatar_forward_batch` intermittently 3x
+   slower (100 ms vs 33 ms baseline) on the shared host, draining the output
+   buffer to zero and causing real underruns. Mitigations: larger
+   `--output-prebuffer-seconds` on shared hosts, and (planned) GPU-utilization
+   sampling in metrics to correlate with neighbors' load.
+2. **Audio "fast-forwarding" at the start of long avatar turns** — one
+   session skipped exactly 4.0 s (`audio_samples_skipped_for_dropped_video`
+   64000). Upstream delivers response audio in bursts and rendering runs
+   ~2.5x realtime, so unplayed backlog blows past the 200-frame video-queue
+   cap and the paired-eviction safety path (built for the barge-in freeze
+   fix) fires as routine behavior, skipping media in ~0.6 s bites.
+
+Fix for 2: the render loop now applies backpressure — when the video queue
+reaches a high-water mark (150 frames ≈ 6 s ahead), the worker pauses until
+playback drains it, so frames are rendered just in time and eviction remains
+a last-resort safety only. Verified headless: a 16 s burst that previously
+evicted ~4 s now plays with zero drops, zero skipped audio, zero underruns
+(`render_backpressure_waits` / `render_backpressure_wait` metrics record the
+pauses). Backpressure also bounds the audio buffer (~6 s), so memory stays
+capped on both queues.
+
+Trade-offs of backpressure: turn-start latency is unaffected (it only
+engages once playback is already 6 s behind the renderer), memory and GPU
+use improve (no rendering of frames that would be evicted), but **barge-in
+staleness during long responses gets somewhat worse on average**. Before,
+a long response was typically fully rendered ahead, so an interrupt flushed
+everything and the avatar went quiet almost immediately; now the worker is
+usually mid-chunk when the interrupt arrives, and the remainder of that one
+model chunk still renders and plays after the flush — up to ~4 s of stale
+speech worst case (same bound as before, but hit more often; the input
+queue holding the rest of the response is still drained by the flush). If
+this proves annoying in practice, the follow-up is a flush epoch: the
+worker checks a generation counter before publishing and discards segments
+belonging to a superseded response. A second, minor effect: post-ARTalk /
+pre-render-wait diagnostics now include intentional waiting, so the new
+backpressure metrics should be consulted before reading those as
+regressions.
+
 ## 2026-07-18: The 131,000-GiB rasterizer "OOM" solved — GPU-arch mismatch
 
 The absurd `diff_gaussian_rasterization` allocation failures (seen headless

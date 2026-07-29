@@ -88,16 +88,22 @@ gc_pause_probe = GcPauseProbe()
 _frozen = False
 
 
-def freeze_loaded_objects() -> None:
+def freeze_loaded_objects(force: bool = False) -> None:
     """Collect once, then move all currently tracked objects into the
     permanent generation so periodic gen-2 passes stop traversing the loaded
     model graphs (each pass holds the GIL for its full duration, stalling the
     realtime worker). Reference counting still frees frozen objects when
     their refcounts drop; only cycle-trapped frozen objects would persist.
     Call after the heavy runtimes are loaded; the "frozen objects" readout in
-    the GC panel confirms the effect."""
+    the GC panel confirms the effect.
+
+    ``force`` re-freezes even after the initial call: a long-lived server
+    accumulates persistent objects from later sessions (pipelines, cached
+    avatars) that the initial freeze did not cover, so gen-2 passes slowly
+    grow back; re-freezing at rare events (pipeline creation) keeps them
+    small."""
     global _frozen
-    if _frozen:
+    if _frozen and not force:
         return
     _frozen = True
     gc.collect()
