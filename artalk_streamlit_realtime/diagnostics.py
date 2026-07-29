@@ -309,6 +309,7 @@ def spike_context_text(context: dict) -> str:
     if not context:
         return "-"
     preferred_keys = [
+        "gpu_util_pct",
         "pipeline_call",
         "segment_index",
         "segment_start_frame",
@@ -339,17 +340,6 @@ def render_pipeline_diagnostics(pipeline: ARTalkPipeline) -> None:
     spikes = snapshot.get("spikes", [])
 
     st.subheader("Pipeline diagnostics")
-    if st.button(
-        "Save diagnostics snapshot",
-        key="save_diagnostics_snapshot",
-        help=(
-            "Click the moment you observe a jitter or lag; dumps all "
-            "counters, spikes, and GC state to a timestamped JSON file "
-            "on the server."
-        ),
-    ):
-        snapshot_path = save_diagnostics_snapshot(pipeline)
-        st.caption(f"Saved `{snapshot_path}`")
     total_latency = duration_stat(durations, "frame_audio_to_video_served_latency")
     published_latency = duration_stat(durations, "frame_audio_to_video_midpoint_latency")
     frame_first_latency = duration_stat(durations, "frame_audio_to_video_first_latency")

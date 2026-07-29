@@ -49,6 +49,7 @@ from artalk_streamlit_realtime.diagnostics import (
     render_gc_panel,
     render_pipeline_diagnostics,
     render_profiler_panel,
+    save_diagnostics_snapshot,
 )
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
@@ -566,6 +567,19 @@ def main() -> None:
         render_gc_panel(gc_pause_probe)
 
     with diagnostics_col:
+        # Deliberately outside the auto-rerunning fragments: a button inside
+        # a run_every fragment races with its reruns and clicks get lost.
+        if st.button(
+            "Save diagnostics snapshot",
+            key="save_diagnostics_snapshot",
+            help=(
+                "Click the moment you observe a jitter or lag; dumps all "
+                "counters, spikes, and GC state to a timestamped JSON file "
+                "on the server."
+            ),
+        ):
+            snapshot_path = save_diagnostics_snapshot(pipeline)
+            st.caption(f"Saved `{snapshot_path}`")
         if args.profile_trace_dir:
             with st.expander("Torch profiler", expanded=True):
                 render_profiler_fragment()
