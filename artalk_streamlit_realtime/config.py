@@ -123,6 +123,21 @@ def parse_args() -> argparse.Namespace:
         type=str,
     )
     parser.add_argument(
+        "--artalk-checkpoint",
+        default=os.environ.get("ARTALK_CHECKPOINT"),
+        type=str,
+        help=(
+            "Path to an ARTalk model checkpoint, overriding the asset "
+            "tree's ARTalk_<audio-encoder>.pt (e.g. a retrained variant)."
+        ),
+    )
+    parser.add_argument(
+        "--artalk-audio-encoder",
+        default=os.environ.get("ARTALK_AUDIO_ENCODER", "wav2vec"),
+        type=str,
+        help="ARTalk audio encoder architecture name.",
+    )
+    parser.add_argument(
         "--gagavatar-asset-dir",
         default=os.environ.get("GAGAVATAR_ASSET_DIR"),
         type=str,

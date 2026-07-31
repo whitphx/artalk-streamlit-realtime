@@ -253,6 +253,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda", type=str)
     parser.add_argument("--asset-dir", default=os.environ.get("ARTALK_ASSET_DIR"), type=str)
+    parser.add_argument("--artalk-checkpoint", default=os.environ.get("ARTALK_CHECKPOINT"), type=str)
+    parser.add_argument(
+        "--artalk-audio-encoder",
+        default=os.environ.get("ARTALK_AUDIO_ENCODER", "wav2vec"),
+        type=str,
+    )
     parser.add_argument("--audio", default=None, type=str, help="Optional wav; defaults to seeded noise.")
     parser.add_argument("--seconds", default=12.0, type=float)
     parser.add_argument("--configs", default=DEFAULT_CONFIGS, type=str)
@@ -263,7 +269,13 @@ def main() -> None:
     audio = load_audio(args.audio, args.seconds)
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     artalk_runtime = ARTalkRuntime(
-        ARTalkRuntimeConfig(assets=artalk_assets, device=args.device, flame_scale=1.0)
+        ARTalkRuntimeConfig(
+            assets=artalk_assets,
+            audio_encoder=args.artalk_audio_encoder,
+            checkpoint_path=args.artalk_checkpoint,
+            device=args.device,
+            flame_scale=1.0,
+        )
     )
     mesh_renderers = {
         res: RenderMesh(
@@ -301,6 +313,7 @@ def main() -> None:
         "torch": torch.__version__,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
         "audio": args.audio or f"seeded-noise-{args.seconds:.0f}s",
+        "artalk_checkpoint": str(artalk_runtime.checkpoint_path),
     }
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)

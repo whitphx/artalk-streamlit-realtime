@@ -14,11 +14,19 @@ from .config import DEFAULT_STYLE
 
 
 @st.cache_resource
-def load_artalk_runtime(device: str, render_res: int, asset_root: str):
+def load_artalk_runtime(
+    device: str,
+    render_res: int,
+    asset_root: str,
+    audio_encoder: str = "wav2vec",
+    checkpoint_path: str | None = None,
+):
     assets = ARTalkAssets.from_root(asset_root)
     runtime = ARTalkRuntime(
         ARTalkRuntimeConfig(
             assets=assets,
+            audio_encoder=audio_encoder,
+            checkpoint_path=checkpoint_path,
             device=device,
             flame_scale=1.0,
         )

@@ -203,6 +203,8 @@ def main() -> None:
             args.device,
             args.render_res,
             str(asset_dir),
+            audio_encoder=args.artalk_audio_encoder,
+            checkpoint_path=args.artalk_checkpoint,
         )
     except Exception as exc:
         st.error(f"Failed to initialize ARTalk runtime: {exc}")
@@ -219,6 +221,7 @@ def main() -> None:
     )
 
     with st.sidebar:
+        st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
         gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
         user_avatar_ids = user_registry.list_ids()
         style_ids = list_style_ids(str(asset_dir))
@@ -381,6 +384,8 @@ def main() -> None:
             )
         config = (
             args.device,
+            args.artalk_audio_encoder,
+            args.artalk_checkpoint,
             mode,
             render_res,
             args.render_batch_size,

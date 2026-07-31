@@ -65,6 +65,20 @@ Override the configured root when using different assets:
 export ARTALK_ASSET_DIR=/path/to/ARTalk/assets
 ```
 
+To run a different ARTalk model variant (e.g. a retrained checkpoint that
+shares the default audio encoder), point at it directly; the sidebar shows
+which checkpoint is loaded:
+
+```bash
+export ARTALK_CHECKPOINT=/path/to/ARTalk_english.pt
+# or: scripts/run_app.sh -- --artalk-checkpoint /path/to/ARTalk_english.pt
+```
+
+(`--artalk-audio-encoder` selects the encoder architecture when a variant
+uses a different one.) `scripts/check_streaming_parity.py` (ARTalk repo) and
+`scripts/benchmark_pipeline.py` accept the same overrides for validating a
+new checkpoint before wiring it into a session.
+
 For non-standard layouts, pass `--gagavatar-asset-dir`,
 `--gagavatar-model-path`, `--gagavatar-tracked-path`, or
 `--gagavatar-flame-model-path` as Streamlit app arguments.
