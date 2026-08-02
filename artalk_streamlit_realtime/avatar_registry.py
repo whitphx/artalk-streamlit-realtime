@@ -132,9 +132,29 @@ class UserAvatarRegistry:
             ) from None
         if proc.returncode != 0 or not tracked_path.exists():
             shutil.rmtree(avatar_dir, ignore_errors=True)
-            lines = (proc.stderr or proc.stdout or "").strip().splitlines()
-            detail = lines[-1] if lines else f"exit code {proc.returncode}"
-            raise AvatarRegistrationError(f"Avatar tracking failed: {detail}")
+            log_path = self.root / ".last_track_error.log"
+            try:
+                log_path.write_text(
+                    f"command: {' '.join(command)}\n\n"
+                    f"--- stdout ---\n{proc.stdout or ''}\n"
+                    f"--- stderr ---\n{proc.stderr or ''}\n"
+                )
+            except OSError:
+                log_path = None
+            # CUDA failures span several lines and the informative one is
+            # rarely last; prefer lines that name an error.
+            lines = [
+                line
+                for line in (proc.stderr or proc.stdout or "").splitlines()
+                if line.strip()
+            ]
+            tail = lines[-8:]
+            named = [l for l in tail if "rror" in l or "failed" in l]
+            detail = " | ".join(named or tail[-2:]) or f"exit code {proc.returncode}"
+            hint = f" (full log: {log_path})" if log_path else ""
+            raise AvatarRegistrationError(
+                f"Avatar tracking failed: {detail[:400]}{hint}"
+            )
         elapsed_s = time.monotonic() - track_started
         try:
             (self.root / ".last_track_seconds").write_text(f"{elapsed_s:.1f}")
