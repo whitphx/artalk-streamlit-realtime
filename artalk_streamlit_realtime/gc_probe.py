@@ -21,6 +21,7 @@ PAUSE_EVENT_MIN_MS = 10.0
 class GcPauseProbe:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._samples_dropped = 0
         # Collections never overlap (the collector holds the GIL from the
         # "start" callback through "stop"), so this needs no locking.
         self._pass_start_s: float | None = None
@@ -49,7 +50,16 @@ class GcPauseProbe:
         now = time.perf_counter()
         elapsed_ms = (now - start_s) * 1000.0
         generation = int(info.get("generation", 0))
-        with self._lock:
+        # This callback fires mid-collection, and a collection can be
+        # triggered by an allocation made while this same thread already
+        # holds self._lock (snapshot()'s copies). A blocking acquire here
+        # would self-deadlock on the non-reentrant lock and poison it for
+        # the whole process — observed as app-wide hangs on every script
+        # rerun. Drop the sample rather than ever waiting.
+        if not self._lock.acquire(blocking=False):
+            self._samples_dropped += 1
+            return
+        try:
             stat = self._stats[generation]
             stat["count"] += 1
             stat["total_ms"] += elapsed_ms
@@ -65,6 +75,8 @@ class GcPauseProbe:
                         "uncollectable": int(info.get("uncollectable", 0)),
                     }
                 )
+        finally:
+            self._lock.release()
 
     def snapshot(self) -> dict:
         now = time.perf_counter()
@@ -76,6 +88,7 @@ class GcPauseProbe:
         return {
             "generations": generations,
             "recent": recent,
+            "samples_dropped": self._samples_dropped,
             "enabled": gc.isenabled(),
             "thresholds": gc.get_threshold(),
             "counts": gc.get_count(),
