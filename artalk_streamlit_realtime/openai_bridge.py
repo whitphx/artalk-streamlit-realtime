@@ -250,6 +250,12 @@ class OpenAIRealtimeBridge:
                 pcm = base64.b64decode(event.delta)
                 self._track_response_item(event, pcm)
                 self._push_response_audio(pcm)
+            elif etype == "response.output_audio.done":
+                # The response's audio is complete; flush the sub-chunk tail
+                # immediately instead of waiting for the silence pump's
+                # realtime-paced fill, which lands seconds too late and
+                # pauses playback right before the final words.
+                self._pipeline.request_chunk_flush()
             elif etype == "input_audio_buffer.speech_started":
                 # Barge-in: server VAD detected the user talking over the
                 # assistant. OpenAI cancels its in-flight response; drop the

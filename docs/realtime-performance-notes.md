@@ -393,6 +393,42 @@ fake connection: 10 s pushed, interrupted mid-playback, truncated to the
 served duration exactly. Truncation is skipped when everything played
 (within 100 ms) and failures are logged, never fatal.
 
+## 2026-08-02: Mid-turn pause before a response's final words — chunk flush
+
+Reported: a ~4 s answer ("...How about you?") paused for 1-2 s right before
+its last words, then resumed. The diagnostics snapshot showed the mechanism
+exactly:
+
+- The response was 68,784 samples (4.3 s). Chunk 1 (64,000) rendered and
+  played; the final 4,784 samples sat in the streamer buffer below the
+  model's chunk threshold.
+- The only path to flush that tail was the silence pump, whose gates are
+  deliberately conservative for microphone input: 1.0 s idle threshold
+  (`recent_input_skips` 18), skips while the worker renders
+  (`worker_busy_skips` 22 ≈ 2.2 s), and realtime-paced 0.25 s silence
+  chunks (~3.7 s to fill the remaining 59,216 samples). Chunk 2 therefore
+  landed ~1 s after chunk 1 finished playing: `min_audio_out_buffer` 0.0,
+  21 underrun frames — the audible pause.
+
+This is the 4-second chunk floor biting *mid-turn* for any response whose
+length is not a multiple of 4 s — which the earlier fixes (eviction,
+backpressure) had been masking under larger problems.
+
+Fix: `ARTalkPipeline.request_chunk_flush()` enqueues a `ChunkFlushRequest`
+through the same FIFO as audio; when the worker processes it, it pads the
+partial chunk to the boundary with exactly the missing silence (so it can
+never race ahead of still-queued audio, and the padding is sample-exact).
+The OpenAI bridge fires it on `response.output_audio.done` — the upstream's
+explicit end-of-audio signal — replacing heuristics with ground truth. The
+silence pump remains as the fallback for Loopback (no done event) and for
+cancelled responses. Counters: `chunk_flush_requests`,
+`chunk_flush_padded_samples`.
+
+Verified headless with the exact failing shape (4.3 s burst + flush): the
+tail chunk is ready 1.0 s after response end (previously ~6-7 s), padding
+is exact (59,216 samples), zero underruns through full playback. Confirmed
+live: the pause before final words is gone.
+
 ## 2026-08-02: The recurring full-rerun hang — GC-probe self-deadlock
 
 Since 2026-07-09 the app intermittently froze on full script reruns (stop
