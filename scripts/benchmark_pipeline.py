@@ -29,13 +29,12 @@ import logging
 import math
 import os
 import platform
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-import sys
 
 import numpy as np
 import torch
@@ -145,6 +144,22 @@ def duration_total_ms(durations: dict, key: str) -> float:
     return float(durations.get(key, {}).get("total_ms", 0.0))
 
 
+class _ErrorCapture(logging.Handler):
+    """Collects pipeline worker exceptions so failed configs carry their
+    reason in the result JSON instead of only in the console."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.errors: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            message += f": {type(exc).__name__}: {exc}"
+        self.errors.append(message)
+
+
 def run_config(
     config: BenchConfig,
     artalk_runtime,
@@ -156,6 +171,8 @@ def run_config(
 ) -> dict:
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
+    error_capture = _ErrorCapture()
+    logging.getLogger("artalk.realtime_pipeline").addHandler(error_capture)
     kwargs = dict(
         model=artalk_runtime.model,
         flame_model=artalk_runtime.flame_model,
@@ -268,6 +285,10 @@ def run_config(
         "frames": frames,
     }
     pipeline.stop()
+    logging.getLogger("artalk.realtime_pipeline").removeHandler(error_capture)
+    if error_capture.errors:
+        result["errors"] = error_capture.errors[:5]
+        print(f"  {config.label}: worker error: {error_capture.errors[0]}", flush=True)
     time.sleep(0.3)
     return result
 
@@ -404,6 +425,11 @@ def main() -> None:
             f"{r['parity_psnr_db'] if r['parity_psnr_db'] is not None else '   ref':>8}"
         )
     print(f"\nwritten: {out_path}")
+    # Skip interpreter teardown: torch.compile/CUDA Graphs artifacts abort
+    # in atexit CUDA cleanup (harmless here — all results are already on
+    # disk — but the core dump alarms callers).
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
