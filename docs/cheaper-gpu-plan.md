@@ -88,6 +88,34 @@ Turing, A100) unchanged.
 - P100 16 GB: remains supported on the non-compile path (current status).
 - Quality: no visible degradation at 512 fp16 (PSNR gate vs fp32).
 
+## P1/P2 results (2026-08-02)
+
+Measured across katsuo (P100 sm_60), fugu (Quadro RTX 8000 sm_75), and
+beluga (A100 sm_80), gagavatar:512:b8, parity-gated:
+
+| Lever | Verdict |
+| --- | --- |
+| GPU-side uint8 copy | Keep on everywhere: byte-exact, removes the CPU convert and 4x of the PCIe traffic. |
+| fp16 autocast | No throughput win on any card (Pascal 2.8x *slower*; tensor-core cards ±5%); quality fine (~45 dB). Only value: −1.3 GB VRAM. The pipeline's kernels are not the bottleneck, so making them cheaper does not help. |
+| torch.compile (inductor) | Blocked: torch 2.4 inductor cannot compile the upsampler (FunctionalTensor bug at `F.interpolate`); a shared-env torch upgrade is not justified by the expected win. |
+| CUDA-graph capture (upsampler) | Works on every generation, exact parity (72–73 dB): A100 0.325→0.304x, RTX 8000 0.616→0.591x, P100 neutral (compute-busy). Cost: +3.2 GB VRAM (graph pool). |
+
+Conclusion: per-op launch overhead is spread across the whole eager
+forward; graphing the largest block recovers only its slice (~4–7%),
+and the Gaussian rasterizer's per-call dynamically-sized buffers make
+whole-forward capture impossible. **The fp32 eager pipeline is near its
+software ceiling.** Remaining headroom lives in P3 (resolution presets
+for the 8 GB tier) and P4 (a lighter upsampler — a model-side change).
+
+Per-tier recommendations as of these measurements:
+
+- A100 / 48 GB-class: `--render-uint8-gpu --renderer-compile` →
+  0.30x (3.3x sustained headroom).
+- P100 16 GB: `--render-uint8-gpu` only (graphs are VRAM-costly and
+  throughput-neutral there).
+- 8 GB tier: uint8 + a 384 preset (P3); graphs unaffordable, fp16's
+  VRAM saving may earn its place here — measure in P3.
+
 ## Phasing
 
 - **P0** — benchmark harness + baseline matrix on the hosts we have.
