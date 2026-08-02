@@ -393,6 +393,56 @@ fake connection: 10 s pushed, interrupted mid-playback, truncated to the
 served duration exactly. Truncation is skipped when everything played
 (within 100 ms) and failures are logged, never fatal.
 
+## 2026-08-02: The recurring full-rerun hang — GC-probe self-deadlock
+
+Since 2026-07-09 the app intermittently froze on full script reruns (stop
+clicks, snapshot-button clicks), with the process alive and the pipeline
+still logging. The hung process ran on a host without interactive access at
+incident time, which drove the forensics tooling now in the app: a SIGUSR1
+faulthandler dump, and then the `ScriptHangWatchdog`
+(`artalk_streamlit_realtime/hang_watchdog.py`), which auto-dumps every
+thread's stack to `diagnostics_snapshots/hang-*.txt` when a script run
+exceeds 90 s and re-dumps periodically so an incident's progression is
+visible.
+
+The watchdog's dumps caught the cause in the act:
+
+- `GcPauseProbe.snapshot()` copied its stats while holding the probe lock;
+  the copies allocate.
+- One allocation triggered a garbage collection on that same thread, and
+  the collection's stop callback (`_on_gc_event`) blocked acquiring the
+  same non-reentrant lock — a permanent self-deadlock (the dump shows
+  `_on_gc_event` stacked directly on `snapshot`, with faulthandler's
+  "Garbage-collecting" marker).
+- The poisoned lock then wedged every subsequent script rerun at its first
+  line, `gc_pause_probe.install()` — the dumps show wedged script threads
+  accumulating (2 → 3) across the incident — while media threads stayed
+  healthy. The deadlocked callback also wedges the collector mid-collection,
+  suppressing garbage collection process-wide, the likely cause of the
+  multi-minute audio anomalies observed during incidents.
+- The trigger was probabilistic (one gen-0 dice roll per 1 Hz panel
+  refresh), which is why hangs appeared sporadic and correlated loosely
+  with clicking things.
+
+Fix: the callback uses a non-blocking acquire and drops the sample on
+contention (`samples_dropped` in the snapshot). Reproduced the trigger
+against the fix: a collection fired while the lock is held completes
+without deadlock.
+
+Lessons for refactoring or re-implementation:
+
+- A `gc.callbacks` hook runs on whatever thread triggered the collection,
+  including mid-allocation inside a critical section of the same code that
+  the hook needs — it must never block on a lock that user code holds
+  around allocations. Non-blocking acquire + lossy sampling is the correct
+  shape; so is keeping the callback allocation-free where possible.
+- Widgets that must not lose interactions (e.g. the snapshot button) cannot
+  live inside `run_every` fragments: auto-reruns race with clicks and
+  silently swallow them.
+- The watchdog + one-click snapshot pattern is what solved this: hangs on
+  unreachable hosts self-document to a shared filesystem. Keep both in any
+  future incarnation of this app.
+
 ## 2026-07-29: Fast-forward audio at long avatar turns — render backpressure
 
 Diagnostics snapshots from production sessions (captured with the new
