@@ -34,8 +34,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import sys
+
 import numpy as np
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.getLogger("artalk.realtime_pipeline").setLevel(logging.ERROR)
 
@@ -88,10 +92,11 @@ def load_audio(path: str | None, seconds: float) -> np.ndarray:
 
 
 def build_gagavatar(device: str, artalk_assets: ARTalkAssets):
-    from gagavatar.assets import GAGAvatarAssets
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
-    assets = GAGAvatarAssets.from_artalk_assets(artalk_assets)
+    from artalk_streamlit_realtime.assets import gagavatar_assets_in_artalk_tree
+
+    assets = gagavatar_assets_in_artalk_tree(artalk_assets)
     runtime = GAGAvatarRuntime(
         GAGAvatarRuntimeConfig(assets=assets, device=device)
     )
@@ -124,6 +129,7 @@ def run_config(
     gagavatar,
     audio: np.ndarray,
     device: str,
+    render_uint8_gpu: bool = False,
 ) -> dict:
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
@@ -135,6 +141,7 @@ def run_config(
         render_res=config.render_res,
         render_batch_size=config.render_batch_size,
         renderer_mode=config.renderer_mode,
+        renderer_output_uint8=render_uint8_gpu,
     )
     if config.renderer_mode == "gagavatar":
         adapter, gaga_flame, shape_id = gagavatar
@@ -262,6 +269,11 @@ def main() -> None:
     parser.add_argument("--audio", default=None, type=str, help="Optional wav; defaults to seeded noise.")
     parser.add_argument("--seconds", default=12.0, type=float)
     parser.add_argument("--configs", default=DEFAULT_CONFIGS, type=str)
+    parser.add_argument(
+        "--render-uint8-gpu",
+        action="store_true",
+        help="Enable GPU-side uint8 conversion in all benchmarked configs.",
+    )
     parser.add_argument("--output-dir", default="benchmarks", type=str)
     args = parser.parse_args()
 
@@ -300,6 +312,7 @@ def main() -> None:
                 gagavatar,
                 audio,
                 args.device,
+                render_uint8_gpu=args.render_uint8_gpu,
             )
         )
     add_parity(results)
@@ -314,6 +327,7 @@ def main() -> None:
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
         "audio": args.audio or f"seeded-noise-{args.seconds:.0f}s",
         "artalk_checkpoint": str(artalk_runtime.checkpoint_path),
+        "render_uint8_gpu": args.render_uint8_gpu,
     }
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)

@@ -97,6 +97,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--render-uint8-gpu",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_RENDER_UINT8_GPU", False),
+        help=(
+            "Convert rendered frames to uint8 on the GPU before the "
+            "device-to-host copy (4x less PCIe traffic). Off by default "
+            "until validated across hosts."
+        ),
+    )
+    parser.add_argument(
         "--profile-trace-dir",
         default=os.environ.get("ARTALK_PROFILE_TRACE_DIR"),
         type=str,
