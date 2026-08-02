@@ -102,6 +102,7 @@ def load_gagavatar(
     tracked_path: str | None,
     flame_model_path: str | None,
     user_avatar_dir: str | None = None,
+    autocast_dtype: str | None = None,
 ):
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
@@ -113,6 +114,7 @@ def load_gagavatar(
             tracked_path=tracked_path,
             flame_model_path=flame_model_path,
             device=device,
+            autocast_dtype=autocast_dtype,
         )
     )
     user_registry = (

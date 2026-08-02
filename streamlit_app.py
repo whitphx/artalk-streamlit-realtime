@@ -381,6 +381,7 @@ def main() -> None:
                 str(tracked_path) if tracked_path else None,
                 str(flame_model_path) if flame_model_path else None,
                 args.user_avatar_dir,
+                autocast_dtype="float16" if args.renderer_fp16 else None,
             )
         config = (
             args.device,
@@ -393,6 +394,7 @@ def main() -> None:
             args.output_segment_seconds,
             args.renderer_stage_sync,
             args.render_uint8_gpu,
+            args.renderer_fp16,
             args.profile_trace_dir,
             args.profile_skip_chunks,
             args.profile_max_chunks,

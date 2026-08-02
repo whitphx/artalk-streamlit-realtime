@@ -22,6 +22,7 @@ Usage (run from the repository root, in the app environment):
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fractions
 import json
 import logging
@@ -58,10 +59,17 @@ class BenchConfig:
     renderer_mode: str
     render_res: int
     render_batch_size: int
+    # fp16 runs the GAGAvatar conv stages under autocast (rasterizer stays
+    # fp32); parity is judged against the fp32 configuration of the same
+    # mode/resolution, so list the fp32 baseline first.
+    fp16: bool = False
 
     @property
     def label(self) -> str:
-        return f"{self.renderer_mode}:{self.render_res}:b{self.render_batch_size}"
+        label = f"{self.renderer_mode}:{self.render_res}:b{self.render_batch_size}"
+        if self.fp16:
+            label += ":fp16"
+        return label
 
     @property
     def parity_group(self) -> str:
@@ -71,8 +79,13 @@ class BenchConfig:
 def parse_configs(spec: str) -> list[BenchConfig]:
     configs = []
     for part in spec.split(","):
-        mode, res, batch = part.strip().split(":")
-        configs.append(BenchConfig(mode, int(res), int(batch)))
+        mode, res, batch, *extras = part.strip().split(":")
+        unknown = set(extras) - {"fp16"}
+        if unknown:
+            raise ValueError(f"Unknown config options: {sorted(unknown)}")
+        configs.append(
+            BenchConfig(mode, int(res), int(batch), fp16="fp16" in extras)
+        )
     return configs
 
 
@@ -145,6 +158,12 @@ def run_config(
     )
     if config.renderer_mode == "gagavatar":
         adapter, gaga_flame, shape_id = gagavatar
+        # The heavy runtime is shared across configs; precision is a config
+        # attribute on it, so swap the (frozen) config object per run.
+        adapter.runtime.config = dataclasses.replace(
+            adapter.runtime.config,
+            autocast_dtype="float16" if config.fp16 else None,
+        )
         kwargs.update(gagavatar=adapter, gagavatar_flame=gaga_flame, shape_id=shape_id)
     pipeline = ARTalkPipeline(**kwargs)
     # Measurement runs with no live callbacks at all, so their GIL and

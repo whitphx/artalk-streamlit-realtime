@@ -107,6 +107,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--renderer-fp16",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_RENDERER_FP16", False),
+        help=(
+            "Run the GAGAvatar convolutional stages under float16 autocast "
+            "(the Gaussian rasterizer stays fp32). GAGAvatar mode only; off "
+            "by default until validated across hosts."
+        ),
+    )
+    parser.add_argument(
         "--profile-trace-dir",
         default=os.environ.get("ARTALK_PROFILE_TRACE_DIR"),
         type=str,
