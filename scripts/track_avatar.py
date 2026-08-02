@@ -34,6 +34,8 @@ def main() -> int:
     args = parser.parse_args()
 
     sys.path.insert(0, args.track_dir)
+    import time
+
     import torch
     import torchvision
     from engines import CoreEngine
@@ -45,13 +47,21 @@ def main() -> int:
         .to(args.device)
         .float()
     )
+    load_t0 = time.monotonic()
     engine = CoreEngine(focal_length=args.focal_length, device=args.device)
+    load_s = time.monotonic() - load_t0
     key = "avatar"
+    track_t0 = time.monotonic()
     try:
         results = engine.track_image([image], [key], if_matting=not args.no_matting)
     except Exception as exc:
         print(f"tracking failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
+    print(
+        f"timing: engine load {load_s:.1f} s, tracking "
+        f"{time.monotonic() - track_t0:.1f} s",
+        file=sys.stderr,
+    )
     if not results or key not in results:
         print("no face detected in the uploaded image", file=sys.stderr)
         return 2
