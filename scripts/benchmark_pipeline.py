@@ -61,14 +61,18 @@ class BenchConfig:
     render_batch_size: int
     # fp16 runs the GAGAvatar conv stages under autocast (rasterizer stays
     # fp32); parity is judged against the fp32 configuration of the same
-    # mode/resolution, so list the fp32 baseline first.
+    # mode/resolution, so list the fp32 baseline first. compile applies
+    # torch.compile(reduce-overhead) to the upsampler (sm_70+ only).
     fp16: bool = False
+    compile: bool = False
 
     @property
     def label(self) -> str:
         label = f"{self.renderer_mode}:{self.render_res}:b{self.render_batch_size}"
         if self.fp16:
             label += ":fp16"
+        if self.compile:
+            label += ":compile"
         return label
 
     @property
@@ -80,11 +84,17 @@ def parse_configs(spec: str) -> list[BenchConfig]:
     configs = []
     for part in spec.split(","):
         mode, res, batch, *extras = part.strip().split(":")
-        unknown = set(extras) - {"fp16"}
+        unknown = set(extras) - {"fp16", "compile"}
         if unknown:
             raise ValueError(f"Unknown config options: {sorted(unknown)}")
         configs.append(
-            BenchConfig(mode, int(res), int(batch), fp16="fp16" in extras)
+            BenchConfig(
+                mode,
+                int(res),
+                int(batch),
+                fp16="fp16" in extras,
+                compile="compile" in extras,
+            )
         )
     return configs
 
@@ -159,11 +169,25 @@ def run_config(
     if config.renderer_mode == "gagavatar":
         adapter, gaga_flame, shape_id = gagavatar
         # The heavy runtime is shared across configs; precision is a config
-        # attribute on it, so swap the (frozen) config object per run.
+        # attribute on it, so swap the (frozen) config object per run. The
+        # compiled upsampler is cached on the adapter so eager/compiled
+        # configs can alternate without recompiling.
         adapter.runtime.config = dataclasses.replace(
             adapter.runtime.config,
             autocast_dtype="float16" if config.fp16 else None,
         )
+        model = adapter.runtime.model
+        if not hasattr(adapter, "eager_upsampler"):
+            adapter.eager_upsampler = model.upsampler
+            adapter.compiled_upsampler = None
+        if config.compile:
+            if adapter.compiled_upsampler is None:
+                adapter.compiled_upsampler = torch.compile(
+                    adapter.eager_upsampler, mode="reduce-overhead"
+                )
+            model.upsampler = adapter.compiled_upsampler
+        else:
+            model.upsampler = adapter.eager_upsampler
         kwargs.update(gagavatar=adapter, gagavatar_flame=gaga_flame, shape_id=shape_id)
     pipeline = ARTalkPipeline(**kwargs)
     # Measurement runs with no live callbacks at all, so their GIL and
@@ -320,8 +344,16 @@ def main() -> None:
     if any(c.renderer_mode == "gagavatar" for c in configs):
         gagavatar = build_gagavatar(args.device, artalk_assets)
 
+    capability = torch.cuda.get_device_capability(args.device)
     results = []
     for config in configs:
+        if config.compile and capability < (7, 0):
+            print(
+                f"skipping {config.label}: torch.compile requires sm_70+ "
+                f"(this GPU is sm_{capability[0]}{capability[1]})",
+                flush=True,
+            )
+            continue
         print(f"running {config.label} ...", flush=True)
         results.append(
             run_config(

@@ -103,6 +103,7 @@ def load_gagavatar(
     flame_model_path: str | None,
     user_avatar_dir: str | None = None,
     autocast_dtype: str | None = None,
+    compile_mode: str | None = None,
 ):
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
@@ -115,6 +116,7 @@ def load_gagavatar(
             flame_model_path=flame_model_path,
             device=device,
             autocast_dtype=autocast_dtype,
+            compile_mode=compile_mode,
         )
     )
     user_registry = (

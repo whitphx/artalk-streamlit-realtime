@@ -113,7 +113,20 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Run the GAGAvatar convolutional stages under float16 autocast "
             "(the Gaussian rasterizer stays fp32). GAGAvatar mode only; off "
-            "by default until validated across hosts."
+            "by default until validated across hosts. Only profitable on "
+            "tensor-core GPUs (sm_70+); measured 2.8x slower on Pascal."
+        ),
+    )
+    parser.add_argument(
+        "--renderer-compile",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_RENDERER_COMPILE", False),
+        help=(
+            "torch.compile(mode='reduce-overhead') the GAGAvatar upsampler "
+            "to collapse per-frame kernel-launch overhead. Requires "
+            "compute capability >= 7.0 (silently eager otherwise); adds "
+            "one-time compilation to warm-up. Off by default until "
+            "validated across hosts."
         ),
     )
     parser.add_argument(
