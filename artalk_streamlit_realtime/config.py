@@ -122,11 +122,10 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_RENDERER_COMPILE", False),
         help=(
-            "torch.compile(mode='reduce-overhead') the GAGAvatar upsampler "
-            "to collapse per-frame kernel-launch overhead. Requires "
-            "compute capability >= 7.0 (silently eager otherwise); adds "
-            "one-time compilation to warm-up. Off by default until "
-            "validated across hosts."
+            "Capture the GAGAvatar upsampler as a CUDA graph and replay it "
+            "per batch, collapsing per-frame kernel-launch overhead. Works "
+            "on any CUDA GPU; capture happens during warm-up. Off by "
+            "default until validated across hosts."
         ),
     )
     parser.add_argument(

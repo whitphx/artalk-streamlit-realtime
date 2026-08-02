@@ -382,7 +382,7 @@ def main() -> None:
                 str(flame_model_path) if flame_model_path else None,
                 args.user_avatar_dir,
                 autocast_dtype="float16" if args.renderer_fp16 else None,
-                compile_mode="reduce-overhead" if args.renderer_compile else None,
+                compile_mode="cuda-graph" if args.renderer_compile else None,
             )
         config = (
             args.device,
@@ -424,6 +424,7 @@ def main() -> None:
                 output_segment_seconds=args.output_segment_seconds,
                 renderer_stage_sync=args.renderer_stage_sync,
                 renderer_output_uint8=args.render_uint8_gpu,
+                warm_key_extra=f"fp16={args.renderer_fp16},compile={args.renderer_compile}",
                 profile_trace_dir=args.profile_trace_dir,
                 profile_skip_chunks=args.profile_skip_chunks,
                 profile_max_chunks=args.profile_max_chunks,

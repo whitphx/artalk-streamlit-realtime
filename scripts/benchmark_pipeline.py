@@ -196,16 +196,17 @@ def run_config(
         model = adapter.runtime.model
         if not hasattr(adapter, "eager_upsampler"):
             adapter.eager_upsampler = model.upsampler
-            adapter.compiled_upsampler = None
+            adapter.graphed_upsampler = None
         if config.compile:
-            if adapter.compiled_upsampler is None:
-                adapter.compiled_upsampler = torch.compile(
-                    adapter.eager_upsampler, mode="reduce-overhead"
-                )
-            model.upsampler = adapter.compiled_upsampler
+            if adapter.graphed_upsampler is None:
+                from gagavatar.runtime import CudaGraphReplay
+
+                adapter.graphed_upsampler = CudaGraphReplay(adapter.eager_upsampler)
+            model.upsampler = adapter.graphed_upsampler
         else:
             model.upsampler = adapter.eager_upsampler
         kwargs.update(gagavatar=adapter, gagavatar_flame=gaga_flame, shape_id=shape_id)
+    kwargs["warm_key_extra"] = config.label
     pipeline = ARTalkPipeline(**kwargs)
     # Measurement runs with no live callbacks at all, so their GIL and
     # metrics-lock traffic cannot inflate the stage timings (even throttled
@@ -365,16 +366,8 @@ def main() -> None:
     if any(c.renderer_mode == "gagavatar" for c in configs):
         gagavatar = build_gagavatar(args.device, artalk_assets)
 
-    capability = torch.cuda.get_device_capability(args.device)
     results = []
     for config in configs:
-        if config.compile and capability < (7, 0):
-            print(
-                f"skipping {config.label}: torch.compile requires sm_70+ "
-                f"(this GPU is sm_{capability[0]}{capability[1]})",
-                flush=True,
-            )
-            continue
         print(f"running {config.label} ...", flush=True)
         results.append(
             run_config(
