@@ -254,6 +254,18 @@ def main() -> None:
             index=default_style_index,
         )
         mode = st.radio("Mode", ["Loopback", "Interactive"], index=1, horizontal=True)
+        mic_processing = st.toggle(
+            "Mic echo cancellation & noise suppression",
+            value=True,
+            key="mic_processing",
+            help=(
+                "Browser-side echoCancellation / noiseSuppression / "
+                "autoGainControl on the microphone. Echo cancellation is "
+                "what stops the avatar's speaker output from looping back "
+                "into the mic (and self-interrupting it). Takes effect on "
+                "the next START."
+            ),
+        )
 
         api_key = ""
         realtime_model = DEFAULT_REALTIME_MODEL
@@ -555,7 +567,16 @@ def main() -> None:
             source_video_track=video_source_track,
             source_audio_track=audio_source_track,
             sink_audio_track=audio_sink_track,
-            media_stream_constraints={"audio": True, "video": False},
+            # Force both states explicitly so the toggle is a clean A/B —
+            # browsers apply their own defaults for a bare {"audio": True}.
+            media_stream_constraints={
+                "audio": {
+                    "echoCancellation": mic_processing,
+                    "noiseSuppression": mic_processing,
+                    "autoGainControl": mic_processing,
+                },
+                "video": False,
+            },
             on_change=on_change,
         )
 
