@@ -170,6 +170,24 @@ def parse_args() -> argparse.Namespace:
         help="ARTalk audio encoder architecture name.",
     )
     parser.add_argument(
+        "--motion-model",
+        default=os.environ.get("ARTALK_MOTION_MODEL", "artalk"),
+        choices=["artalk", "fallingwater"],
+        help="Speech-to-motion model driving the avatar.",
+    )
+    parser.add_argument(
+        "--fallingwater-dir",
+        default=os.environ.get("FALLINGWATER_DIR"),
+        type=str,
+        help="Fallingwater checkout directory (provides its core package).",
+    )
+    parser.add_argument(
+        "--fallingwater-checkpoint",
+        default=os.environ.get("FALLINGWATER_CHECKPOINT"),
+        type=str,
+        help="Path to a Fallingwater generator checkpoint (e.g. iter_75000.pt).",
+    )
+    parser.add_argument(
         "--gagavatar-asset-dir",
         default=os.environ.get("GAGAVATAR_ASSET_DIR"),
         type=str,

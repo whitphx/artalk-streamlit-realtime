@@ -39,6 +39,17 @@ def load_artalk_runtime(
     return runtime, mesh
 
 
+@st.cache_resource
+def load_fallingwater_streamer_model(
+    repo_dir: str,
+    checkpoint_path: str,
+    device: str,
+):
+    from .fallingwater import load_fallingwater_model
+
+    return load_fallingwater_model(repo_dir, checkpoint_path, torch.device(device))
+
+
 @st.cache_data
 def list_gagavatar_ids(tracked_path: str | None):
     if not tracked_path:

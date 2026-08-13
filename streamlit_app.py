@@ -51,6 +51,7 @@ from artalk_streamlit_realtime.diagnostics import (
     render_profiler_panel,
     save_diagnostics_snapshot,
 )
+from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
@@ -58,6 +59,7 @@ from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
     list_style_ids,
     load_artalk_runtime,
+    load_fallingwater_streamer_model,
     load_gagavatar,
     load_style_motion,
 )
@@ -221,7 +223,13 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
+        if args.motion_model == "fallingwater":
+            st.caption(
+                "Fallingwater model: "
+                f"`{Path(args.fallingwater_checkpoint or '?').name}`"
+            )
+        else:
+            st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
         gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
         user_avatar_ids = user_registry.list_ids()
         style_ids = list_style_ids(str(asset_dir))
@@ -396,10 +404,26 @@ def main() -> None:
                 autocast_dtype="float16" if args.renderer_fp16 else None,
                 compile_mode="cuda-graph" if args.renderer_compile else None,
             )
+        streamer = None
+        if args.motion_model == "fallingwater":
+            if not args.fallingwater_dir or not args.fallingwater_checkpoint:
+                raise RuntimeError(
+                    "--fallingwater-dir and --fallingwater-checkpoint are "
+                    "required for --motion-model fallingwater."
+                )
+            streamer = FallingwaterStreamer(
+                load_fallingwater_streamer_model(
+                    args.fallingwater_dir,
+                    args.fallingwater_checkpoint,
+                    args.device,
+                )
+            )
         config = (
             args.device,
             args.artalk_audio_encoder,
             args.artalk_checkpoint,
+            args.motion_model,
+            args.fallingwater_checkpoint,
             mode,
             render_res,
             args.render_batch_size,
@@ -426,6 +450,7 @@ def main() -> None:
         if pipeline is None:
             pipeline = ARTalkPipeline(
                 model=model,
+                streamer=streamer,
                 flame_model=flame_model,
                 mesh_renderer=mesh_renderer,
                 device=args.device,
@@ -436,7 +461,10 @@ def main() -> None:
                 output_segment_seconds=args.output_segment_seconds,
                 renderer_stage_sync=args.renderer_stage_sync,
                 renderer_output_uint8=args.render_uint8_gpu,
-                warm_key_extra=f"fp16={args.renderer_fp16},compile={args.renderer_compile}",
+                warm_key_extra=(
+                    f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
+                    f"motion={args.motion_model}"
+                ),
                 profile_trace_dir=args.profile_trace_dir,
                 profile_skip_chunks=args.profile_skip_chunks,
                 profile_max_chunks=args.profile_max_chunks,

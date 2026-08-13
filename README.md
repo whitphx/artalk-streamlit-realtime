@@ -79,6 +79,19 @@ uses a different one.) `scripts/check_streaming_parity.py` (ARTalk repo) and
 `scripts/benchmark_pipeline.py` accept the same overrides for validating a
 new checkpoint before wiring it into a session.
 
+[Fallingwater](https://github.com/xg-chu/Fallingwater), the streaming
+successor to ARTalk, can drive the avatar instead. It needs its checkout (for
+the `core` package) and a generator checkpoint, and pulls the MOSS audio
+tokenizer (~7 GB) from Hugging Face on first use:
+
+```bash
+export ARTALK_MOTION_MODEL=fallingwater
+export FALLINGWATER_DIR=/path/to/Fallingwater
+export FALLINGWATER_CHECKPOINT=/path/to/iter_75000.pt
+```
+
+Generation is still chunk-wise at 4 s, so the latency floor matches ARTalk's.
+
 For non-standard layouts, pass `--gagavatar-asset-dir`,
 `--gagavatar-model-path`, `--gagavatar-tracked-path`, or
 `--gagavatar-flame-model-path` as Streamlit app arguments.
