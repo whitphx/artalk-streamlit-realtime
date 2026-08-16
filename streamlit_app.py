@@ -41,6 +41,7 @@ from artalk_streamlit_realtime.config import (
     DEFAULT_REALTIME_INSTRUCTIONS,
     DEFAULT_REALTIME_MODEL,
     DEFAULT_REALTIME_VOICE,
+    DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
     DEFAULT_STYLE,
     REALTIME_VOICES,
     parse_args,
@@ -279,11 +280,23 @@ def main() -> None:
         realtime_model = DEFAULT_REALTIME_MODEL
         realtime_voice = DEFAULT_REALTIME_VOICE
         realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
+        realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
         if mode == "Interactive":
-            st.header("OpenAI Realtime")
+            st.header("Realtime API")
+            realtime_ws_base_url = st.text_input(
+                "WebSocket base URL",
+                value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
+                help=(
+                    "Leave empty for OpenAI. Any server speaking the OpenAI "
+                    "Realtime protocol works, e.g. `ws://localhost:8765/v1` for "
+                    "huggingface/speech-to-speech. The SDK appends `/realtime`."
+                ),
+            ).strip()
             api_key = get_secret("OPENAI_API_KEY")
             if api_key:
                 st.success("Secret loaded.")
+            elif realtime_ws_base_url:
+                st.info("No secret; assuming the custom endpoint is unauthenticated.")
             else:
                 st.warning("Secret is not configured.")
             realtime_model = st.text_input("Model", value=DEFAULT_REALTIME_MODEL)
@@ -481,7 +494,7 @@ def main() -> None:
     if mode == "Loopback":
         stop_bridge()
 
-    if mode == "Interactive" and not api_key:
+    if mode == "Interactive" and not api_key and not realtime_ws_base_url:
         stop_bridge()
         stop_pipeline()
         st.info("Configure the secret to use Interactive mode.")
@@ -503,6 +516,7 @@ def main() -> None:
             realtime_model,
             realtime_voice,
             realtime_instructions,
+            realtime_ws_base_url,
             id(pipeline),
         )
         bridge = st.session_state.get(BRIDGE_KEY)
@@ -517,6 +531,7 @@ def main() -> None:
                 model=realtime_model,
                 voice=realtime_voice,
                 instructions=realtime_instructions,
+                websocket_base_url=realtime_ws_base_url,
             )
             st.session_state[BRIDGE_KEY] = bridge
             st.session_state[BRIDGE_CONFIG_KEY] = config

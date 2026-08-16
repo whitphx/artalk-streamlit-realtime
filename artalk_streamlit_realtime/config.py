@@ -11,6 +11,9 @@ DEFAULT_APPEARANCE = "mesh"
 DEFAULT_STYLE = "default"
 DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "alloy"
+# Any server speaking the OpenAI Realtime protocol works here: xAI, Azure, or a
+# local one such as huggingface/speech-to-speech. Empty means OpenAI itself.
+DEFAULT_REALTIME_WEBSOCKET_BASE_URL = os.environ.get("OPENAI_WEBSOCKET_BASE_URL", "")
 REALTIME_VOICES = [
     "alloy",
     "ash",

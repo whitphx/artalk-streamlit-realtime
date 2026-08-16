@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIRealtimeBridge:
-    """Bridge browser mic audio to OpenAI and feed response audio to ARTalk."""
+    """Bridge browser mic audio to a Realtime API and feed its audio to ARTalk."""
 
     def __init__(
         self,
@@ -31,6 +31,7 @@ class OpenAIRealtimeBridge:
         model: str,
         voice: str,
         instructions: str,
+        websocket_base_url: str = "",
     ) -> None:
         self._api_key = api_key
         self._pipeline = pipeline
@@ -38,6 +39,7 @@ class OpenAIRealtimeBridge:
         self._model = model
         self._voice = voice
         self._instructions = instructions
+        self._websocket_base_url = websocket_base_url
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._input_queue: Optional["asyncio.Queue[bytes]"] = None
@@ -191,7 +193,12 @@ class OpenAIRealtimeBridge:
         if self._stop_event is None or self._input_queue is None:
             raise RuntimeError("Realtime bridge loop is not initialized")
 
-        client = AsyncOpenAI(api_key=self._api_key)
+        client = AsyncOpenAI(
+            # Local Realtime-compatible servers ignore the Authorization header,
+            # but the SDK requires a key to construct the client.
+            api_key=self._api_key or "local-server",
+            websocket_base_url=self._websocket_base_url or None,
+        )
         try:
             async with client.realtime.connect(model=self._model) as conn:
                 self._conn = conn
