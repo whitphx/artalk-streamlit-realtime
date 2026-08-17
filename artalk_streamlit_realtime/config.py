@@ -6,6 +6,8 @@ import argparse
 import os
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
+# Mimi's rate, which PersonaPlex inherits.
+PERSONAPLEX_SAMPLE_RATE = 24000
 
 DEFAULT_APPEARANCE = "mesh"
 DEFAULT_STYLE = "default"
