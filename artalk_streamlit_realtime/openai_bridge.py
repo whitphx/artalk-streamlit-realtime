@@ -15,6 +15,7 @@ import numpy as np
 from artalk.realtime_pipeline import ARTalkPipeline
 
 from .config import ARTALK_SAMPLE_RATE, OPENAI_REALTIME_SAMPLE_RATE
+from .event_log import SessionEventLog
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,12 @@ class OpenAIRealtimeBridge:
         voice: str,
         instructions: str,
         websocket_base_url: str = "",
+        event_log: SessionEventLog | None = None,
     ) -> None:
         self._api_key = api_key
         self._pipeline = pipeline
         self._on_audio_output = on_audio_output
+        self._event_log = event_log
         self._model = model
         self._voice = voice
         self._instructions = instructions
@@ -67,6 +70,10 @@ class OpenAIRealtimeBridge:
         self._assistant_item_content_index = 0
         self._assistant_item_pushed_ms = 0.0
         self._assistant_item_play_start_16k = 0
+
+    def _record_event(self, category: str, message: str, detail: str = "") -> None:
+        if self._event_log is not None:
+            self._event_log.record(category, message, detail)
 
     @property
     def is_running(self) -> bool:
@@ -215,6 +222,12 @@ class OpenAIRealtimeBridge:
                 )
                 with self._state_lock:
                     self._connected = True
+                endpoint = self._websocket_base_url or "openai"
+                self._record_event(
+                    "openai",
+                    "session connected",
+                    f"model={self._model} endpoint={endpoint}",
+                )
 
                 tasks = [
                     asyncio.create_task(self._send_loop(conn), name="openai-send"),
@@ -229,6 +242,7 @@ class OpenAIRealtimeBridge:
                     await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self._conn = None
+            self._record_event("openai", "session closed")
             await client.close()
 
     async def _close_realtime_session(self) -> None:
@@ -258,22 +272,34 @@ class OpenAIRealtimeBridge:
                 self._track_response_item(event, pcm)
                 self._push_response_audio(pcm)
             elif etype == "response.output_audio.done":
+                self._record_event(
+                    "openai",
+                    "response audio stream ended",
+                    f"pushed={self._assistant_item_pushed_ms / 1000.0:.2f}s "
+                    f"item={self._assistant_item_id}",
+                )
                 # The response's audio is complete; flush the sub-chunk tail
                 # immediately instead of waiting for the silence pump's
                 # realtime-paced fill, which lands seconds too late and
                 # pauses playback right before the final words.
                 self._pipeline.request_chunk_flush()
             elif etype == "input_audio_buffer.speech_started":
+                self._record_event("openai", "user speech started (server VAD)")
                 # Barge-in: server VAD detected the user talking over the
                 # assistant. OpenAI cancels its in-flight response; drop the
                 # already-buffered remainder on our side too so the avatar
                 # stops speaking instead of playing it out, and truncate the
                 # conversation item to what was actually heard.
                 await self._handle_barge_in(conn)
+            elif etype == "input_audio_buffer.speech_stopped":
+                self._record_event("openai", "user speech stopped (server VAD)")
+            elif etype == "response.created":
+                self._record_event("openai", "response created")
             elif etype == "response.output_audio_transcript.delta":
                 with self._state_lock:
                     self._assistant_transcript += getattr(event, "delta", "") or ""
             elif etype == "response.done":
+                self._record_event("openai", "response done")
                 with self._state_lock:
                     if (
                         self._assistant_transcript
@@ -291,6 +317,7 @@ class OpenAIRealtimeBridge:
                 err = getattr(event, "error", None)
                 msg = getattr(err, "message", None) or repr(err)
                 logger.warning("OpenAI Realtime API error: %s", msg)
+                self._record_event("openai", "API error", msg)
                 with self._state_lock:
                     self._error = msg
 
@@ -313,6 +340,11 @@ class OpenAIRealtimeBridge:
             self._assistant_item_play_start_16k = int(
                 counters.get("synced_audio_samples_served", 0) + queued_ahead_16k
             )
+            self._record_event(
+                "openai",
+                "response audio stream started -> feeding model",
+                f"item={item_id} queued_ahead={queued_ahead_16k / ARTALK_SAMPLE_RATE:.2f}s",
+            )
         self._assistant_item_pushed_ms += (
             (len(pcm) // 2) * 1000.0 / OPENAI_REALTIME_SAMPLE_RATE
         )
@@ -332,6 +364,12 @@ class OpenAIRealtimeBridge:
                 max(heard_16k * 1000.0 / ARTALK_SAMPLE_RATE, 0.0),
                 self._assistant_item_pushed_ms,
             )
+        self._record_event(
+            "openai",
+            "barge-in: flushing queued response",
+            f"heard={heard_ms / 1000.0:.2f}s of "
+            f"{self._assistant_item_pushed_ms / 1000.0:.2f}s pushed",
+        )
         self._pipeline.flush_output()
         if (
             item_id is not None

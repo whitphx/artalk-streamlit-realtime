@@ -10,13 +10,18 @@ from pathlib import Path
 
 import streamlit as st
 from artalk.realtime_pipeline import ARTalkPipeline
+from PIL import Image
 
+from .event_log import SessionEventLog
 from .gc_probe import PAUSE_EVENT_MIN_MS, GcPauseProbe, gc_pause_probe
 
 SNAPSHOT_DIR = Path("diagnostics_snapshots")
 
 
-def save_diagnostics_snapshot(pipeline: ARTalkPipeline) -> Path:
+def save_diagnostics_snapshot(
+    pipeline: ARTalkPipeline,
+    event_log: SessionEventLog | None = None,
+) -> Path:
     """Dump the full diagnostics state to a timestamped JSON file, for
     capturing the moment a jitter or lag is observed."""
     now = datetime.now(timezone.utc)
@@ -26,10 +31,38 @@ def save_diagnostics_snapshot(pipeline: ARTalkPipeline) -> Path:
         "pipeline": pipeline.metrics_snapshot(),
         "gc": gc_pause_probe.snapshot(),
     }
+    if event_log is not None:
+        payload["events"] = [
+            {
+                "t_s": round(event.monotonic_s - event_log.epoch_s, 3),
+                "wall_unix": event.wall_s,
+                "category": event.category,
+                "message": event.message,
+                "detail": event.detail,
+            }
+            for event in event_log.snapshot()
+        ]
     SNAPSHOT_DIR.mkdir(exist_ok=True)
-    path = SNAPSHOT_DIR / now.strftime("snapshot-%Y%m%d-%H%M%S.json")
+    stem = now.strftime("snapshot-%Y%m%d-%H%M%S")
+    frame_path = SNAPSHOT_DIR / f"{stem}-frame.png"
+    try:
+        Image.fromarray(pipeline.last_served_frame).save(frame_path)
+        payload["last_served_frame"] = frame_path.name
+    except Exception as exc:
+        payload["last_served_frame_error"] = repr(exc)
+    path = SNAPSHOT_DIR / f"{stem}.json"
     path.write_text(json.dumps(payload, indent=1, default=str))
     return path
+
+
+def render_event_log_panel(event_log: SessionEventLog, limit: int = 40) -> None:
+    """Newest-first timeline of transport, model, and playback milestones."""
+    events = event_log.snapshot()
+    if not events:
+        st.caption("No session events yet.")
+        return
+    lines = [event.format_line(event_log.epoch_s) for event in events[-limit:]]
+    st.code("\n".join(reversed(lines)), language="text")
 
 
 def render_gc_panel(probe: GcPauseProbe) -> None:

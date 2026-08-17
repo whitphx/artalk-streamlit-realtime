@@ -47,11 +47,13 @@ from artalk_streamlit_realtime.config import (
     parse_args,
 )
 from artalk_streamlit_realtime.diagnostics import (
+    render_event_log_panel,
     render_gc_panel,
     render_pipeline_diagnostics,
     render_profiler_panel,
     save_diagnostics_snapshot,
 )
+from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
@@ -72,6 +74,9 @@ SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
+EVENT_LOG_KEY = "artalk_event_log"
+EVENT_WATCHER_KEY = "artalk_event_watcher"
+EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -162,6 +167,37 @@ def get_silence_pump(pipeline: ARTalkPipeline) -> PipelineSilencePump:
     return pump
 
 
+def get_event_log() -> SessionEventLog:
+    log = st.session_state.get(EVENT_LOG_KEY)
+    if log is None:
+        log = SessionEventLog()
+        st.session_state[EVENT_LOG_KEY] = log
+    return log
+
+
+def stop_event_watcher() -> None:
+    watcher = st.session_state.pop(EVENT_WATCHER_KEY, None)
+    if watcher is not None:
+        watcher.stop()
+    st.session_state.pop(EVENT_WATCHER_CONFIG_KEY, None)
+
+
+def get_event_watcher(
+    pipeline: ARTalkPipeline, event_log: SessionEventLog
+) -> PipelineEventWatcher:
+    config = id(pipeline)
+    watcher = st.session_state.get(EVENT_WATCHER_KEY)
+    if watcher is not None and st.session_state.get(EVENT_WATCHER_CONFIG_KEY) != config:
+        watcher.stop()
+        watcher = None
+    if watcher is None:
+        watcher = PipelineEventWatcher(pipeline, event_log)
+        watcher.start()
+        st.session_state[EVENT_WATCHER_KEY] = watcher
+        st.session_state[EVENT_WATCHER_CONFIG_KEY] = config
+    return watcher
+
+
 def stop_bridge() -> None:
     bridge = st.session_state.pop(BRIDGE_KEY, None)
     if bridge is not None:
@@ -171,6 +207,7 @@ def stop_bridge() -> None:
 
 def stop_pipeline() -> None:
     stop_silence_pump()
+    stop_event_watcher()
     pipeline = st.session_state.pop(PIPELINE_KEY, None)
     if pipeline is not None:
         pipeline.stop()
@@ -509,6 +546,8 @@ def main() -> None:
     freeze_loaded_objects()
 
     silence_pump = get_silence_pump(pipeline)
+    event_log = get_event_log()
+    get_event_watcher(pipeline, event_log)
 
     def get_bridge() -> OpenAIRealtimeBridge:
         config = (
@@ -532,6 +571,7 @@ def main() -> None:
                 voice=realtime_voice,
                 instructions=realtime_instructions,
                 websocket_base_url=realtime_ws_base_url,
+                event_log=event_log,
             )
             st.session_state[BRIDGE_KEY] = bridge
             st.session_state[BRIDGE_CONFIG_KEY] = config
@@ -643,6 +683,10 @@ def main() -> None:
     def render_gc_fragment() -> None:
         render_gc_panel(gc_pause_probe)
 
+    @st.fragment(run_every="500ms")
+    def render_event_log_fragment() -> None:
+        render_event_log_panel(event_log)
+
     with diagnostics_col:
         # Deliberately outside the auto-rerunning fragments: a button inside
         # a run_every fragment races with its reruns and clicks get lost.
@@ -651,12 +695,17 @@ def main() -> None:
             key="save_diagnostics_snapshot",
             help=(
                 "Click the moment you observe a jitter or lag; dumps all "
-                "counters, spikes, and GC state to a timestamped JSON file "
-                "on the server."
+                "counters, spikes, GC state, and the session event timeline "
+                "to a timestamped JSON file on the server, plus the "
+                "last-served video frame as a PNG beside it."
             ),
         ):
-            snapshot_path = save_diagnostics_snapshot(pipeline)
+            snapshot_path = save_diagnostics_snapshot(pipeline, event_log)
             st.caption(f"Saved `{snapshot_path}`")
+        with st.expander("Session events", expanded=True):
+            if st.button("Clear events", key="clear_event_log"):
+                event_log.clear()
+            render_event_log_fragment()
         if args.profile_trace_dir:
             with st.expander("Torch profiler", expanded=True):
                 render_profiler_fragment()
