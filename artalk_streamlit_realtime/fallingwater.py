@@ -23,6 +23,7 @@ audio in, resamples per chunk, and returns 106-dim ARTalk-style motion
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -51,6 +52,23 @@ def _shim_transformers_v4() -> None:
         tu.auto_docstring = auto_docstring
 
 
+def _absolutize_asset_paths(config: dict, repo_dir: str) -> None:
+    """Resolve the config's repo-relative asset paths against the checkout.
+
+    Fallingwater is written to run from its own directory, so the config
+    baked into the checkpoint carries paths like ``./assets/...``. The app
+    runs from elsewhere, and chdir would be unsafe with a live pipeline in
+    other threads, so rewrite the paths instead. Only the motion statistics
+    are needed at inference; the codec and audio-encoder weights come from
+    the checkpoint and Hugging Face.
+    """
+    for key, value in config.items():
+        if isinstance(value, dict):
+            _absolutize_asset_paths(value, repo_dir)
+        elif key == "STATS_PATH" and isinstance(value, str) and not os.path.isabs(value):
+            config[key] = os.path.normpath(os.path.join(repo_dir, value))
+
+
 def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, device):
     """Build ``FallingwaterGen`` from a self-contained checkpoint, the way
     the repo's ``infer.py`` does (``init_submodule=False``: codec weights
@@ -66,6 +84,7 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:
         raise ValueError(f"{checkpoint_path} has no meta_cfg; not a self-contained checkpoint")
+    _absolutize_asset_paths(ckpt["meta_cfg"], repo_dir)
     meta_cfg = ConfigDict(ckpt["meta_cfg"], gpus=1, cli_args=[])
     model = build_model(meta_cfg.MODEL, init_submodule=False)
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
