@@ -38,16 +38,18 @@ from artalk_streamlit_realtime.avatar_registry import (
 from artalk_streamlit_realtime.config import (
     ARTALK_FPS,
     ARTALK_SAMPLE_RATE,
+    CUSTOM_ENDPOINT_LABEL,
     DEFAULT_APPEARANCE,
-    DEFAULT_REALTIME_INSTRUCTIONS,
-    DEFAULT_REALTIME_MODEL,
-    DEFAULT_REALTIME_VOICE,
     DEFAULT_PERSONAPLEX_TEXT_PROMPT,
     DEFAULT_PERSONAPLEX_URL,
     DEFAULT_PERSONAPLEX_VOICE,
+    DEFAULT_REALTIME_INSTRUCTIONS,
+    DEFAULT_REALTIME_MODEL,
+    DEFAULT_REALTIME_VOICE,
     DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
     DEFAULT_STYLE,
     PERSONAPLEX_VOICES,
+    REALTIME_ENDPOINT_PRESETS,
     REALTIME_VOICES,
     parse_args,
 )
@@ -367,20 +369,38 @@ def main() -> None:
                 "Persona", value=DEFAULT_PERSONAPLEX_TEXT_PROMPT, height=120
             )
         if mode == "Interactive" and backend == BACKEND_OPENAI:
-            realtime_ws_base_url = st.text_input(
-                "WebSocket base URL",
-                value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
-                help=(
-                    "Leave empty for OpenAI. Any server speaking the OpenAI "
-                    "Realtime protocol works, e.g. `ws://localhost:8765/v1` for "
-                    "huggingface/speech-to-speech. The SDK appends `/realtime`."
-                ),
-            ).strip()
-            api_key = get_secret("OPENAI_API_KEY")
+            preset_names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
+            # An endpoint supplied through the environment is by definition not
+            # one of the presets, so start on Custom and carry it in.
+            endpoint_name = st.selectbox(
+                "Endpoint",
+                preset_names,
+                index=preset_names.index(CUSTOM_ENDPOINT_LABEL)
+                if DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+                else 0,
+                help="Anything speaking the OpenAI Realtime protocol.",
+            )
+            if endpoint_name == CUSTOM_ENDPOINT_LABEL:
+                realtime_ws_base_url = st.text_input(
+                    "WebSocket base URL",
+                    value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
+                    help="The SDK appends `/realtime`.",
+                ).strip()
+                secret_name = "OPENAI_API_KEY"
+            else:
+                endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
+                realtime_ws_base_url = endpoint.base_url
+                secret_name = endpoint.secret
+                if realtime_ws_base_url:
+                    st.caption(f"`{realtime_ws_base_url}`")
+
+            api_key = get_secret(secret_name) if secret_name else ""
             if api_key:
-                st.success("Secret loaded.")
+                st.success(f"`{secret_name}` loaded.")
+            elif not secret_name:
+                st.info("This endpoint takes no credential.")
             elif realtime_ws_base_url:
-                st.info("No secret; assuming the custom endpoint is unauthenticated.")
+                st.warning(f"`{secret_name}` is not configured.")
             else:
                 st.warning("Secret is not configured.")
             realtime_model = st.text_input("Model", value=DEFAULT_REALTIME_MODEL)

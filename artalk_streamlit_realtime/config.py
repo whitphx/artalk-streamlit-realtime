@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import NamedTuple
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 # Mimi's rate, which PersonaPlex inherits.
@@ -30,6 +31,23 @@ DEFAULT_REALTIME_VOICE = "alloy"
 # Any server speaking the OpenAI Realtime protocol works here: xAI, Azure, or a
 # local one such as huggingface/speech-to-speech. Empty means OpenAI itself.
 DEFAULT_REALTIME_WEBSOCKET_BASE_URL = os.environ.get("OPENAI_WEBSOCKET_BASE_URL", "")
+
+
+class RealtimeEndpoint(NamedTuple):
+    # The OpenAI SDK appends `/realtime`, so these are base URLs. An empty
+    # secret means the endpoint takes no credential.
+    base_url: str
+    secret: str
+
+
+REALTIME_ENDPOINT_PRESETS = {
+    "OpenAI": RealtimeEndpoint("", "OPENAI_API_KEY"),
+    # https://docs.x.ai/developers/model-capabilities/audio/voice-agent
+    "xAI Grok": RealtimeEndpoint("wss://api.x.ai/v1", "XAI_API_KEY"),
+    # huggingface/speech-to-speech, whose server defaults to port 8765.
+    "Local speech-to-speech": RealtimeEndpoint("ws://127.0.0.1:8765/v1", ""),
+}
+CUSTOM_ENDPOINT_LABEL = "Custom"
 REALTIME_VOICES = [
     "alloy",
     "ash",
