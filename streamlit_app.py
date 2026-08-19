@@ -10,6 +10,7 @@ environment variables.
 from __future__ import annotations
 
 import faulthandler
+import logging
 import signal
 import threading
 import time
@@ -57,6 +58,7 @@ from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEve
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
+from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -219,6 +221,14 @@ def main() -> None:
     # `kill -USR1 <pid>` dumps every thread's Python stack to stderr (the
     # launcher terminal) — the first thing to reach for when the app hangs.
     faulthandler.register(signal.SIGUSR1, all_threads=True)
+    try:
+        from streamlit_webrtc.eventloop import get_global_event_loop
+
+        loop_stall_watchdog.install(get_global_event_loop())
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "[loop-watchdog] not armed", exc_info=True
+        )
     args = parse_args()
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
