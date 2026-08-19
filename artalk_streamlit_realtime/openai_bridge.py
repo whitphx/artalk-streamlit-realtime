@@ -8,14 +8,16 @@ import concurrent.futures
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import av
 import numpy as np
-from artalk.realtime_pipeline import ARTalkPipeline
 
 from .config import ARTALK_SAMPLE_RATE, OPENAI_REALTIME_SAMPLE_RATE
 from .event_log import SessionEventLog
+
+if TYPE_CHECKING:
+    from artalk.realtime_pipeline import ARTalkPipeline
 
 logger = logging.getLogger(__name__)
 

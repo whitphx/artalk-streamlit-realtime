@@ -19,14 +19,16 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 from urllib.parse import urlencode
 
 import av
 import numpy as np
-from artalk.realtime_pipeline import ARTalkPipeline
 
 from .config import ARTALK_SAMPLE_RATE, PERSONAPLEX_SAMPLE_RATE
+
+if TYPE_CHECKING:
+    from artalk.realtime_pipeline import ARTalkPipeline
 
 logger = logging.getLogger(__name__)
 
