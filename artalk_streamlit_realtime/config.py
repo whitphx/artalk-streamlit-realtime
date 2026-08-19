@@ -8,6 +8,20 @@ import os
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 # Mimi's rate, which PersonaPlex inherits.
 PERSONAPLEX_SAMPLE_RATE = 24000
+DEFAULT_PERSONAPLEX_URL = "ws://localhost:8998"
+DEFAULT_PERSONAPLEX_VOICE = "NATF2.pt"
+# Pre-packaged voice embeddings: natural (NAT) and more varied (VAR).
+PERSONAPLEX_VOICES = [
+    f"{family}{sex}{i}.pt"
+    for family, sex, count in (
+        ("NAT", "F", 4), ("NAT", "M", 4), ("VAR", "F", 5), ("VAR", "M", 5)
+    )
+    for i in range(count)
+]
+DEFAULT_PERSONAPLEX_TEXT_PROMPT = (
+    "You are speaking through an ARTalk avatar. Keep responses concise "
+    "and conversational."
+)
 
 DEFAULT_APPEARANCE = "mesh"
 DEFAULT_STYLE = "default"

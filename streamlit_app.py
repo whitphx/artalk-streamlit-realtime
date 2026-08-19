@@ -42,8 +42,12 @@ from artalk_streamlit_realtime.config import (
     DEFAULT_REALTIME_INSTRUCTIONS,
     DEFAULT_REALTIME_MODEL,
     DEFAULT_REALTIME_VOICE,
+    DEFAULT_PERSONAPLEX_TEXT_PROMPT,
+    DEFAULT_PERSONAPLEX_URL,
+    DEFAULT_PERSONAPLEX_VOICE,
     DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
     DEFAULT_STYLE,
+    PERSONAPLEX_VOICES,
     REALTIME_VOICES,
     parse_args,
 )
@@ -60,6 +64,7 @@ from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_p
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
 from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
+from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
     list_style_ids,
@@ -77,6 +82,8 @@ PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
 SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
+BACKEND_OPENAI = "OpenAI Realtime"
+BACKEND_PERSONAPLEX = "PersonaPlex"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 EVENT_LOG_KEY = "artalk_event_log"
@@ -332,8 +339,34 @@ def main() -> None:
         realtime_voice = DEFAULT_REALTIME_VOICE
         realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
         realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+        backend = BACKEND_OPENAI
+        personaplex_url = DEFAULT_PERSONAPLEX_URL
+        personaplex_voice = DEFAULT_PERSONAPLEX_VOICE
+        personaplex_text_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
         if mode == "Interactive":
-            st.header("Realtime API")
+            st.header("Conversation backend")
+            backend = st.radio(
+                "Backend",
+                [BACKEND_OPENAI, BACKEND_PERSONAPLEX],
+                horizontal=True,
+                help=(
+                    "PersonaPlex is full duplex: it streams continuously and has "
+                    "no turn boundaries, so there is no barge-in truncation."
+                ),
+            )
+        if mode == "Interactive" and backend == BACKEND_PERSONAPLEX:
+            personaplex_url = st.text_input(
+                "moshi server URL", value=DEFAULT_PERSONAPLEX_URL
+            ).strip()
+            personaplex_voice = st.selectbox(
+                "Voice prompt",
+                PERSONAPLEX_VOICES,
+                index=PERSONAPLEX_VOICES.index(DEFAULT_PERSONAPLEX_VOICE),
+            )
+            personaplex_text_prompt = st.text_area(
+                "Persona", value=DEFAULT_PERSONAPLEX_TEXT_PROMPT, height=120
+            )
+        if mode == "Interactive" and backend == BACKEND_OPENAI:
             realtime_ws_base_url = st.text_input(
                 "WebSocket base URL",
                 value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
@@ -545,7 +578,12 @@ def main() -> None:
     if mode == "Loopback":
         stop_bridge()
 
-    if mode == "Interactive" and not api_key and not realtime_ws_base_url:
+    if (
+        mode == "Interactive"
+        and backend == BACKEND_OPENAI
+        and not api_key
+        and not realtime_ws_base_url
+    ):
         stop_bridge()
         stop_pipeline()
         st.info("Configure the secret to use Interactive mode.")
@@ -559,17 +597,27 @@ def main() -> None:
 
     freeze_loaded_objects()
 
-    silence_pump = get_silence_pump(pipeline)
+    # PersonaPlex streams continuously, including its own silence, so the pump
+    # would feed the pipeline a second time and fight the model's audio.
+    if mode == "Interactive" and backend == BACKEND_PERSONAPLEX:
+        stop_silence_pump()
+        silence_pump = None
+    else:
+        silence_pump = get_silence_pump(pipeline)
     event_log = get_event_log()
     get_event_watcher(pipeline, event_log)
 
-    def get_bridge() -> OpenAIRealtimeBridge:
+    def get_bridge() -> OpenAIRealtimeBridge | PersonaPlexBridge:
         config = (
+            backend,
             api_key,
             realtime_model,
             realtime_voice,
             realtime_instructions,
             realtime_ws_base_url,
+            personaplex_url,
+            personaplex_voice,
+            personaplex_text_prompt,
             id(pipeline),
         )
         bridge = st.session_state.get(BRIDGE_KEY)
@@ -577,30 +625,42 @@ def main() -> None:
             stop_bridge()
             bridge = None
         if bridge is None:
-            bridge = OpenAIRealtimeBridge(
-                api_key=api_key,
-                pipeline=pipeline,
-                on_audio_output=silence_pump.mark_input,
-                model=realtime_model,
-                voice=realtime_voice,
-                instructions=realtime_instructions,
-                websocket_base_url=realtime_ws_base_url,
-                event_log=event_log,
-            )
+            if backend == BACKEND_PERSONAPLEX:
+                bridge = PersonaPlexBridge(
+                    url=personaplex_url,
+                    pipeline=pipeline,
+                    on_audio_output=None,
+                    text_prompt=personaplex_text_prompt,
+                    voice_prompt=personaplex_voice,
+                )
+            else:
+                bridge = OpenAIRealtimeBridge(
+                    api_key=api_key,
+                    pipeline=pipeline,
+                    on_audio_output=silence_pump.mark_input if silence_pump else None,
+                    model=realtime_model,
+                    voice=realtime_voice,
+                    instructions=realtime_instructions,
+                    websocket_base_url=realtime_ws_base_url,
+                    event_log=event_log,
+                )
             st.session_state[BRIDGE_KEY] = bridge
             st.session_state[BRIDGE_CONFIG_KEY] = config
         return bridge
 
     bridge = get_bridge() if mode == "Interactive" else None
     if bridge is not None and not bridge.is_running:
-        with st.spinner("Connecting to OpenAI Realtime..."):
+        # PersonaPlex withholds its handshake until the system prompts have
+        # been stepped through the model, which is far slower than a hosted API.
+        connect_timeout = 60.0 if backend == BACKEND_PERSONAPLEX else 8.0
+        with st.spinner(f"Connecting to {backend}..."):
             bridge.start()
-            bridge.wait_until_connected(timeout=8.0)
+            bridge.wait_until_connected(timeout=connect_timeout)
         snap = bridge.snapshot()
         if snap["error"]:
-            st.error(f"OpenAI Realtime API error: {snap['error']}")
+            st.error(f"{backend} error: {snap['error']}")
         elif not snap["connected"]:
-            st.warning("OpenAI Realtime is still connecting. Wait a moment before START.")
+            st.warning(f"{backend} is still connecting. Wait a moment before START.")
 
     def on_loopback_audio_frame(frame: av.AudioFrame) -> None:
         silence_pump.mark_input()
