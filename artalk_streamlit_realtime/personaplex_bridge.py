@@ -62,6 +62,7 @@ class PersonaPlexBridge:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._input_queue: Optional["asyncio.Queue[np.ndarray]"] = None
         self._stop_event: Optional[asyncio.Event] = None
+        self._handshake: Optional[asyncio.Event] = None
         self._ready_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._stop_lock = threading.Lock()
@@ -194,6 +195,7 @@ class PersonaPlexBridge:
         try:
             self._input_queue = asyncio.Queue(maxsize=256)
             self._stop_event = asyncio.Event()
+            self._handshake = asyncio.Event()
             self._ready_event.set()
             loop.run_until_complete(self._session())
         except Exception as exc:
@@ -209,6 +211,7 @@ class PersonaPlexBridge:
                 self._loop = None
                 self._input_queue = None
                 self._stop_event = None
+                self._handshake = None
 
     def _chat_url(self) -> str:
         # The server indexes both prompt parameters unconditionally, so they
@@ -259,8 +262,19 @@ class PersonaPlexBridge:
                     await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _send_loop(self, ws) -> None:
-        if self._input_queue is None:
-            raise RuntimeError("PersonaPlex bridge input queue is not initialized")
+        if self._input_queue is None or self._handshake is None:
+            raise RuntimeError("PersonaPlex bridge loop is not initialized")
+        # Nothing may go out before the handshake. While the server steps its
+        # system prompts it polls liveness with a destructive ws.receive(), so
+        # early frames are silently dropped; losing the first one is fatal
+        # because it carries the Opus stream header, after which the server's
+        # decoder yields None and its opus_loop dies.
+        await self._handshake.wait()
+        # Mic audio captured during that wait is stale. Feeding it now would
+        # hand a realtime model several seconds at once and leave the session
+        # permanently behind, so start from live audio instead.
+        while not self._input_queue.empty():
+            self._input_queue.get_nowait()
         pending = np.zeros(0, dtype=np.float32)
         while True:
             try:
@@ -294,6 +308,8 @@ class PersonaPlexBridge:
             if kind == _OPCODE_HANDSHAKE:
                 with self._state_lock:
                     self._connected = True
+                if self._handshake is not None:
+                    self._handshake.set()
             elif kind == _OPCODE_AUDIO:
                 self._opus_reader.append_bytes(data[1:])
             elif kind == _OPCODE_TEXT:
