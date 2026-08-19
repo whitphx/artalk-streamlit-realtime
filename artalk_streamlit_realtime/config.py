@@ -32,22 +32,6 @@ DEFAULT_REALTIME_VOICE = "alloy"
 # local one such as huggingface/speech-to-speech. Empty means OpenAI itself.
 DEFAULT_REALTIME_WEBSOCKET_BASE_URL = os.environ.get("OPENAI_WEBSOCKET_BASE_URL", "")
 
-
-class RealtimeEndpoint(NamedTuple):
-    # The OpenAI SDK appends `/realtime`, so these are base URLs. An empty
-    # secret means the endpoint takes no credential.
-    base_url: str
-    secret: str
-
-
-REALTIME_ENDPOINT_PRESETS = {
-    "OpenAI": RealtimeEndpoint("", "OPENAI_API_KEY"),
-    # https://docs.x.ai/developers/model-capabilities/audio/voice-agent
-    "xAI Grok": RealtimeEndpoint("wss://api.x.ai/v1", "XAI_API_KEY"),
-    # huggingface/speech-to-speech, whose server defaults to port 8765.
-    "Local speech-to-speech": RealtimeEndpoint("ws://127.0.0.1:8765/v1", ""),
-}
-CUSTOM_ENDPOINT_LABEL = "Custom"
 REALTIME_VOICES = [
     "alloy",
     "ash",
@@ -62,6 +46,36 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
     "You are speaking through an ARTalk avatar. Keep responses concise "
     "and conversational."
 )
+
+
+class RealtimeEndpoint(NamedTuple):
+    # The OpenAI SDK appends `/realtime` to base_url and puts model in the
+    # handshake query, so a wrong model is rejected before any session
+    # configuration is sent. An empty secret means no credential is needed;
+    # empty voices mean the server picks and the app should not offer a list.
+    base_url: str
+    secret: str
+    model: str
+    voices: tuple[str, ...]
+
+
+# https://docs.x.ai/developers/model-capabilities/audio/voice-agent
+XAI_VOICES = ("ara", "eve", "leo", "rex", "sal")
+
+REALTIME_ENDPOINT_PRESETS = {
+    "OpenAI": RealtimeEndpoint(
+        "", "OPENAI_API_KEY", DEFAULT_REALTIME_MODEL, tuple(REALTIME_VOICES)
+    ),
+    "xAI Grok": RealtimeEndpoint(
+        "wss://api.x.ai/v1", "XAI_API_KEY", "grok-voice-latest", XAI_VOICES
+    ),
+    # huggingface/speech-to-speech defaults to port 8765, ignores the model
+    # query param, and takes its voice from its own TTS configuration.
+    "Local speech-to-speech": RealtimeEndpoint(
+        "ws://127.0.0.1:8765/v1", "", DEFAULT_REALTIME_MODEL, ()
+    ),
+}
+CUSTOM_ENDPOINT_LABEL = "Custom"
 
 ARTALK_SAMPLE_RATE = 16000
 ARTALK_FPS = 25

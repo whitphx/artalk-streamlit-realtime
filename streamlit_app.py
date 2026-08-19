@@ -387,10 +387,14 @@ def main() -> None:
                     help="The SDK appends `/realtime`.",
                 ).strip()
                 secret_name = "OPENAI_API_KEY"
+                endpoint_model = DEFAULT_REALTIME_MODEL
+                endpoint_voices = tuple(REALTIME_VOICES)
             else:
                 endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
                 realtime_ws_base_url = endpoint.base_url
                 secret_name = endpoint.secret
+                endpoint_model = endpoint.model
+                endpoint_voices = endpoint.voices
                 if realtime_ws_base_url:
                     st.caption(f"`{realtime_ws_base_url}`")
 
@@ -403,12 +407,23 @@ def main() -> None:
                 st.warning(f"`{secret_name}` is not configured.")
             else:
                 st.warning("Secret is not configured.")
-            realtime_model = st.text_input("Model", value=DEFAULT_REALTIME_MODEL)
-            realtime_voice = st.selectbox(
-                "Voice",
-                REALTIME_VOICES,
-                index=REALTIME_VOICES.index(DEFAULT_REALTIME_VOICE),
-            )
+            # Keyed per endpoint so switching presets re-seeds these rather
+            # than carrying the previous provider's names over.
+            realtime_model = st.text_input(
+                "Model",
+                value=endpoint_model,
+                key=f"realtime_model_{endpoint_name}",
+                help="Sent in the connection URL, so a wrong name fails the handshake.",
+            ).strip()
+            if endpoint_voices:
+                realtime_voice = st.selectbox(
+                    "Voice",
+                    endpoint_voices,
+                    key=f"realtime_voice_{endpoint_name}",
+                )
+            else:
+                realtime_voice = DEFAULT_REALTIME_VOICE
+                st.caption("Voice is configured on the server.")
             realtime_instructions = st.text_area(
                 "Instructions",
                 value=DEFAULT_REALTIME_INSTRUCTIONS,
