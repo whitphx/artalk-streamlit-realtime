@@ -113,6 +113,12 @@ stack, and keeps Hugging Face and package-manager caches under this checkout.
 ARTALK_STREAMLIT_PYTHON=/path/to/python scripts/run_app.sh
 ```
 
+Source edits do not trigger a rerun: Streamlit rescans every loaded module on
+its event loop whenever `sys.modules` changes, and with this app's dependency
+set that blocks the WebRTC tracks for hundreds of milliseconds to several
+seconds, long enough for the browser to conceal audio and freeze video. Set
+`ARTALK_STREAMLIT_SOURCE_WATCHER=1` to restore the watcher when editing.
+
 The launcher uses `st-remote` from the selected Python environment and defaults
 to an ngrok HTTPS tunnel so the browser gets the secure context that microphone
 access requires. Set `ST_REMOTE_PROVIDER` or pass `--provider` to use another

@@ -69,6 +69,9 @@ from artalk_streamlit_realtime.runtime import (
     load_style_motion,
 )
 from artalk_streamlit_realtime.silence import PipelineSilencePump
+from artalk_streamlit_realtime.streamlit_patches import (
+    disable_streamlit_source_watcher,
+)
 
 PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
@@ -221,6 +224,7 @@ def main() -> None:
     # `kill -USR1 <pid>` dumps every thread's Python stack to stderr (the
     # launcher terminal) — the first thing to reach for when the app hangs.
     faulthandler.register(signal.SIGUSR1, all_threads=True)
+    disable_streamlit_source_watcher()
     try:
         from streamlit_webrtc.eventloop import get_global_event_loop
 
