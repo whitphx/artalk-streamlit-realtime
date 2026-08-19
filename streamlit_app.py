@@ -710,7 +710,14 @@ def main() -> None:
         def render_interactive_status() -> None:
             snap = bridge.snapshot()
             if snap["error"]:
-                st.error(f"OpenAI Realtime API error: {snap['error']}")
+                st.error(f"{backend} error: {snap['error']}")
+            # Full duplex has no turn boundary to reconcile against, so how far
+            # the listener trails the model is the only handle on barge-in.
+            # It tracks the output prebuffer, which is the knob to tune.
+            if "trailing_s" in snap:
+                lag_col, spoken_col = st.columns(2)
+                lag_col.metric("Listener trails model", f"{snap['trailing_s']:.2f} s")
+                spoken_col.metric("Model audio", f"{snap['model_audio_s']:.0f} s")
             with st.container(height=260, border=True):
                 if snap["assistant"]:
                     st.markdown(snap["assistant"])
