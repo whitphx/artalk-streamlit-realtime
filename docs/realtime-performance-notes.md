@@ -587,3 +587,25 @@ input, busy worker, queued video, or real audio accepted within the last
 model-chunk window); otherwise they count as `audio_idle_silence_frames`.
 Verified headless: chunk-fill starvation still registers as underruns; six
 seconds of true idle registers zero.
+
+## 2026-08-16: Rasterizer arch coverage, and how far the 07-18 fix actually reached
+
+The 2026-07-18 entry records rebuilding `diff_gaussian_rasterization_32d` as a fat binary and states that the shared env's installed extension carries `sm_60/75/80+PTX`. That held for exactly one of the three environments with the package installed. Read back with `cuobjdump --list-elf` and `--list-ptx`:
+
+| env | SASS | PTX | runs on |
+| --- | --- | --- | --- |
+| ARTalk | sm_60, 75, 80 | sm_80 | P100, RTX 8000, A100, and H100/H200 by JIT |
+| GAGAvatar | sm_75 | sm_75 | RTX 8000, A100, H100/H200, but not P100 |
+| artalk-web | sm_60 | none | P100 only |
+
+GAGAvatar had therefore been carrying the original defect on the P100 host all along, the same silent failure the 07-18 entry diagnosed, and artalk-web could not run anywhere but katsuo.
+
+This surfaced while widening the host list to P100, V100, RTX 8000, A100, H100 and H200. Two constraints decide coverage. PTX JIT is forward only, so `8.0+PTX` reaches sm_90 but never sm_70, leaving V100 uncovered by all three builds. K80 is out regardless of build flags, since CUDA 12 dropped Kepler and torch 2.4.1's arch list starts at sm_50 with no sm_37.
+
+Rebuilt from the patched source with `TORCH_CUDA_ARCH_LIST="6.0;7.0;7.5;8.0;9.0+PTX"`, giving native SASS for every host above plus sm_90 PTX for anything newer. One wheel serves ARTalk and GAGAvatar (both python 3.12, torch 2.4.1+cu121). artalk-web runs torch 2.4.1+cu118 and cannot share it, which is why its build differed in the first place; that env is currently inactive, so its build was removed rather than rebuilt, and it needs its own cu118 build when it returns.
+
+Parity check: 512 Gaussians at 256x256 with `debug=False` (the setting that hides failed launches) on the P100, in both envs, 674,912 non-zero pixels and all finite. The pre-rebuild ARTalk binary produces identical output, so this is arch coverage only, with no numerical change.
+
+One build trap worth recording: pinning only `cuda-nvcc=12.1` lets the solver pull `cuda-cudart` 12.4.127, while `cuda-cudart-dev` 12.1.105 ships a `libcudart.so` symlink pointing at `libcudart.so.12.1.105`. The symlink dangles and the link fails with `cannot find -lcudart`, which names the wrong problem entirely. Pin `cuda-cudart=12.1.*` alongside the dev package.
+
+The patched source had survived only in a scratch directory. It now lives at `~/src/diff-gaussian-rasterization-32d` (commit `4d71ef9`, fork branch `fix/unconditional-launch-error-check`) with the wheel under `dist/`, and the pre-rebuild binaries are backed up at `~/src/dgr-backups-20260814/`.
