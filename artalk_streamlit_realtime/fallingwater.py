@@ -22,6 +22,7 @@ audio in, resamples per chunk, and returns 106-dim ARTalk-style motion
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sys
@@ -29,6 +30,10 @@ from pathlib import Path
 
 import torch
 import torchaudio
+
+from .config import _env_flag
+
+logger = logging.getLogger(__name__)
 
 PIPELINE_SAMPLE_RATE = 16_000
 FPS = 25
@@ -50,6 +55,98 @@ def _shim_transformers_v4() -> None:
             return lambda obj: obj
 
         tu.auto_docstring = auto_docstring
+
+
+def _install_constant_kv_cache() -> None:
+    """Stop recomputing the per-chunk-constant K/V on every AR step.
+
+    A chunk is decoded in ``sum(patch_nums)`` autoregressive steps (176 for
+    this checkpoint), and each step re-runs the whole decoder. Only the
+    partially decoded motion changes between steps: the audio, the previous
+    chunk's motion and the style templates are fixed for the chunk, yet
+    their projections are recomputed all 176 times. Cache them per chunk.
+
+    Measured on a P100: 2.63 s -> 2.01 s per 4 s chunk (1.31x), with output
+    bit-identical to the unpatched model. Patching upstream's classes is
+    only safe while they look as expected, so the signatures are checked
+    first and the patch is skipped rather than risking wrong output.
+    Set FALLINGWATER_KV_CACHE=0 to skip it regardless.
+    """
+    import inspect
+
+    from core.models.fallingwater_gen import transformer
+
+    if not _env_flag("FALLINGWATER_KV_CACHE", True):
+        return
+    if getattr(transformer, "_const_kv_patched", False):
+        return
+
+    expected = {
+        transformer.FusedAttn: ["self", "feat", "prev_feat", "style_feat", "self_attn_info"],
+        transformer.CrossAttn: ["self", "x", "context", "cross_attn_info"],
+    }
+    for cls, params in expected.items():
+        if list(inspect.signature(cls.forward).parameters) != params:
+            logger.warning(
+                "[fallingwater] %s.forward is not the signature this cache was "
+                "written against; leaving it unpatched", cls.__name__,
+            )
+            return
+
+    def fused_attn_forward(self, feat, prev_feat, style_feat, self_attn_info):
+        q = self.rearrange_q(self.to_q(self.self_norm(feat)))
+        cached = getattr(self, "_const_kv", None)
+        if cached is None:
+            style_k, style_v = self.rearrange_kv(
+                self.style_to_kv(self.style_norm(style_feat))
+            ).unbind(0)
+            prev_k, prev_v = self.rearrange_kv(
+                self.prev_to_kv(self.prev_norm(prev_feat))
+            ).unbind(0)
+            cached = (style_k, style_v, prev_k, prev_v)
+            self._const_kv = cached
+        style_k, style_v, prev_k, prev_v = cached
+        self_k, self_v = self.rearrange_kv(self.self_to_kv(self.self_norm(feat))).unbind(0)
+        k = torch.cat([style_k, prev_k, self_k], dim=1)
+        v = torch.cat([style_v, prev_v, self_v], dim=1)
+        q = self.rearrange_rope(self.rope(q, input_pos=self_attn_info["q_rope_pos"]))
+        k = self.rearrange_rope(self.rope(k, input_pos=self_attn_info["k_rope_pos"]))
+        v = self.rearrange_rope(v)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            query=q, key=k, value=v, attn_mask=self_attn_info["attn_bias"]
+        )
+        return self.to_out(self.rearrange_out(out))
+
+    def cross_attn_forward(self, x, context, cross_attn_info):
+        q = self.rearrange_qkv(self.q_proj(self.self_norm(x)))
+        cached = getattr(self, "_const_kv", None)
+        if cached is None:
+            ctx = self.context_norm(context)
+            k = self.rearrange_rope(
+                self.rope(
+                    self.rearrange_qkv(self.k_proj(ctx)),
+                    input_pos=cross_attn_info["k_rope_pos"],
+                )
+            )
+            v = self.rearrange_rope(self.rearrange_qkv(self.v_proj(ctx)))
+            cached = (k, v)
+            self._const_kv = cached
+        k, v = cached
+        q = self.rearrange_rope(self.rope(q, input_pos=cross_attn_info["q_rope_pos"]))
+        out = torch.nn.functional.scaled_dot_product_attention(
+            query=q, key=k, value=v, attn_mask=cross_attn_info["attn_bias"]
+        )
+        return self.out_proj(self.rearrange_out(out))
+
+    transformer.FusedAttn.forward = fused_attn_forward
+    transformer.CrossAttn.forward = cross_attn_forward
+    transformer._const_kv_patched = True
+
+
+def _clear_constant_kv(model) -> None:
+    for module in model.modules():
+        if hasattr(module, "_const_kv"):
+            del module._const_kv
 
 
 def _absolutize_asset_paths(config: dict, repo_dir: str) -> None:
@@ -80,6 +177,8 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
 
     from core.libs.utils import ConfigDict
     from core.models import build_model
+
+    _install_constant_kv_cache()
 
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:
@@ -187,6 +286,9 @@ class FallingwaterStreamer:
         ``FallingwaterGen.inference``, with CFG's conditional/unconditional
         pair stacked in the batch dimension exactly as upstream does."""
         model = self.model
+        # The cached projections belong to the previous chunk's audio and
+        # motion; this chunk's differ.
+        _clear_constant_kv(model)
         model_audio = torchaudio.functional.resample(
             chunk_16k[None], orig_freq=PIPELINE_SAMPLE_RATE, new_freq=self._model_sample_rate
         )
