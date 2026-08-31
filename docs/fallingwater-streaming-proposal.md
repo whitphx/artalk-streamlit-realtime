@@ -8,8 +8,11 @@ The blocker for a real self-attention KV cache was `vqidx_to_accum_next_feat`: i
 
 - 97 changes to already-decoded positions across 176 steps, in a strictly periodic pattern (a 1/2/1-position ripple with period 7, always in scales 2-3).
 - **Maximum lag of any change: 3 decode steps** behind the write head. Nothing further back ever changed.
+- Swept over 48 chunk decodes — speech, noise and silence inputs, three seeds, cfg 2.0 and 1.0, first chunks and chunks with real previous context — the maximum lag is 3 in every case. The window is structural (it comes from the fixed interpolation weights), not data-dependent.
 
-So an exact windowed KV cache exists on the current checkpoint: process only the newest position plus the trailing 3 each step — 4 query tokens instead of 176 — refreshing the cached K/V of those trailing positions. The periodicity comes from the fixed interpolation weights, so the window is expected to be structural rather than data-dependent, but this trace covers one audio clip and one seed; validation across clips and seeds is part of implementing it. Estimated win on top of the constant-K/V cache: another ~2x, putting a chunk near 1 s of compute on a P100. The same bit-identity gate used for the landed cache applies.
+Bounded dirty inputs alone would not make a cache exact if attention could reach positions that change later. It cannot: the within-chunk self-attention mask is built from `id_to_seq` as `decode_step(query) >= decode_step(key)` (`build_attn_mask`), i.e. **decode-order causal**. A cached position's deep layers therefore depend only on positions decoded before it, and with the dirty window bounded at 3, recomputing the trailing 4 positions per step against cached K/V for everything older is exact by induction — 4 query tokens instead of 176. A drift probe agrees: across one full chunk, the decoded row's logits between consecutive full recomputes are identical to the bit at every step where its input was unchanged (99 of 175), exactly as the causal mask predicts.
+
+Estimated win on top of the constant-K/V cache: another ~2x, putting a chunk near 1 s of compute on a P100. One implementation note: exact output comparison against the stock loop must be done on logits under teacher forcing, because the stock sampler draws from the RNG for all 176 rows each step and a windowed decoder would not, so sampled bits diverge for RNG reasons alone; the distributions are identical.
 
 ## Measurement 2: the renderer sustains streaming cadence
 
