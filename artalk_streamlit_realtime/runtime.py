@@ -40,6 +40,17 @@ def load_artalk_runtime(
 
 
 @st.cache_resource
+def load_artalk1s_streamer_model(
+    train_code_dir: str,
+    checkpoint_path: str,
+    device: str,
+):
+    from .artalk1s import load_artalk1s_model
+
+    return load_artalk1s_model(train_code_dir, checkpoint_path, torch.device(device))
+
+
+@st.cache_resource
 def load_fallingwater_streamer_model(
     repo_dir: str,
     checkpoint_path: str,

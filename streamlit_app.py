@@ -61,6 +61,7 @@ from artalk_streamlit_realtime.diagnostics import (
     save_diagnostics_snapshot,
 )
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
+from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
@@ -71,6 +72,7 @@ from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
     list_style_ids,
     load_artalk_runtime,
+    load_artalk1s_streamer_model,
     load_fallingwater_streamer_model,
     load_gagavatar,
     load_style_motion,
@@ -288,6 +290,11 @@ def main() -> None:
             st.caption(
                 "Fallingwater model: "
                 f"`{Path(args.fallingwater_checkpoint or '?').name}`"
+            )
+        elif args.motion_model == "artalk1s":
+            st.caption(
+                "ARTalk 1s model: "
+                f"`{Path(args.artalk1s_checkpoint or '?').name}`"
             )
         else:
             st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
@@ -550,12 +557,26 @@ def main() -> None:
                     args.device,
                 )
             )
+        elif args.motion_model == "artalk1s":
+            if not args.artalk1s_train_code_dir or not args.artalk1s_checkpoint:
+                raise RuntimeError(
+                    "--artalk1s-train-code-dir and --artalk1s-checkpoint are "
+                    "required for --motion-model artalk1s."
+                )
+            streamer = ARTalk1sStreamer(
+                load_artalk1s_streamer_model(
+                    args.artalk1s_train_code_dir,
+                    args.artalk1s_checkpoint,
+                    args.device,
+                )
+            )
         config = (
             args.device,
             args.artalk_audio_encoder,
             args.artalk_checkpoint,
             args.motion_model,
             args.fallingwater_checkpoint,
+            args.artalk1s_checkpoint,
             mode,
             render_res,
             args.render_batch_size,

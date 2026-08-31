@@ -223,8 +223,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--motion-model",
         default=os.environ.get("ARTALK_MOTION_MODEL", "artalk"),
-        choices=["artalk", "fallingwater"],
+        choices=["artalk", "fallingwater", "artalk1s"],
         help="Speech-to-motion model driving the avatar.",
+    )
+    parser.add_argument(
+        "--artalk1s-train-code-dir",
+        default=os.environ.get("ARTALK1S_TRAIN_CODE_DIR"),
+        type=str,
+        help="ARTalk train_code directory (provides the retrained model's core package).",
+    )
+    parser.add_argument(
+        "--artalk1s-checkpoint",
+        default=os.environ.get("ARTALK1S_CHECKPOINT"),
+        type=str,
+        help="Path to a retrained short-chunk generator checkpoint (e.g. iter_200000.pt).",
     )
     parser.add_argument(
         "--fallingwater-dir",
