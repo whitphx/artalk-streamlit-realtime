@@ -223,7 +223,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--motion-model",
         default=os.environ.get("ARTALK_MOTION_MODEL", "artalk"),
-        choices=["artalk", "fallingwater", "artalk1s"],
+        choices=["artalk", "fallingwater", "artalk1s", "frame"],
         help="Speech-to-motion model driving the avatar.",
     )
     parser.add_argument(
@@ -249,6 +249,18 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("FALLINGWATER_CHECKPOINT"),
         type=str,
         help="Path to a Fallingwater generator checkpoint (e.g. iter_75000.pt).",
+    )
+    parser.add_argument(
+        "--frame-package-dir",
+        default=os.environ.get("ARTALK_FRAME_PACKAGE_DIR"),
+        type=str,
+        help="Directory containing the artalk_frame package (checkout or snapshot).",
+    )
+    parser.add_argument(
+        "--frame-checkpoint",
+        default=os.environ.get("ARTALK_FRAME_CHECKPOINT"),
+        type=str,
+        help="Path to a trained frame-by-frame model checkpoint.",
     )
     parser.add_argument(
         "--gagavatar-asset-dir",

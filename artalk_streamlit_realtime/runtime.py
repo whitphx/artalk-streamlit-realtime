@@ -40,6 +40,17 @@ def load_artalk_runtime(
 
 
 @st.cache_resource
+def load_frame_streamer_model(
+    package_dir: str,
+    checkpoint_path: str,
+    device: str,
+):
+    from .framemodel import load_frame_model
+
+    return load_frame_model(package_dir, checkpoint_path, torch.device(device))
+
+
+@st.cache_resource
 def load_artalk1s_streamer_model(
     train_code_dir: str,
     checkpoint_path: str,
