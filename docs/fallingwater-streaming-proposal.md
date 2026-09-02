@@ -12,7 +12,7 @@ The blocker for a real self-attention KV cache was `vqidx_to_accum_next_feat`: i
 
 Bounded dirty inputs alone would not make a cache exact if attention could reach positions that change later. It cannot: the within-chunk self-attention mask is built from `id_to_seq` as `decode_step(query) >= decode_step(key)` (`build_attn_mask`), i.e. **decode-order causal**. A cached position's deep layers therefore depend only on positions decoded before it, and with the dirty window bounded at 3, recomputing the trailing 4 positions per step against cached K/V for everything older is exact by induction — 4 query tokens instead of 176. A drift probe agrees: across one full chunk, the decoded row's logits between consecutive full recomputes are identical to the bit at every step where its input was unchanged (99 of 175), exactly as the causal mask predicts.
 
-Estimated win on top of the constant-K/V cache: another ~2x, putting a chunk near 1 s of compute on a P100. One implementation note: exact output comparison against the stock loop must be done on logits under teacher forcing, because the stock sampler draws from the RNG for all 176 rows each step and a windowed decoder would not, so sampled bits diverge for RNG reasons alone; the distributions are identical.
+Estimated win on top of the constant-K/V cache (superseded, see below): another ~2x on paper. **Measured 2026-09-02: no win on P100.** A clean windowed decode (per-layer K/V buffers with the prefix folded in, decode-order bias and rope precomputed, no per-step allocation) runs at 0.99x versus the constant-K/V baseline; a naive first cut was 0.78x. The mechanism is exact (teacher-forced committed-logit diff 5.7e-6 across all 176 steps). It does not speed up decode because windowing shrinks the tensors in each step but leaves the operation and kernel-launch count unchanged: every step still runs all six layers over the same modules, and this decode is launch-overhead-bound, so wall-clock tracks the number of launches, not their size. The consequence for this ladder: on launch-bound decode only *fewer steps* help, which is what the 1 s-chunk retrain and stage 2 below deliver — not a smaller per-step window. One implementation note: exact output comparison against the stock loop must be done on logits under teacher forcing, because the stock sampler draws from the RNG for all 176 rows each step and a windowed decoder would not, so sampled bits diverge for RNG reasons alone; the distributions are identical.
 
 ## Measurement 2: the renderer sustains streaming cadence
 
@@ -30,13 +30,13 @@ Per-frame cost is nearly batch-independent, because launches dominate. Batch 2 s
 
 ## The proposal
 
-Two stages, the first requiring no retraining:
+One stage, since the first was measured out:
 
-1. **Windowed KV cache on the existing checkpoint.** Query only the trailing 4 decode positions per step, cache the rest. Combined with the landed constant-K/V cache this targets roughly 2.5-3x over stock decode. Output must stay bit-identical; the dirty-window measurement defines the window and the validation.
+1. **Windowed KV cache on the existing checkpoint — tried, no win (2026-09-02).** Querying only the trailing 4 decode positions per step is exact (teacher-forced logit diff 5.7e-6) but runs at 0.99x on P100: the decode is launch-bound, and windowing shrinks tensors without reducing the per-step operation count. Kept here as a recorded negative; the mechanism is sound and could pay off only where launch overhead is removed (CUDA graphs / compile over the AR loop), which is a separate hard problem.
 
 2. **A time-major decode variant, retrained.** The model is already strictly causal at 80 ms (the audio mask is built with zero look-ahead, verified by perturbation upstream). What keeps it chunked is only the coarse-to-fine decode order. A generator trained to decode time-major over the same codec tokens, with a KV cache and an incremental accumulator in place of the per-step rebuild, would emit motion every 80 ms token: the latency floor becomes one token plus render, on the order of 160-200 ms, instead of 4 s. The codec, the audio encoder and the training data pipeline all stay as they are.
 
-Stage 2 belongs upstream; the measurements here, the constant-K/V branch, and the dirty-window trace are the supporting material. Stage 1 is implementable on our side under the same guarded-patch pattern as the landed cache, and its result feeds stage 2's design either way.
+The retrain belongs upstream; the measurements here, the constant-K/V branch, and the dirty-window trace are the supporting material. It is the real lever because it cuts the number of decode steps, which is what launch-bound decode is bound by — unlike the windowed cache, which cut only per-step tensor size and so did nothing.
 
 ## Where this leaves the latency ladder
 
@@ -44,6 +44,6 @@ Stage 2 belongs upstream; the measurements here, the constant-K/V branch, and th
 | --- | --- |
 | today, 4 s chunks | ~4 s chunk + decode |
 | 1 s-chunk retrain (in flight) | ~1 s chunk + decode |
-| stage 2 above | ~2 tokens (160 ms) + render |
+| time-major retrain (stage 2) | ~2 tokens (160 ms) + render |
 
 The 1 s ARTalk retrain and this proposal are complementary rather than competing: the retrain is the near-term win on the model we control; this is the path below one second on the successor model.
