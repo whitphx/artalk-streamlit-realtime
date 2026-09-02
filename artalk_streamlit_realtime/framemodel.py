@@ -26,37 +26,49 @@ FPS = 25
 
 
 def load_frame_model(package_dir: str | Path, checkpoint_path: str | Path, device):
-    """Load a trained CausalFrameModel checkpoint.
+    """Load a trained frame model checkpoint, regression or token variant.
 
-    ``package_dir`` is a directory containing the ``artalk_frame`` package
-    (the training checkout or a snapshot of it). Checkpoints carry the
-    trainer's EMA weights plus ``meta_cfg``.
+    ``package_dir`` is the ARTalk checkout (or a snapshot) containing the
+    ``artalk_frame`` package and, for token generators, ``train_code``.
+    Checkpoints carry the trainer's EMA weights plus ``meta_cfg``.
     """
     package_dir = str(Path(package_dir).resolve())
     if package_dir not in sys.path:
         sys.path.insert(0, package_dir)
 
-    from artalk_frame import CausalFrameModel
-
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:
         raise ValueError(f"{checkpoint_path} has no meta_cfg; not a self-contained checkpoint")
     m = ckpt["meta_cfg"]["MODEL"]
-    model = CausalFrameModel(
-        motion_dim=m["MOTION_DIM"],
-        expression_dim=m["EXPRESSION_DIM"],
-        sample_rate=m["SAMPLE_RATE"],
-        motion_fps=m["MOTION_FPS"],
-        audio_dim=m["AUDIO_DIM"],
-        style_dim=m["STYLE_DIM"],
-        motion_embed_dim=m["MOTION_EMBED_DIM"],
-        hidden_dim=m["HIDDEN_DIM"],
-        num_layers=m["NUM_LAYERS"],
-        dropout=m["DROPOUT"],
-        style_dropout=m["STYLE_DROPOUT"],
-    )
+    if m.get("LOADER", "").startswith("artalk_frame_gen."):
+        # Token generator: built by the training code's registry; its
+        # frozen per-frame codec ships inside the checkpoint.
+        train_code_dir = str(Path(package_dir) / "train_code")
+        if train_code_dir not in sys.path:
+            sys.path.insert(0, train_code_dir)
+        from core.libs.utils import ConfigDict
+        from core.models import build_model
+
+        meta_cfg = ConfigDict(ckpt["meta_cfg"], gpus=1, cli_args=[])
+        model = build_model(meta_cfg.MODEL, init_submodule=False)
+    else:
+        from artalk_frame import CausalFrameModel
+
+        model = CausalFrameModel(
+            motion_dim=m["MOTION_DIM"],
+            expression_dim=m["EXPRESSION_DIM"],
+            sample_rate=m["SAMPLE_RATE"],
+            motion_fps=m["MOTION_FPS"],
+            audio_dim=m["AUDIO_DIM"],
+            style_dim=m["STYLE_DIM"],
+            motion_embed_dim=m["MOTION_EMBED_DIM"],
+            hidden_dim=m["HIDDEN_DIM"],
+            num_layers=m["NUM_LAYERS"],
+            dropout=m["DROPOUT"],
+            style_dropout=m["STYLE_DROPOUT"],
+        )
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
-    stray = [k for k in missing if not k.startswith("face_decoder.")]
+    stray = [k for k in missing if not k.startswith(("face_decoder.", "base_codec.face_decoder."))]
     if stray or unexpected:
         raise ValueError(f"checkpoint mismatch: missing={stray}, unexpected={unexpected}")
     model.eval().to(device)
