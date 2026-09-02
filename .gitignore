@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 .mamba-env/
+.pixi/
 .micromamba/
 .uv-cache/
 .pip-cache/
@@ -16,3 +17,5 @@ user_avatars/
 diagnostics_snapshots/
 benchmarks/
 comparisons/
+vendor/
+.envs/

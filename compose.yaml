@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./assets:/app/assets
+      - hf-cache:/app/.cache/huggingface
+      - ./user_avatars:/app/user_avatars
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:

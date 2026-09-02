@@ -2,11 +2,36 @@
 
 Standalone Streamlit realtime demo for the packaged ARTalk + GAGAvatar stack.
 
-This project owns only the Streamlit/WebRTC application layer. It expects ARTalk
-and GAGAvatar to be installed as Python packages, typically from editable
-checkouts while the packaging branches are under development.
+This project owns only the Streamlit/WebRTC application layer. ARTalk and
+GAGAvatar are consumed as Python packages: pinned git revisions through the
+lockfile by default, or editable checkouts for development.
 
-## Setup
+## Quick start (fresh CUDA host)
+
+```bash
+scripts/bootstrap.sh          # pixi env from pixi.lock + pinned vendor checkouts
+pixi run artalk-demo assets   # model weights (FLAME_with_eye.pt stays manual)
+pixi run artalk-demo doctor   # validates install, CUDA arch coverage, assets
+pixi run artalk-demo up       # launch; picks an idle GPU and its preset
+```
+
+`artalk-demo up` reads `launch.toml`: profiles (`lab` = ngrok tunnel, `server`
+= local bind for SSH forwarding, `offline` = localhost + `HF_HUB_OFFLINE`) and
+the measured per-GPU-tier render presets, applied as environment defaults so
+explicit flags and caller env vars always win. App arguments go after `--`:
+
+```bash
+pixi run artalk-demo up --profile server -- --motion-model artalk1s
+```
+
+`scripts/bootstrap.sh --with-track` additionally provisions the avatar
+registration environment (`scripts/provision_track_env.sh`, a separate env
+because its dependency set conflicts with the runtime stack).
+
+For the server path there is a `Dockerfile` + `compose.yaml` (assets and the
+Hugging Face cache are volumes; the image needs the NVIDIA Container Toolkit).
+
+## Setup (development against editable checkouts)
 
 Install the application and local editable runtime packages into the Python
 environment that already contains the heavy CUDA/PyTorch stack:

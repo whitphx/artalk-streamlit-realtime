@@ -1,0 +1,16 @@
+.git
+.pixi
+.envs
+.cache
+.venv
+.mamba-env
+__pycache__
+*.egg-info
+assets
+vendor
+user_avatars
+diagnostics_snapshots
+benchmarks
+comparisons
+profiles
+.streamlit/secrets.toml

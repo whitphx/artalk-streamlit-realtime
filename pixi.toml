@@ -1,0 +1,72 @@
+# Environment of record for the realtime app (see docs/portability-plan.md).
+# `pixi install` reproduces the full runtime stack from pixi.lock; the conda
+# layer carries the CUDA/PyTorch stack, the PyPI layer carries the app and the
+# pinned git revisions of the runtime packages.
+#
+# Local development against worktree checkouts stays possible by overriding
+# inside the env, e.g.:
+#   pixi run uv pip install --python .pixi/envs/default/bin/python -e /path/to/ARTalk --no-deps
+
+[workspace]
+name = "artalk-streamlit-realtime"
+channels = ["pytorch", "nvidia", "pytorch3d", "conda-forge"]
+platforms = ["linux-64"]
+# The pytorch/nvidia channels carry stale builds of common names (pillow,
+# libjpeg-turbo, ...); strict priority would shadow the conda-forge ones. The
+# packages where the channel matters are pinned per-dependency below.
+channel-priority = "disabled"
+
+[dependencies]
+python = "3.12.*"
+pytorch = { version = "==2.4.1", channel = "pytorch" }
+pytorch-cuda = { version = "12.1.*", channel = "pytorch" }
+torchvision = { version = "==0.19.1", channel = "pytorch" }
+torchaudio = { version = "==2.4.1", channel = "pytorch" }
+pytorch3d = { version = "==0.7.8", channel = "pytorch3d" }
+numpy = "1.26.*"
+# The pytorch channel carries ancient builds of this name; strict channel
+# priority would otherwise shadow the usable conda-forge ones.
+pillow = { version = ">=9", channel = "conda-forge" }
+# Also a dependency of conda pytorch3d (via iopath); pinned here because the
+# conda solve's choice is authoritative for the PyPI layer.
+tqdm = "==4.66.5"
+pyyaml = "==6.0.1"
+# Enables `artalk-demo doctor`'s CUDA-extension architecture audit.
+cuda-cuobjdump = { version = "12.1.*", channel = "nvidia" }
+pip = "*"
+
+[pypi-dependencies]
+artalk-streamlit-realtime = { path = ".", editable = true, extras = ["personaplex", "fallingwater"] }
+artalk = { git = "https://github.com/whitphx/ARTalk.git", rev = "b88ebe37ef800f9c59453451a8ee8a5cc44757da" }
+gagavatar = { git = "https://github.com/whitphx/GAGAvatar.git", rev = "437dadea35d3069abdcc2026f661869fd608231d" }
+# Prebuilt fat binary (sm_60/75/80+PTX) from whitphx/diff-gaussian-rasterization
+# branch fix/unconditional-launch-error-check (4d71ef9); ABI-tied to the torch
+# pin above. Rebuild recipe: docs/realtime-performance-notes.md.
+diff-gaussian-rasterization-32d = { path = "wheels/diff_gaussian_rasterization_32d-0.0.0-cp312-cp312-linux_x86_64.whl" }
+
+# The monkey-patches in artalk_streamlit_realtime/streamlit_patches.py and
+# .streamlit/config.toml target Streamlit internals; bump only after re-testing them.
+streamlit = "==1.58.0"
+streamlit-webrtc = "==0.74.1"
+# The realtime bridge and the WebRTC frame path are validated against these;
+# openai 3.x in particular changes the SDK surface the bridge uses.
+openai = "==2.28.0"
+av = "==16.1.0"
+
+# artalk and gagavatar intentionally declare no dependencies (installed
+# --no-deps upstream); their import closure is carried here instead.
+transformers = "==4.45.1"
+einops = "==0.8.1"
+scipy = "==1.14.1"
+colored = "==2.2.4"
+face-alignment = "==1.4.1"
+fvcore = "==0.1.5.post20221221"
+lmdb = "==1.5.1"
+matplotlib = "==3.9.2"
+omegaconf = "==2.3.0"
+onnx2torch = "==1.5.15"
+opencv-python = "==4.10.0.84"
+rich = "==15.0.0"
+torchmetrics = "==1.4.2"
+
+streamlit-remote = "==0.11.0"

@@ -112,3 +112,7 @@ Compute read for our workload: the RTX 5090 Laptop beats the Quadro RTX 8000 on 
 | 4. Laptop | E5 purchase + bring-up, B2/B3 bundle for air-gapped copies | 2, 3 | offline dress rehearsal outside the lab |
 
 Phases 1–2 are pure software and start now on existing hardware. Phase 3 is the purchase gate. The browser-rendering direction (send 106 floats/frame, render client-side; groundwork in the `web-based-renderer` worktree) remains the strategic long-term answer that would remove the CUDA-laptop constraint entirely, but it is a separate project and does not block this plan.
+
+## 9. Status
+
+Phase 1 implementation landed 2026-09-01: `pixi.toml`/`pixi.lock` (conda pytorch/pytorch3d layer + pinned PyPI layer + git-pinned `artalk`/`gagavatar`, rasterizer as an in-repo prebuilt fat wheel), `scripts/bootstrap.sh` (env + pinned vendor checkouts), `scripts/provision_track_env.sh` + `envs/track-requirements.txt` (A4), `artalk-demo` CLI (`up` with `launch.toml` profiles/presets, `assets`, `doctor`), and `Dockerfile`/`compose.yaml` (A5, not yet built on a docker host). Open from phase 1: A2 wheel hosting for pytorch3d source builds, the ARTalk fork branch needs a push before `vendor/ARTalk` resolves for other machines, and a fresh-host validation run.
