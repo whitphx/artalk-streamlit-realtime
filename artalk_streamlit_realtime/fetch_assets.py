@@ -97,6 +97,9 @@ def run(args: argparse.Namespace) -> int:
     if not flame.exists():
         print(FLAME_INSTRUCTION.format(path=flame))
         ok = False
+    if not any((root / "style_motion").glob("*.pt")):
+        print(f"no style motions under {root / 'style_motion'}")
+        ok = False
 
     from artalk.assets import ARTalkAssets
 

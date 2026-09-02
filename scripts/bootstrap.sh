@@ -49,7 +49,10 @@ fetch_rev() {
   git -C "$dest" fetch --depth 1 origin "$rev"
   git -C "$dest" checkout -q FETCH_HEAD
   if [[ "$submodules" == 1 ]]; then
-    git -C "$dest" submodule update --init --depth 1
+    # Upstream .gitmodules uses SSH URLs; stay on HTTPS so a fresh machine
+    # without GitHub keys can clone.
+    git -C "$dest" -c 'url.https://github.com/.insteadOf=git@github.com:' \
+      submodule update --init --depth 1
   fi
 }
 
