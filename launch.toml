@@ -1,0 +1,52 @@
+# Launch profiles and per-GPU presets for `artalk-demo up`.
+# A gitignored launch.local.toml with the same shape is merged over this file.
+
+[defaults]
+bind = "0.0.0.0"
+port = 8501
+
+[profiles.lab]
+# HTTPS tunnel: browsers only grant microphone access in a secure context.
+remote = "ngrok"
+
+[profiles.server]
+# Serve locally; reach it via `ssh -L 8501:localhost:8501 <host>`.
+remote = "none"
+
+[profiles.offline]
+remote = "none"
+bind = "127.0.0.1"
+[profiles.offline.env]
+HF_HUB_OFFLINE = "1"
+TRANSFORMERS_OFFLINE = "1"
+# Services (e.g. a local PersonaPlex server) can be listed per profile and are
+# started before the app and stopped with it:
+# [[profiles.offline.services]]
+# name = "personaplex"
+# command = ["/path/to/moshi-env/bin/python", "-m", "moshi.server", "..."]
+
+# Measured per-tier render flags (docs/cheaper-gpu-plan.md). Evaluated in file
+# order, first match wins. capability is the CUDA compute capability.
+# CUDA-graph capture (ARTALK_RENDERER_COMPILE) costs ~3.2 GB VRAM, so the
+# small-VRAM tier must precede the capability tiers.
+
+[[presets]]
+name = "small-vram"
+max_vram_gb = 10
+[presets.env]
+ARTALK_RENDER_UINT8_GPU = "1"
+ARTALK_RENDER_RES = "384"
+ARTALK_RENDER_BATCH_SIZE = "4"
+
+[[presets]]
+name = "turing-or-newer"
+min_capability = 7.5
+[presets.env]
+ARTALK_RENDER_UINT8_GPU = "1"
+ARTALK_RENDERER_COMPILE = "1"
+
+[[presets]]
+name = "pascal"
+max_capability = 7.0
+[presets.env]
+ARTALK_RENDER_UINT8_GPU = "1"
