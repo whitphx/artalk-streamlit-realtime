@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import fractions
+import os
 import sys
 import time
 from pathlib import Path
@@ -71,6 +72,16 @@ def write_video_with_audio(
 def build_streamer(name: str, runtime, args, device):
     if name == "artalk":
         return ARTalkStreamer(runtime.model)
+    if name == "artalk1s":
+        from artalk_streamlit_realtime.artalk1s import (
+            ARTalk1sStreamer,
+            load_artalk1s_model,
+        )
+
+        model = load_artalk1s_model(
+            args.artalk1s_train_code_dir, args.artalk1s_checkpoint, device
+        )
+        return ARTalk1sStreamer(model)
     from artalk_streamlit_realtime.fallingwater import (
         FallingwaterStreamer,
         load_fallingwater_model,
@@ -118,6 +129,16 @@ def main() -> None:
     parser.add_argument("--render-batch-size", default=8, type=int)
     parser.add_argument("--fallingwater-dir", type=str)
     parser.add_argument("--fallingwater-checkpoint", type=str)
+    parser.add_argument(
+        "--artalk1s-train-code-dir",
+        default=os.environ.get("ARTALK1S_TRAIN_CODE_DIR"),
+        type=str,
+    )
+    parser.add_argument(
+        "--artalk1s-checkpoint",
+        default=os.environ.get("ARTALK1S_CHECKPOINT"),
+        type=str,
+    )
     parser.add_argument(
         "--models",
         default="artalk,fallingwater",
