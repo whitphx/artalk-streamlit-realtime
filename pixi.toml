@@ -70,3 +70,7 @@ rich = "==15.0.0"
 torchmetrics = "==1.4.2"
 
 streamlit-remote = "==0.11.0"
+
+# The vendored training code (train_code / Fallingwater `core`) carries
+# module-level debug imports of ipdb on the artalk1s/fallingwater load paths.
+ipdb = "==0.13.13"

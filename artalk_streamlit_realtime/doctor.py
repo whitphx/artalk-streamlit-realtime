@@ -175,6 +175,34 @@ def check_assets(report: Report) -> None:
     report.result(True, "GAGAvatar assets", str(gagavatar_assets.flame_model_path))
 
 
+def check_vendored_cores(report: Report) -> None:
+    """artalk1s and fallingwater import a `core` package from their checkout
+    via sys.path, pulling in training-code modules with their own dependency
+    tails (e.g. module-level `import ipdb`). Same-named packages, so each gets
+    its own subprocess, mirroring how the app loads exactly one per process."""
+    vendors = {
+        "artalk1s core": (
+            REPO_ROOT / "vendor" / "ARTalk" / "train_code",
+            "from core.models import build_model",
+        ),
+        "fallingwater core": (
+            REPO_ROOT / "vendor" / "Fallingwater",
+            "from core.models import build_model",
+        ),
+    }
+    for label, (directory, statement) in vendors.items():
+        if not directory.is_dir():
+            report.result(None, label, f"{directory} not bootstrapped")
+            continue
+        completed = subprocess.run(
+            [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(directory)!r}); {statement}"],
+            capture_output=True,
+            text=True,
+        )
+        detail = completed.stderr.strip().splitlines()[-1] if completed.returncode else str(directory)
+        report.result(completed.returncode == 0, label, detail)
+
+
 def check_streamlit_pins(report: Report) -> None:
     """The realtime path depends on two version-fragile Streamlit hacks."""
     config = REPO_ROOT / ".streamlit" / "config.toml"
@@ -226,6 +254,7 @@ def run(args: argparse.Namespace) -> int:
         capability = check_cuda(report)
     check_extension_archs(report, capability)
     check_assets(report)
+    check_vendored_cores(report)
     check_streamlit_pins(report)
     if args.render:
         check_render(report)
