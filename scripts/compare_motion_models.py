@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 """Render the same audio through each motion model for side-by-side judging.
 
-Both models drive the identical FLAME mesh renderer and the identical
-smoother, so the only difference in the output videos is the motion each
-model produced. Realtime constraints do not apply here: this exists to
-answer whether a model's lip-sync is better, not whether it keeps pace.
+All models drive the identical smoother and renderer, so the only
+difference in the output videos is the motion each model produced.
+Realtime constraints do not apply here: this exists to answer whether a
+model's motion is better, not whether it keeps pace.
+
+Renders the FLAME mesh by default; pass ``--renderers mesh,gagavatar``
+to also render through the GAGAvatar photoreal head the app uses. With
+more than one model, a labeled side-by-side video is written in
+addition to the per-model ones.
 """
 
 from __future__ import annotations
@@ -30,6 +35,12 @@ from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig
 from artalk.streaming import ARTalkStreamer, CausalSavgolSmoother
 
 from artalk_streamlit_realtime.config import ARTALK_FPS, ARTALK_SAMPLE_RATE
+
+MODEL_LABELS = {
+    "artalk": "ARTalk 4s (release)",
+    "artalk1s": "ARTalk 1s (ours)",
+    "fallingwater": "Fallingwater",
+}
 
 
 def write_video_with_audio(
@@ -93,11 +104,49 @@ def build_streamer(name: str, runtime, args, device):
     return FallingwaterStreamer(model)
 
 
-def run_model(name: str, audio: torch.Tensor, runtime, renderer, args, device) -> dict:
-    streamer = build_streamer(name, runtime, args, device)
-    smoother = CausalSavgolSmoother()
+def build_renderer(kind: str, runtime, artalk_assets, args, device):
+    if kind == "mesh":
+        return StreamingRenderer(
+            mode="mesh",
+            basic_vae=runtime.model.basic_vae,
+            flame_model=runtime.flame_model,
+            mesh_renderer=RenderMesh(
+                image_size=args.render_res,
+                faces=runtime.flame_model.get_faces(),
+                scale=1.0,
+            ),
+            device=args.device,
+        )
+    if kind == "gagavatar":
+        from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
-    decode_t0 = time.perf_counter()
+        from artalk_streamlit_realtime.assets import gagavatar_assets_in_artalk_tree
+        from artalk_streamlit_realtime.runtime import StreamingGAGAvatarAdapter
+
+        assets = gagavatar_assets_in_artalk_tree(artalk_assets)
+        gaga_runtime = GAGAvatarRuntime(
+            GAGAvatarRuntimeConfig(
+                model_path=str(assets.model_path),
+                tracked_path=str(assets.tracked_path),
+                flame_model_path=str(assets.flame_model_path),
+                device=args.device,
+            )
+        )
+        return StreamingRenderer(
+            mode="gagavatar",
+            gagavatar=StreamingGAGAvatarAdapter(gaga_runtime),
+            gagavatar_flame=gaga_runtime.flame_model,
+            shape_id=args.gagavatar_avatar,
+            device=device,
+        )
+    raise ValueError(f"Unknown renderer: {kind!r}")
+
+
+def generate_motion(streamer, audio: torch.Tensor, device) -> tuple[torch.Tensor, float]:
+    smoother = CausalSavgolSmoother()
+    torch.manual_seed(0)
+    t0 = time.perf_counter()
+    streamer.reset()
     chunks = [streamer.feed(audio.to(device))]
     chunks.append(streamer.finish())
     motion = torch.cat([c for c in chunks if c.shape[0]], dim=0)
@@ -105,23 +154,33 @@ def run_model(name: str, audio: torch.Tensor, runtime, renderer, args, device) -
         [smoother.feed(motion.float()), smoother.finish()], dim=0
     )
     torch.cuda.synchronize()
-    decode_s = time.perf_counter() - decode_t0
+    return smoothed.cpu(), time.perf_counter() - t0
 
-    render_t0 = time.perf_counter()
+
+def render_frames(renderer, motion: torch.Tensor, batch_size: int) -> torch.Tensor:
     frames = []
-    for start in range(0, smoothed.shape[0], args.render_batch_size):
-        batch = smoothed[start : start + args.render_batch_size]
+    for start in range(0, motion.shape[0], batch_size):
+        batch = motion[start : start + batch_size]
         rgb, _ = renderer.render_batch_profile(batch)
         frames.append((rgb.clamp(0, 1) * 255).to(torch.uint8).permute(0, 2, 3, 1).cpu())
-    video = torch.cat(frames, dim=0)
-    torch.cuda.synchronize()
-    render_s = time.perf_counter() - render_t0
-    return {"video": video, "decode_s": decode_s, "render_s": render_s}
+    return torch.cat(frames, dim=0)
+
+
+def label_band(text: str, width: int, height: int = 40) -> torch.Tensor:
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (width, height))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default(size=height * 5 // 8)
+    draw.text(
+        (width // 2, height // 2), text, fill=(255, 255, 255), font=font, anchor="mm"
+    )
+    return torch.from_numpy(np.asarray(img).copy())
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--audio", required=True, type=str)
+    parser.add_argument("--audio", required=True, type=str, nargs="+")
     parser.add_argument("--output-dir", default="comparisons", type=str)
     parser.add_argument("--asset-dir", default="assets", type=str)
     parser.add_argument("--device", default="cuda", type=str)
@@ -144,53 +203,73 @@ def main() -> None:
         default="artalk,fallingwater",
         help="Comma-separated model names to render.",
     )
+    parser.add_argument(
+        "--renderers",
+        default="mesh",
+        help="Comma-separated renderers: mesh, gagavatar.",
+    )
+    parser.add_argument(
+        "--gagavatar-avatar",
+        default="1.jpg",
+        help="Avatar id in tracked.pt for the gagavatar renderer.",
+    )
     args = parser.parse_args()
     device = torch.device(args.device)
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    renderer_names = [r.strip() for r in args.renderers.split(",") if r.strip()]
 
-    waveform, sample_rate = torchaudio.load(args.audio)
-    audio = torchaudio.functional.resample(
-        waveform.mean(0), orig_freq=sample_rate, new_freq=ARTALK_SAMPLE_RATE
-    )
-    print(f"audio: {audio.shape[0] / ARTALK_SAMPLE_RATE:.2f}s")
-
+    artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     runtime = ARTalkRuntime(
         ARTalkRuntimeConfig(
-            assets=ARTalkAssets.resolve(root=args.asset_dir),
+            assets=artalk_assets,
             device=args.device,
             flame_scale=1.0,
         )
     )
-    renderer = StreamingRenderer(
-        mode="mesh",
-        basic_vae=runtime.model.basic_vae,
-        flame_model=runtime.flame_model,
-        mesh_renderer=RenderMesh(
-            image_size=args.render_res,
-            faces=runtime.flame_model.get_faces(),
-            scale=1.0,
-        ),
-        device=args.device,
-    )
+    renderers = {
+        name: build_renderer(name, runtime, artalk_assets, args, device)
+        for name in renderer_names
+    }
+    streamers = {name: build_streamer(name, runtime, args, device) for name in models}
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(args.audio).stem
 
-    for name in args.models.split(","):
-        name = name.strip()
-        if not name:
-            continue
-        print(f"\n=== {name} ===", flush=True)
-        result = run_model(name, audio, runtime, renderer, args, device)
-        path = output_dir / f"{stem}-{name}.mp4"
-        write_video_with_audio(
-            path, result["video"], ARTALK_FPS, audio, ARTALK_SAMPLE_RATE
+    for audio_path in args.audio:
+        waveform, sample_rate = torchaudio.load(audio_path)
+        audio = torchaudio.functional.resample(
+            waveform.mean(0), orig_freq=sample_rate, new_freq=ARTALK_SAMPLE_RATE
         )
-        frames = result["video"].shape[0]
-        print(
-            f"frames={frames} decode={result['decode_s']:.1f}s "
-            f"render={result['render_s']:.1f}s -> {path}"
-        )
+        stem = Path(audio_path).stem
+        print(f"\n=== {stem}: {audio.shape[0] / ARTALK_SAMPLE_RATE:.2f}s ===", flush=True)
+
+        motions = {}
+        for name in models:
+            motions[name], decode_s = generate_motion(streamers[name], audio, device)
+            print(f"{name}: frames={motions[name].shape[0]} decode={decode_s:.1f}s", flush=True)
+
+        for renderer_name, renderer in renderers.items():
+            panels = []
+            for name in models:
+                t0 = time.perf_counter()
+                video = render_frames(renderer, motions[name], args.render_batch_size)
+                torch.cuda.synchronize()
+                render_s = time.perf_counter() - t0
+                path = output_dir / f"{stem}-{name}-{renderer_name}.mp4"
+                write_video_with_audio(path, video, ARTALK_FPS, audio, ARTALK_SAMPLE_RATE)
+                print(f"render={render_s:.1f}s -> {path}", flush=True)
+                label = MODEL_LABELS.get(name, name)
+                band = label_band(label, video.shape[2])
+                panels.append(
+                    torch.cat([band[None].expand(video.shape[0], -1, -1, -1), video], dim=1)
+                )
+            if len(panels) > 1:
+                combined = torch.cat(panels, dim=2)
+                path = output_dir / f"{stem}-{'-vs-'.join(models)}-{renderer_name}.mp4"
+                write_video_with_audio(
+                    path, combined, ARTALK_FPS, audio, ARTALK_SAMPLE_RATE
+                )
+                print(f"-> {path}", flush=True)
 
 
 if __name__ == "__main__":
