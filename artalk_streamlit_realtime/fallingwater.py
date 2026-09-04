@@ -172,6 +172,7 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
     the repo's ``infer.py`` does (``init_submodule=False``: codec weights
     ship inside the checkpoint and the audio encoder loads from HF)."""
     # expanduser: see load_artalk1s_model.
+    argument = repo_dir
     resolved = Path(repo_dir).expanduser().resolve()
     repo_dir = str(resolved)
     if repo_dir not in sys.path:
@@ -187,7 +188,7 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
             raise
         raise ModuleNotFoundError(
             f"no `core` package under {resolved} "
-            f"(exists={resolved.is_dir()}, from {repo_dir!r}); "
+            f"(exists={resolved.is_dir()}, argument was {argument!r}); "
             "pass --fallingwater-dir pointing at a Fallingwater checkout"
         ) from exc
 

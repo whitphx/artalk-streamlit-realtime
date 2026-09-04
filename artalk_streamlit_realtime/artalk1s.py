@@ -37,6 +37,7 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
     """
     # expanduser: a "~/..." path arriving unexpanded would otherwise resolve
     # against the cwd and be inserted silently.
+    argument = train_code_dir
     resolved = Path(train_code_dir).expanduser().resolve()
     train_code_dir = str(resolved)
     if train_code_dir not in sys.path:
@@ -55,7 +56,7 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
             raise
         raise ModuleNotFoundError(
             f"no `core` package under {resolved} "
-            f"(exists={resolved.is_dir()}, from {train_code_dir!r}); "
+            f"(exists={resolved.is_dir()}, argument was {argument!r}); "
             "pass --artalk1s-train-code-dir pointing at an ARTalk train_code "
             "directory"
         ) from exc
