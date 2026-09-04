@@ -177,6 +177,30 @@ ARTALK_STREAMLIT_PYTHON=/path/to/python \
     --output-segment-seconds 0.5
 ```
 
+### When rendering falls behind
+
+Video is slaved to a media clock that only advances on real audio, so playback
+never runs ahead of what was rendered. What differs between policies is how
+playback resumes after the output buffer starves mid-response:
+
+```bash
+pixi run artalk-demo up -- --output-underrun-policy rebuffer
+```
+
+`continuous` (default) resumes on the first complete audio frame, staying as
+close to live as possible; when the renderer is marginal the buffer then
+oscillates around empty, so speech carries repeated short silences and the
+avatar repeats its last frame through each one. `rebuffer` instead waits for
+the buffer to refill to `--output-rebuffer-seconds` (default: the prebuffer),
+turning many stalls into few and keeping more of the rendered motion, at the
+cost of trailing live by up to `--max-added-latency-seconds`; past that ceiling
+it behaves like `continuous` so a durably slow renderer cannot push latency up
+without bound.
+
+The `audio_rebuffer_events`, `video_frames_dropped_for_sync` and
+`added_latency_seconds` counters in the diagnostics panel show which is
+happening.
+
 ## Profiling
 
 Capture PyTorch Profiler traces of the pipeline worker to inspect per-op

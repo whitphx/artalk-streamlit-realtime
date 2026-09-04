@@ -137,6 +137,37 @@ def parse_args() -> argparse.Namespace:
         type=float,
     )
     parser.add_argument(
+        "--output-underrun-policy",
+        default=os.environ.get("ARTALK_OUTPUT_UNDERRUN_POLICY", "continuous"),
+        choices=["continuous", "rebuffer"],
+        help=(
+            "What playback does when the output buffer starves mid-response. "
+            "continuous keeps playing the moment any audio is available, "
+            "staying closest to live but stuttering when the renderer is "
+            "marginal. rebuffer pauses until the buffer refills to "
+            "--output-rebuffer-seconds, trading latency (capped by "
+            "--max-added-latency-seconds) for continuous motion."
+        ),
+    )
+    parser.add_argument(
+        "--output-rebuffer-seconds",
+        default=os.environ.get("ARTALK_OUTPUT_REBUFFER_SECONDS"),
+        type=float,
+        help=(
+            "Refill target after an underrun under --output-underrun-policy "
+            "rebuffer. Defaults to --output-prebuffer-seconds."
+        ),
+    )
+    parser.add_argument(
+        "--max-added-latency-seconds",
+        default=float(os.environ.get("ARTALK_MAX_ADDED_LATENCY_SECONDS", "3.0")),
+        type=float,
+        help=(
+            "How far behind live the rebuffer policy may push playback before "
+            "it stops pausing and behaves like continuous."
+        ),
+    )
+    parser.add_argument(
         "--renderer-stage-sync",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", False),
