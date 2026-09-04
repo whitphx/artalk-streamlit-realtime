@@ -170,7 +170,15 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
     """Build ``FallingwaterGen`` from a self-contained checkpoint, the way
     the repo's ``infer.py`` does (``init_submodule=False``: codec weights
     ship inside the checkpoint and the audio encoder loads from HF)."""
-    repo_dir = str(Path(repo_dir).resolve())
+    # expanduser: see load_artalk1s_model — an unexpanded "~/..." would resolve
+    # against the cwd and fail later as a missing `core` package.
+    resolved = Path(repo_dir).expanduser().resolve()
+    if not (resolved / "core").is_dir():
+        raise FileNotFoundError(
+            f"Fallingwater checkout has no core/ package: {resolved} "
+            f"(from {repo_dir!r})"
+        )
+    repo_dir = str(resolved)
     if repo_dir not in sys.path:
         sys.path.insert(0, repo_dir)
     _shim_transformers_v4()

@@ -34,7 +34,16 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
     codec weights ship inside the checkpoint. The audio encoder loads from
     the Hugging Face cache and is excluded from checkpoints by design.
     """
-    train_code_dir = str(Path(train_code_dir).resolve())
+    # expanduser: a "~/..." path arriving unexpanded would otherwise resolve
+    # against the cwd and be inserted silently, surfacing much later as an
+    # unexplained ModuleNotFoundError for `core`.
+    resolved = Path(train_code_dir).expanduser().resolve()
+    if not (resolved / "core").is_dir():
+        raise FileNotFoundError(
+            f"train_code directory has no core/ package: {resolved} "
+            f"(from {train_code_dir!r})"
+        )
+    train_code_dir = str(resolved)
     if train_code_dir not in sys.path:
         sys.path.insert(0, train_code_dir)
 
