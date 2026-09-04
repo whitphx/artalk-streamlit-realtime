@@ -350,6 +350,45 @@ def main() -> None:
             ),
         )
 
+        with st.expander("Playback when rendering falls behind"):
+            st.radio(
+                "Underrun policy",
+                ["continuous", "rebuffer"],
+                index=["continuous", "rebuffer"].index(
+                    args.output_underrun_policy
+                ),
+                key="underrun_policy",
+                horizontal=True,
+                help=(
+                    "continuous resumes on the first complete audio frame, "
+                    "staying closest to live; when the renderer is marginal "
+                    "the buffer then oscillates around empty and both tracks "
+                    "stutter. rebuffer waits for the buffer to refill, "
+                    "trading latency for continuity. Applies immediately, so "
+                    "the two can be compared within one conversation."
+                ),
+            )
+            st.slider(
+                "Refill target (s)",
+                0.0,
+                3.0,
+                value=float(
+                    args.output_rebuffer_seconds
+                    if args.output_rebuffer_seconds is not None
+                    else args.output_prebuffer_seconds
+                ),
+                step=0.25,
+                key="rebuffer_seconds",
+            )
+            st.slider(
+                "Max added latency (s)",
+                0.0,
+                10.0,
+                value=float(args.max_added_latency_seconds),
+                step=0.5,
+                key="max_added_latency",
+            )
+
         api_key = ""
         realtime_model = DEFAULT_REALTIME_MODEL
         realtime_voice = DEFAULT_REALTIME_VOICE
@@ -694,6 +733,11 @@ def main() -> None:
         silence_pump = None
     else:
         silence_pump = get_silence_pump(pipeline)
+    pipeline.set_output_underrun_policy(
+        st.session_state.underrun_policy,
+        rebuffer_seconds=st.session_state.rebuffer_seconds,
+        max_added_latency_seconds=st.session_state.max_added_latency,
+    )
     event_log = get_event_log()
     get_event_watcher(pipeline, event_log)
 
