@@ -680,6 +680,9 @@ def main() -> None:
         pipeline = get_pipeline()
     except Exception as exc:
         st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
+        # Initialization spans several optional model paths whose imports and
+        # checkpoints fail in ways the message alone does not locate.
+        st.exception(exc)
         st.stop()
 
     freeze_loaded_objects()
