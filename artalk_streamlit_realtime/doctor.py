@@ -82,6 +82,26 @@ def check_imports(report: Report) -> None:
             report.result(True, f"import {name}", _module_version(name))
 
 
+def check_package_origins(report: Report) -> None:
+    """Which copy of the runtime packages is actually loaded. They are normally
+    installed from a pinned revision inside the environment, but a development
+    override points them at a checkout — and `pixi run` silently reverts such an
+    override unless it is passed --no-install."""
+    env_root = str(Path(sys.executable).resolve().parent.parent)
+    for name in ("artalk", "gagavatar"):
+        module = sys.modules.get(name)
+        if module is None or not getattr(module, "__file__", None):
+            report.result(None, f"{name} origin", "not imported")
+            continue
+        path = str(Path(module.__file__).resolve())
+        pinned = path.startswith(env_root)
+        report.result(
+            True,
+            f"{name} origin",
+            "environment (pinned)" if pinned else f"OVERRIDE {path}",
+        )
+
+
 def check_cuda(report: Report):
     import torch
 
@@ -249,6 +269,7 @@ def run(args: argparse.Namespace) -> int:
     report = Report()
     print(f"interpreter: {sys.executable}")
     check_imports(report)
+    check_package_origins(report)
     capability = None
     if "torch" in sys.modules:
         capability = check_cuda(report)

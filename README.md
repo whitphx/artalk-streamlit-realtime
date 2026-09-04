@@ -31,6 +31,25 @@ because its dependency set conflicts with the runtime stack).
 For the server path there is a `Dockerfile` + `compose.yaml` (assets and the
 Hugging Face cache are volumes; the image needs the NVIDIA Container Toolkit).
 
+### Developing against an ARTalk/GAGAvatar checkout
+
+The environment installs both packages from pinned revisions, so edits in a
+checkout are invisible to the app until it is installed over them:
+
+```bash
+uv pip install --python .pixi/envs/default/bin/python -e /path/to/ARTalk --no-deps
+```
+
+Plain `pixi run` re-syncs the environment to the lockfile and silently reverts
+that, so run with `--no-install` while the override is in place:
+
+```bash
+pixi run --no-install artalk-demo up
+```
+
+`artalk-demo doctor` reports each package's origin, and `pixi install --locked`
+restores the pinned state.
+
 ## Setup (development against editable checkouts)
 
 Install the application and local editable runtime packages into the Python
