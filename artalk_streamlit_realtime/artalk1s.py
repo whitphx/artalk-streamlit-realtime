@@ -17,6 +17,7 @@ externally instead of inheriting the narrower defaults.
 
 from __future__ import annotations
 
+import importlib
 import math
 import sys
 from pathlib import Path
@@ -35,20 +36,29 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
     the Hugging Face cache and is excluded from checkpoints by design.
     """
     # expanduser: a "~/..." path arriving unexpanded would otherwise resolve
-    # against the cwd and be inserted silently, surfacing much later as an
-    # unexplained ModuleNotFoundError for `core`.
+    # against the cwd and be inserted silently.
     resolved = Path(train_code_dir).expanduser().resolve()
-    if not (resolved / "core").is_dir():
-        raise FileNotFoundError(
-            f"train_code directory has no core/ package: {resolved} "
-            f"(from {train_code_dir!r})"
-        )
     train_code_dir = str(resolved)
     if train_code_dir not in sys.path:
         sys.path.insert(0, train_code_dir)
+        # These checkouts live on a shared filesystem that other work mutates,
+        # so a directory listing this process cached earlier can be stale.
+        importlib.invalidate_caches()
 
-    from core.libs.utils import ConfigDict
-    from core.models import build_model
+    try:
+        from core.libs.utils import ConfigDict
+        from core.models import build_model
+    except ModuleNotFoundError as exc:
+        # Only explain a missing `core` itself; a missing dependency *of* the
+        # training code is a different problem and keeps its own message.
+        if (exc.name or "").split(".")[0] != "core":
+            raise
+        raise ModuleNotFoundError(
+            f"no `core` package under {resolved} "
+            f"(exists={resolved.is_dir()}, from {train_code_dir!r}); "
+            "pass --artalk1s-train-code-dir pointing at an ARTalk train_code "
+            "directory"
+        ) from exc
 
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:

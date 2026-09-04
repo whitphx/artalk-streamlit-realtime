@@ -22,6 +22,7 @@ audio in, resamples per chunk, and returns 106-dim ARTalk-style motion
 
 from __future__ import annotations
 
+import importlib
 import logging
 import math
 import os
@@ -170,21 +171,25 @@ def load_fallingwater_model(repo_dir: str | Path, checkpoint_path: str | Path, d
     """Build ``FallingwaterGen`` from a self-contained checkpoint, the way
     the repo's ``infer.py`` does (``init_submodule=False``: codec weights
     ship inside the checkpoint and the audio encoder loads from HF)."""
-    # expanduser: see load_artalk1s_model — an unexpanded "~/..." would resolve
-    # against the cwd and fail later as a missing `core` package.
+    # expanduser: see load_artalk1s_model.
     resolved = Path(repo_dir).expanduser().resolve()
-    if not (resolved / "core").is_dir():
-        raise FileNotFoundError(
-            f"Fallingwater checkout has no core/ package: {resolved} "
-            f"(from {repo_dir!r})"
-        )
     repo_dir = str(resolved)
     if repo_dir not in sys.path:
         sys.path.insert(0, repo_dir)
+        importlib.invalidate_caches()
     _shim_transformers_v4()
 
-    from core.libs.utils import ConfigDict
-    from core.models import build_model
+    try:
+        from core.libs.utils import ConfigDict
+        from core.models import build_model
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").split(".")[0] != "core":
+            raise
+        raise ModuleNotFoundError(
+            f"no `core` package under {resolved} "
+            f"(exists={resolved.is_dir()}, from {repo_dir!r}); "
+            "pass --fallingwater-dir pointing at a Fallingwater checkout"
+        ) from exc
 
     _install_constant_kv_cache()
 
