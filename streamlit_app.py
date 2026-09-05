@@ -614,7 +614,8 @@ def main() -> None:
                     args.artalk1s_train_code_dir,
                     args.artalk1s_checkpoint,
                     args.device,
-                )
+                ),
+                style_motion=style_motion,
             )
         elif args.motion_model == "frame":
             if not args.frame_package_dir or not args.frame_checkpoint:

@@ -81,7 +81,7 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
 class ARTalk1sStreamer:
     """Drives a train-code ARTalk generator chunk-by-chunk over live audio."""
 
-    def __init__(self, model, tau: float = 1.0, cfg: float = 2.0):
+    def __init__(self, model, style_motion=None, tau: float = 1.0, cfg: float = 2.0):
         self.model = model
         self.tau = float(tau)
         self.cfg = float(cfg)
@@ -91,6 +91,7 @@ class ARTalk1sStreamer:
         meta = model._artalk1s_meta_cfg
         self._prev_frames = int(meta.DATASET.PREV_LENGTH)
         self._style_frames = int(meta.DATASET.STYLE_LENGTH)
+        self.set_style(style_motion)
         self.reset()
 
     @property
@@ -98,15 +99,35 @@ class ARTalk1sStreamer:
         return self.model.device
 
     @torch.inference_mode()
+    def set_style(self, style_motion=None):
+        """Condition generation on a style motion window.
+
+        Accepts ``(frames, motion_dim)`` of any length; shorter windows
+        (e.g. the released 50-frame presets) are tiled to the trained
+        style length. ``None`` selects the zero unconditional-style input
+        (STYLE_FREE training drops style the same way).
+        """
+        if style_motion is None:
+            self._style_motion = torch.zeros(
+                1, self._style_frames, self.motion_dim, dtype=torch.float32, device=self.device
+            )
+            return
+        if style_motion.dim() == 2:
+            style_motion = style_motion[None]
+        if style_motion.dim() != 3 or style_motion.shape[-1] != self.motion_dim:
+            raise ValueError(
+                f"style_motion must be (frames, {self.motion_dim}), "
+                f"got shape {tuple(style_motion.shape)}"
+            )
+        reps = -(-self._style_frames // style_motion.shape[1])
+        style_motion = style_motion.repeat(1, reps, 1)[:, : self._style_frames]
+        self._style_motion = style_motion.to(device=self.device, dtype=torch.float32)
+
+    @torch.inference_mode()
     def reset(self):
         self._audio_buffer = torch.zeros(0, dtype=torch.float32, device=self.device)
         self._prev_motion = torch.zeros(
             1, self._prev_frames, self.motion_dim, dtype=torch.float32, device=self.device
-        )
-        # Zero style is the recipe's unconditional-style input (STYLE_FREE
-        # training drops style the same way).
-        self._style_motion = torch.zeros(
-            1, self._style_frames, self.motion_dim, dtype=torch.float32, device=self.device
         )
 
     @torch.inference_mode()
