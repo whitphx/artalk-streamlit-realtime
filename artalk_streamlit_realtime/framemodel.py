@@ -95,8 +95,11 @@ class FrameModelStreamer:
     layout for eye-aware renderers.
     """
 
-    def __init__(self, model, style_motion=None, native_layout: bool = False):
+    def __init__(self, model, style_motion=None, native_layout: bool = False, **sampling):
         self.model = model
+        # Token generators accept sampling knobs (tau, top_p, cfg) on step();
+        # the regression model takes none.
+        self._sampling = sampling
         self.frames_per_chunk = 1
         self.patch_audio_length = int(model.samples_per_frame)
         self._native_layout = bool(native_layout)
@@ -127,7 +130,7 @@ class FrameModelStreamer:
         while self._audio_buffer.shape[0] >= spf:
             frame_audio = self._audio_buffer[:spf]
             self._audio_buffer = self._audio_buffer[spf:]
-            motion, self._state = self.model.step(frame_audio[None], self._state)
+            motion, self._state = self.model.step(frame_audio[None], self._state, **self._sampling)
             outputs.append(motion)
         if not outputs:
             return torch.zeros(0, self.motion_dim, dtype=torch.float32, device=self.device)
