@@ -80,20 +80,143 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
         raise ValueError(f"checkpoint mismatch: missing={stray}, unexpected={unexpected}")
     model.eval().to(device)
     model._artalk1s_meta_cfg = meta_cfg
-    # The AR scale steps are launch-bound (a step costs the same at
-    # sequence length 1 and 31); inductor's cudagraphs cut them ~3.5x on
-    # an A100. Off by default until validated on the production GPU:
-    # compilation adds ~40 s of warmup, absorbed by the pipeline warm-up
-    # chunk.
-    if _env_flag("ARTALK1S_COMPILE_DECODER", False) and torch.device(device).type == "cuda":
-        try:
-            model.attn_blocks = torch.compile(
-                model.attn_blocks, mode="reduce-overhead", dynamic=False
-            )
-            logger.info("[artalk1s] decoder compiled (reduce-overhead)")
-        except Exception:
-            logger.warning("[artalk1s] torch.compile failed; keeping eager decoder", exc_info=True)
     return model
+
+
+def _install_decoder_constant_cache() -> bool:
+    """Keep the decoder's constant index tensors on the GPU.
+
+    ``MixedARTalkDecoder.forward`` rebuilds its attention mask and rope
+    positions on the CPU on every scale step and copies them to the
+    device, and ``CrossAttention.forward`` does the same for its context
+    positions. Both are pure functions of shapes that never change within
+    a session, so cache them per shape on the module's device. Besides
+    removing per-step CPU work, this eliminates the pageable
+    host-to-device copies that CUDA graph capture forbids. Patching
+    upstream classes is only safe while they look as expected, so the
+    signatures are checked first.
+    """
+    import inspect
+
+    from core.models.artalk_gen import transformer
+
+    if getattr(transformer, "_artalk1s_const_cache", False):
+        return True
+
+    expected = {
+        transformer.MixedARTalkDecoder.expand_attn_mask: ["self", "num_style_prev"],
+        transformer.CrossAttention.forward: ["self", "x", "context", "rope_pos", "context_rope_pos"],
+    }
+    for fn, params in expected.items():
+        if list(inspect.signature(fn).parameters) != params:
+            logger.warning(
+                "[artalk1s] %s is not the signature this cache was written "
+                "against; leaving the decoder unpatched", fn.__qualname__,
+            )
+            return False
+
+    orig_expand = transformer.MixedARTalkDecoder.expand_attn_mask
+
+    def expand_attn_mask_cached(self, num_style_prev=2):
+        cache = getattr(self, "_expand_cache", None)
+        if cache is None:
+            cache = self._expand_cache = {}
+        entry = cache.get(num_style_prev)
+        if entry is None:
+            mask, rope_pos = orig_expand(self, num_style_prev)
+            device = self.lvl_embed.weight.device
+            entry = (mask.to(device), rope_pos.to(device))
+            cache[num_style_prev] = entry
+        return entry
+
+    def cross_attention_forward(self, x, context, rope_pos, context_rope_pos):
+        patch_len, patch_offsets = context_rope_pos
+        cache = getattr(self, "_ctx_rope_cache", None)
+        if cache is None:
+            cache = self._ctx_rope_cache = {}
+        key = (patch_len, patch_offsets, context.shape[1])
+        ctx_pos = cache.get(key)
+        if ctx_pos is None:
+            ctx_pos = (
+                torch.linspace(0, patch_len, steps=(context.shape[1] + 1))[:-1].long()
+                + patch_offsets
+            ).to(x.device)
+            cache[key] = ctx_pos
+        x, context = self.self_norm(x), self.context_norm(context)
+        q = self.rearrange_qkv(self.q_proj(x))
+        k = self.rearrange_qkv(self.k_proj(context))
+        v = self.rearrange_qkv(self.v_proj(context))
+        q = self.rearrange_rope(self.rope(q, input_pos=rope_pos))
+        k = self.rearrange_rope(self.rope(k, input_pos=ctx_pos))
+        v = self.rearrange_rope(v)
+        out = torch.nn.functional.scaled_dot_product_attention(query=q, key=k, value=v)
+        return self.out_proj(self.rearrange_out(out))
+
+    transformer.MixedARTalkDecoder.expand_attn_mask = expand_attn_mask_cached
+    transformer.CrossAttention.forward = cross_attention_forward
+    transformer._artalk1s_const_cache = True
+    return True
+
+
+class _GraphedDecoder:
+    """Replay the AR decoder's kernel sequence from a CUDA graph.
+
+    The scale steps are launch-bound (a step costs the same at sequence
+    length 1 and 31), so collapsing each step's ~200 launches into one
+    graph replay cuts it several-fold. torch.compile's reduce-overhead
+    mode achieves the same standalone but its cudagraph trees re-record
+    whenever other GPU work runs between calls, which the pipeline's
+    interleaved rendering does every chunk; a manual capture with private
+    static buffers is immune to interleaving. One graph per step shape
+    (three per chunk size), each holding only decoder-sized activations.
+    """
+
+    def __init__(self, module):
+        self.module = module
+        self._graphs: dict[tuple, tuple] = {}
+        self._capture_failed = False
+
+    def __call__(self, *inputs):
+        if self._capture_failed:
+            return self.module(*inputs)
+        key = tuple(tuple(t.shape) for t in inputs)
+        entry = self._graphs.get(key)
+        if entry is None:
+            try:
+                entry = self._capture(inputs)
+            except Exception:
+                self._capture_failed = True
+                self._graphs.clear()
+                logger.warning(
+                    "[artalk1s] decoder graph capture failed; continuing eager",
+                    exc_info=True,
+                )
+                return self.module(*inputs)
+            self._graphs[key] = entry
+        graph, static_in, static_out = entry
+        for dst, src in zip(static_in, inputs):
+            dst.copy_(src)
+        graph.replay()
+        # The static output is overwritten by the next replay; hand the
+        # caller its own copy.
+        return static_out.clone()
+
+    def _capture(self, inputs) -> tuple:
+        # Quiesce the device: capture aborts if other in-flight work
+        # interleaves, and the pipeline runs with stage syncs disabled.
+        torch.cuda.synchronize()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                self.module(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        static_in = tuple(t.clone() for t in inputs)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+            static_out = self.module(*static_in)
+        return (graph, static_in, static_out)
 
 
 def _fast_decode_supported(model) -> bool:
@@ -153,6 +276,16 @@ class ARTalk1sStreamer:
             from core.models.artalk_gen.models import sample_idx_with_top_p_
 
             self._sample_bits = sample_idx_with_top_p_
+            self._decoder = model.attn_blocks
+            if (
+                _env_flag("ARTALK1S_GRAPH_DECODER", True)
+                and self.device.type == "cuda"
+                # Capture needs the decoder's constant tensors on-device;
+                # without the cache every step does pageable host-to-device
+                # copies, which capture forbids.
+                and _install_decoder_constant_cache()
+            ):
+                self._decoder = _GraphedDecoder(model.attn_blocks)
         else:
             logger.warning("[artalk1s] fast decode disabled; using plain inference()")
         self.set_style(style_motion)
@@ -291,7 +424,7 @@ class ARTalk1sStreamer:
         seq = sos
         patch_bits: list[torch.Tensor] = []
         for pidx in range(len(m.patch_nums)):
-            attn_feat = m.attn_blocks(seq, audio_feat2, prev_feat, self._style_feat)
+            attn_feat = self._decoder(seq, audio_feat2, prev_feat, self._style_feat)
             logits = m.logits_head(attn_feat)
             logits = logits[:, sum(m.patch_nums[:pidx]) :]
             logits = logits.mul(1 / self.tau)
