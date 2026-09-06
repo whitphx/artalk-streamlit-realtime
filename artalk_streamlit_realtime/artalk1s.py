@@ -18,11 +18,16 @@ externally instead of inheriting the narrower defaults.
 from __future__ import annotations
 
 import importlib
+import logging
 import math
 import sys
 from pathlib import Path
 
 import torch
+
+from .config import _env_flag
+
+logger = logging.getLogger(__name__)
 
 PIPELINE_SAMPLE_RATE = 16_000
 FPS = 25
@@ -75,11 +80,59 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
         raise ValueError(f"checkpoint mismatch: missing={stray}, unexpected={unexpected}")
     model.eval().to(device)
     model._artalk1s_meta_cfg = meta_cfg
+    # The AR scale steps are launch-bound (a step costs the same at
+    # sequence length 1 and 31); inductor's cudagraphs cut them ~3.5x on
+    # an A100. Off by default until validated on the production GPU:
+    # compilation adds ~40 s of warmup, absorbed by the pipeline warm-up
+    # chunk.
+    if _env_flag("ARTALK1S_COMPILE_DECODER", False) and torch.device(device).type == "cuda":
+        try:
+            model.attn_blocks = torch.compile(
+                model.attn_blocks, mode="reduce-overhead", dynamic=False
+            )
+            logger.info("[artalk1s] decoder compiled (reduce-overhead)")
+        except Exception:
+            logger.warning("[artalk1s] torch.compile failed; keeping eager decoder", exc_info=True)
     return model
 
 
+def _fast_decode_supported(model) -> bool:
+    """The fast chunk step inlines ``inference()``, so it is only safe while
+    the model still looks like the code it was written against."""
+    import inspect
+
+    # model.inference is a bound method, so "self" is not in the signature.
+    expected = [
+        "audio", "style_motion_code", "prev_motion_code", "tau", "cfg", "kwargs",
+    ]
+    if list(inspect.signature(model.inference).parameters) != expected:
+        return False
+    return all(
+        hasattr(model, attr)
+        for attr in (
+            "audio_encoder", "get_motion_feat", "code_token_embed", "sos_embed",
+            "attn_blocks", "logits_head", "patch_nums",
+        )
+    ) and all(
+        hasattr(model.base_codec, attr)
+        for attr in ("vqidx_to_next_feat", "vqidx_to_motion")
+    )
+
+
 class ARTalk1sStreamer:
-    """Drives a train-code ARTalk generator chunk-by-chunk over live audio."""
+    """Drives a train-code ARTalk generator chunk-by-chunk over live audio.
+
+    The per-chunk decode re-encodes context that cannot have changed: the
+    style window is fixed until ``set_style``, the CFG-unconditional halves
+    are all zeros, and all previous-context windows but the newest were
+    already encoded on earlier chunks. At a 1 s chunk those fixed costs
+    recur four times as often as the 4 s recipe paid them, so the default
+    path inlines ``inference()``'s single-chunk step and caches every
+    per-chunk-constant feature. Cached entries are produced by the same
+    ops at the same tensor shapes as the plain path, keeping the output
+    identical. Set ``ARTALK1S_FAST_DECODE=0`` to fall back to plain
+    ``inference()``.
+    """
 
     def __init__(self, model, style_motion=None, tau: float = 1.0, cfg: float = 2.0):
         self.model = model
@@ -91,6 +144,17 @@ class ARTalk1sStreamer:
         meta = model._artalk1s_meta_cfg
         self._prev_frames = int(meta.DATASET.PREV_LENGTH)
         self._style_frames = int(meta.DATASET.STYLE_LENGTH)
+        self._fast = (
+            _env_flag("ARTALK1S_FAST_DECODE", True)
+            and self._prev_frames % self.frames_per_chunk == 0
+            and _fast_decode_supported(model)
+        )
+        if self._fast:
+            from core.models.artalk_gen.models import sample_idx_with_top_p_
+
+            self._sample_bits = sample_idx_with_top_p_
+        else:
+            logger.warning("[artalk1s] fast decode disabled; using plain inference()")
         self.set_style(style_motion)
         self.reset()
 
@@ -111,6 +175,7 @@ class ARTalk1sStreamer:
             self._style_motion = torch.zeros(
                 1, self._style_frames, self.motion_dim, dtype=torch.float32, device=self.device
             )
+            self._refresh_style_cache()
             return
         if style_motion.dim() == 2:
             style_motion = style_motion[None]
@@ -122,6 +187,18 @@ class ARTalk1sStreamer:
         reps = -(-self._style_frames // style_motion.shape[1])
         style_motion = style_motion.repeat(1, reps, 1)[:, : self._style_frames]
         self._style_motion = style_motion.to(device=self.device, dtype=torch.float32)
+        self._refresh_style_cache()
+
+    @torch.inference_mode()
+    def _refresh_style_cache(self):
+        if not self._fast:
+            return
+        style2 = torch.cat(
+            [self._style_motion, torch.zeros_like(self._style_motion)], dim=0
+        )
+        self._style_feat = self.model.code_token_embed(
+            self.model.get_motion_feat(style2)
+        )
 
     @torch.inference_mode()
     def reset(self):
@@ -129,6 +206,30 @@ class ARTalk1sStreamer:
         self._prev_motion = torch.zeros(
             1, self._prev_frames, self.motion_dim, dtype=torch.float32, device=self.device
         )
+        if self._fast:
+            self._init_feature_cache()
+
+    @torch.inference_mode()
+    def _init_feature_cache(self):
+        """Precompute every per-chunk-constant decoder input.
+
+        Each cache entry is produced by the same op at the same tensor
+        shape ``inference()`` would use, so downstream results match the
+        plain path exactly: context windows are encoded as CFG pairs
+        (conditional row + zero unconditional row), matching the
+        batch-of-2 ``get_motion_feat`` calls inside ``inference()``.
+        """
+        m = self.model
+        zero_pair = torch.zeros(
+            2, self.frames_per_chunk, self.motion_dim, dtype=torch.float32, device=self.device
+        )
+        zero_feat = m.code_token_embed(m.get_motion_feat(zero_pair))
+        n_windows = self._prev_frames // self.frames_per_chunk
+        # Conditional windows, oldest first; the unconditional half of the
+        # previous context is all zeros for every chunk.
+        self._prev_window_feats = [zero_feat[0:1]] * n_windows
+        self._zero_window_feat = zero_feat[1:2]
+        self._prev_uncond_feat = torch.cat([self._zero_window_feat] * n_windows, dim=1)
 
     @torch.inference_mode()
     def feed(self, audio: torch.Tensor) -> torch.Tensor:
@@ -158,6 +259,8 @@ class ARTalk1sStreamer:
         return self._step_chunk(chunk)[:valid_frames]
 
     def _step_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
+        if self._fast:
+            return self._step_chunk_fast(chunk)
         out = self.model.inference(
             chunk[None],
             style_motion_code=self._style_motion,
@@ -166,6 +269,51 @@ class ARTalk1sStreamer:
             cfg=self.cfg,
         )
         motion = out["pred_motion_code"]  # (1, frames_per_chunk, motion_dim)
+        self._prev_motion = torch.cat([self._prev_motion, motion], dim=1)[
+            :, -self._prev_frames :
+        ]
+        return motion[0]
+
+    @torch.inference_mode()
+    def _step_chunk_fast(self, chunk: torch.Tensor) -> torch.Tensor:
+        """One chunk of ``inference()`` with cached constant context.
+
+        Mirrors the model's own loop body op for op; only *when* the
+        context features are computed changes.
+        """
+        m = self.model
+        audio_feat = m.audio_encoder(chunk[None])
+        audio_feat2 = torch.cat([audio_feat, torch.zeros_like(audio_feat)], dim=0)
+        prev_feat = torch.cat(
+            [torch.cat(self._prev_window_feats, dim=1), self._prev_uncond_feat], dim=0
+        )
+        sos = m.sos_embed.expand(2, 1, -1)
+        seq = sos
+        patch_bits: list[torch.Tensor] = []
+        for pidx in range(len(m.patch_nums)):
+            attn_feat = m.attn_blocks(seq, audio_feat2, prev_feat, self._style_feat)
+            logits = m.logits_head(attn_feat)
+            logits = logits[:, sum(m.patch_nums[:pidx]) :]
+            logits = logits.mul(1 / self.tau)
+            logits = logits.view(logits.shape[0], logits.shape[1], -1, 2)
+            if self.cfg > 1.0:
+                logits = self.cfg * logits[:1] + (1 - self.cfg) * logits[1:]
+            else:
+                logits = logits[:1]
+            patch_bits.append(self._sample_bits(logits))
+            if pidx < len(m.patch_nums) - 1:
+                nxt = m.base_codec.vqidx_to_next_feat(
+                    torch.cat(patch_bits, dim=1), pidx, "accum_next"
+                )
+                nxt = m.code_token_embed(nxt)
+                nxt = torch.cat([nxt, nxt], dim=0)
+                seq = torch.cat([sos, nxt], dim=1)
+        motion = m.base_codec.vqidx_to_motion(torch.cat(patch_bits, dim=1))
+        # Roll the caches: encode only the newly generated window, as a
+        # CFG pair so the kernel shapes match the plain path.
+        new_pair = torch.cat([motion, torch.zeros_like(motion)], dim=0)
+        new_feat = m.code_token_embed(m.get_motion_feat(new_pair))
+        self._prev_window_feats = self._prev_window_feats[1:] + [new_feat[0:1]]
         self._prev_motion = torch.cat([self._prev_motion, motion], dim=1)[
             :, -self._prev_frames :
         ]
