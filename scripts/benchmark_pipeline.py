@@ -168,6 +168,7 @@ def run_config(
     audio: np.ndarray,
     device: str,
     render_uint8_gpu: bool = False,
+    make_streamer=None,
 ) -> dict:
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
@@ -175,6 +176,7 @@ def run_config(
     logging.getLogger("artalk.realtime_pipeline").addHandler(error_capture)
     kwargs = dict(
         model=artalk_runtime.model,
+        streamer=make_streamer() if make_streamer is not None else None,
         flame_model=artalk_runtime.flame_model,
         mesh_renderer=mesh_renderer,
         device=device,
@@ -216,11 +218,12 @@ def run_config(
     pipeline._video_queue_high_water = 10**9
     pipeline._video_queue_max = 10**9
 
-    n_chunks_expected = audio.size // (4 * SAMPLE_RATE)
+    chunk_samples = int(pipeline._streamer.frames_per_chunk / 25 * SAMPLE_RATE)
+    n_chunks_expected = audio.size // chunk_samples
     wall_t0 = time.perf_counter()
     for start in range(0, audio.size, SAMPLE_RATE):
         pipeline.push_audio_samples(audio[start : start + SAMPLE_RATE])
-    deadline = time.perf_counter() + 300
+    deadline = time.perf_counter() + 420
     last_progress = (0, time.perf_counter())
     while time.perf_counter() < deadline:
         counters = pipeline.metrics_snapshot()["counters"]
@@ -233,8 +236,10 @@ def run_config(
         fed = counters.get("audio_samples_fed_to_streamer", 0)
         if fed > last_progress[0]:
             last_progress = (fed, time.perf_counter())
-        elif time.perf_counter() - last_progress[1] > 30:
-            print(f"  {config.label}: no progress for 30 s, aborting run", flush=True)
+        # Warm-up runs on the worker thread before any audio is consumed,
+        # and torch.compile warm-ups take tens of seconds.
+        elif time.perf_counter() - last_progress[1] > 180:
+            print(f"  {config.label}: no progress for 180 s, aborting run", flush=True)
             break
         time.sleep(0.2)
     wall_s = time.perf_counter() - wall_t0
@@ -331,6 +336,22 @@ def main() -> None:
         default=os.environ.get("ARTALK_AUDIO_ENCODER", "wav2vec"),
         type=str,
     )
+    parser.add_argument(
+        "--motion-model",
+        default=os.environ.get("ARTALK_MOTION_MODEL", "artalk"),
+        choices=["artalk", "artalk1s"],
+        type=str,
+    )
+    parser.add_argument(
+        "--artalk1s-train-code-dir",
+        default=os.environ.get("ARTALK1S_TRAIN_CODE_DIR"),
+        type=str,
+    )
+    parser.add_argument(
+        "--artalk1s-checkpoint",
+        default=os.environ.get("ARTALK1S_CHECKPOINT"),
+        type=str,
+    )
     parser.add_argument("--audio", default=None, type=str, help="Optional wav; defaults to seeded noise.")
     parser.add_argument("--seconds", default=12.0, type=float)
     parser.add_argument("--configs", default=DEFAULT_CONFIGS, type=str)
@@ -366,6 +387,18 @@ def main() -> None:
     if any(c.renderer_mode == "gagavatar" for c in configs):
         gagavatar = build_gagavatar(args.device, artalk_assets)
 
+    make_streamer = None
+    if args.motion_model == "artalk1s":
+        from artalk_streamlit_realtime.artalk1s import (
+            ARTalk1sStreamer,
+            load_artalk1s_model,
+        )
+
+        model_1s = load_artalk1s_model(
+            args.artalk1s_train_code_dir, args.artalk1s_checkpoint, args.device
+        )
+        make_streamer = lambda: ARTalk1sStreamer(model_1s)  # noqa: E731
+
     results = []
     for config in configs:
         print(f"running {config.label} ...", flush=True)
@@ -378,6 +411,7 @@ def main() -> None:
                 audio,
                 args.device,
                 render_uint8_gpu=args.render_uint8_gpu,
+                make_streamer=make_streamer,
             )
         )
     add_parity(results)
@@ -392,12 +426,16 @@ def main() -> None:
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
         "audio": args.audio or f"seeded-noise-{args.seconds:.0f}s",
         "artalk_checkpoint": str(artalk_runtime.checkpoint_path),
+        "motion_model": args.motion_model,
+        "artalk1s_checkpoint": args.artalk1s_checkpoint
+        if args.motion_model == "artalk1s"
+        else None,
         "render_uint8_gpu": args.render_uint8_gpu,
     }
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
     out_path = output_dir / datetime.now(timezone.utc).strftime(
-        f"bench-{platform.node()}-%Y%m%d-%H%M%S.json"
+        f"bench-{platform.node()}-{args.motion_model}-%Y%m%d-%H%M%S.json"
     )
     out_path.write_text(json.dumps({"meta": meta, "results": results}, indent=1))
 
