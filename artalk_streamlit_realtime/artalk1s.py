@@ -158,6 +158,41 @@ def _install_decoder_constant_cache() -> bool:
     return True
 
 
+def _recover_device_rng(device: torch.device) -> None:
+    """Heal the device RNG after a CUDA graph capture failed mid-flight.
+
+    A capture that dies between begin and end can leave the device's
+    default RNG generator registered to the dead capture, after which
+    every sampling op in the process (the photoreal renderer draws noise
+    per frame) raises "Offset increment outside graph capture". Swapping
+    in a fresh clone of the generator state clears the registration; the
+    other candidates (graph.reset(), deleting the graph, set_rng_state)
+    measurably do not. If even that fails, raise with the operator's way
+    out instead of letting the process limp into unrelated-looking
+    crashes.
+    """
+    try:
+        torch.randn(1, device=device)
+        return
+    except RuntimeError:
+        pass
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    generator = torch.cuda.default_generators[index]
+    try:
+        generator.graphsafe_set_state(generator.clone_state())
+        torch.randn(1, device=device)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "A failed CUDA graph capture left this device's RNG generator "
+            "unusable and recovery did not take. Restart the process; set "
+            "ARTALK1S_GRAPH_DECODER=0 to disable decoder graph capture."
+        ) from exc
+    logger.warning(
+        "[artalk1s] recovered the device RNG generator after a failed "
+        "graph capture"
+    )
+
+
 class _GraphedDecoder:
     """Replay the AR decoder's kernel sequence from a CUDA graph.
 
@@ -191,6 +226,9 @@ class _GraphedDecoder:
                     "[artalk1s] decoder graph capture failed; continuing eager",
                     exc_info=True,
                 )
+                # Eager is only a safe fallback once the RNG generator is
+                # confirmed (or restored to) usable.
+                _recover_device_rng(inputs[0].device)
                 return self.module(*inputs)
             self._graphs[key] = entry
         graph, static_in, static_out = entry
@@ -277,8 +315,12 @@ class ARTalk1sStreamer:
 
             self._sample_bits = sample_idx_with_top_p_
             self._decoder = model.attn_blocks
+            # Opt-in until validated on the deployment GPU: capture is the
+            # riskiest machinery in the stack (a mid-capture failure poisons
+            # the process-global RNG generator; recovery below is
+            # best-effort). The eager fast path alone is the safe default.
             if (
-                _env_flag("ARTALK1S_GRAPH_DECODER", True)
+                _env_flag("ARTALK1S_GRAPH_DECODER", False)
                 and self.device.type == "cuda"
                 # Capture needs the decoder's constant tensors on-device;
                 # without the cache every step does pageable host-to-device
