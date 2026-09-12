@@ -290,8 +290,10 @@ default (`--gagavatar-track-device`), taking well under a minute per image
 with no GPU memory contention; switch to `cuda` for faster tracking on GPUs
 supported by the tracker environment's torch build.
 
-Interactive mode uses the OpenAI Realtime API. Store the API key in a local
-Streamlit secrets file:
+Interactive mode picks its conversation backend in the sidebar: the OpenAI
+Realtime API (or any server speaking that protocol, chosen under **Endpoint**),
+OpenAI's GPT-Live, or a local PersonaPlex server. Both OpenAI backends read the
+API key from a local Streamlit secrets file:
 
 ```toml
 # .streamlit/secrets.toml
@@ -299,6 +301,12 @@ OPENAI_API_KEY = "sk-..."
 ```
 
 `.streamlit/secrets.toml` is ignored by git.
+
+GPT-Live is a separate protocol rather than another Realtime model. It is full
+duplex, so like PersonaPlex it has no turn boundary to truncate at barge-in,
+and it splits the voice frontend from a backend that reasons and calls tools.
+That backend is off by default; the sidebar can hand it to a Responses model
+with web search, billed on top of the session's per-second charge.
 
 ## Notes
 

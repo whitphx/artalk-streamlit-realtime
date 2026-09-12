@@ -47,6 +47,53 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
     "and conversational."
 )
 
+# GPT-Live speaks its own protocol rather than the Realtime one, so its
+# settings stand on their own instead of reusing the endpoint presets.
+OPENAI_LIVE_SAMPLE_RATE = 24000
+DEFAULT_LIVE_MODEL = "gpt-live-1"
+DEFAULT_LIVE_VOICE = "marin"
+# Transcribed from openai.types.live.BuiltInVoice rather than derived from
+# it, so that a missing SDK breaks the session instead of every command
+# that imports this module, `artalk-demo doctor` included.
+LIVE_VOICES = [
+    "alloy",
+    "ash",
+    "ballad",
+    "beacon",
+    "bossa",
+    "cedar",
+    "cinder",
+    "coral",
+    "delta",
+    "echo",
+    "gleam",
+    "marin",
+    "meridian",
+    "quartz",
+    "ripple",
+    "sage",
+    "shimmer",
+    "stone",
+    "tempo",
+    "verse",
+    "vesper",
+    "willow",
+]
+DEFAULT_LIVE_INSTRUCTIONS = (
+    "You are speaking through an ARTalk avatar. Keep responses concise "
+    "and conversational. Delegate only what needs current information."
+)
+# https://developers.openai.com/api/docs/guides/live-delegation names this the
+# starting point for the Responses backend, with gpt-5.6-luna as the
+# cost-sensitive alternative.
+DEFAULT_LIVE_DELEGATION_MODEL = "gpt-5.6-terra"
+# A gap this long in the output audio deltas stands in for the end-of-speech
+# event Live does not send.
+OPENAI_LIVE_OUTPUT_IDLE_FLUSH_SECONDS = 0.30
+# Bounded so a session that never confirms its close cannot outlast the
+# bridge's own stop budget.
+OPENAI_LIVE_CLOSE_DRAIN_SECONDS = 2.00
+
 
 class RealtimeEndpoint(NamedTuple):
     # The OpenAI SDK appends `/realtime` to base_url and puts model in the

@@ -40,6 +40,10 @@ from artalk_streamlit_realtime.config import (
     ARTALK_SAMPLE_RATE,
     CUSTOM_ENDPOINT_LABEL,
     DEFAULT_APPEARANCE,
+    DEFAULT_LIVE_DELEGATION_MODEL,
+    DEFAULT_LIVE_INSTRUCTIONS,
+    DEFAULT_LIVE_MODEL,
+    DEFAULT_LIVE_VOICE,
     DEFAULT_PERSONAPLEX_TEXT_PROMPT,
     DEFAULT_PERSONAPLEX_URL,
     DEFAULT_PERSONAPLEX_VOICE,
@@ -48,6 +52,7 @@ from artalk_streamlit_realtime.config import (
     DEFAULT_REALTIME_VOICE,
     DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
     DEFAULT_STYLE,
+    LIVE_VOICES,
     PERSONAPLEX_VOICES,
     REALTIME_ENDPOINT_PRESETS,
     REALTIME_VOICES,
@@ -68,6 +73,7 @@ from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_p
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
 from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
+from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
 from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
@@ -94,6 +100,7 @@ _PIPELINE_BUILD_LOCK = threading.Lock()
 SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BACKEND_OPENAI = "OpenAI Realtime"
+BACKEND_OPENAI_LIVE = "OpenAI Live"
 BACKEND_PERSONAPLEX = "PersonaPlex"
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
@@ -400,6 +407,10 @@ def main() -> None:
         realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
         realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
         backend = BACKEND_OPENAI
+        live_model = DEFAULT_LIVE_MODEL
+        live_voice = DEFAULT_LIVE_VOICE
+        live_instructions = DEFAULT_LIVE_INSTRUCTIONS
+        live_delegation_model = ""
         personaplex_url = DEFAULT_PERSONAPLEX_URL
         personaplex_voice = DEFAULT_PERSONAPLEX_VOICE
         personaplex_text_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
@@ -407,13 +418,56 @@ def main() -> None:
             st.header("Conversation backend")
             backend = st.radio(
                 "Backend",
-                [BACKEND_OPENAI, BACKEND_PERSONAPLEX],
+                [BACKEND_OPENAI, BACKEND_OPENAI_LIVE, BACKEND_PERSONAPLEX],
                 horizontal=True,
                 help=(
-                    "PersonaPlex is full duplex: it streams continuously and has "
-                    "no turn boundaries, so there is no barge-in truncation."
+                    "Live and PersonaPlex are full duplex: they stream "
+                    "continuously and have no turn boundaries, so there is no "
+                    "barge-in truncation."
                 ),
             )
+        if mode == "Interactive" and backend == BACKEND_OPENAI_LIVE:
+            api_key = get_secret("OPENAI_API_KEY")
+            if api_key:
+                st.success("`OPENAI_API_KEY` loaded.")
+            else:
+                st.warning("`OPENAI_API_KEY` is not configured.")
+            # Keyed so the Realtime branch's identically labelled widgets
+            # cannot be mistaken for these when the backend is switched.
+            live_model = st.text_input(
+                "Model", value=DEFAULT_LIVE_MODEL, key="live_model"
+            ).strip()
+            live_voice = st.selectbox(
+                "Voice",
+                LIVE_VOICES,
+                index=LIVE_VOICES.index(DEFAULT_LIVE_VOICE),
+                key="live_voice",
+            )
+            live_instructions = st.text_area(
+                "Instructions",
+                value=DEFAULT_LIVE_INSTRUCTIONS,
+                height=120,
+                key="live_instructions",
+            )
+            delegate = st.toggle(
+                "Delegate tasks to a Responses backend",
+                value=False,
+                key="live_delegate",
+                help=(
+                    "Splitting the voice frontend from a backend that reasons "
+                    "and calls tools is what separates Live from Realtime. The "
+                    "backend model and its tool calls are billed on top of the "
+                    "session's per-second charge; without it the avatar "
+                    "answers from the Live model alone."
+                ),
+            )
+            if delegate:
+                live_delegation_model = st.text_input(
+                    "Backend model",
+                    value=DEFAULT_LIVE_DELEGATION_MODEL,
+                    key="live_delegation_model",
+                ).strip()
+                st.caption("Web search is the only tool offered to the backend.")
         if mode == "Interactive" and backend == BACKEND_PERSONAPLEX:
             personaplex_url = st.text_input(
                 "moshi server URL", value=DEFAULT_PERSONAPLEX_URL
@@ -713,12 +767,12 @@ def main() -> None:
     if mode == "Loopback":
         stop_bridge()
 
-    if (
-        mode == "Interactive"
-        and backend == BACKEND_OPENAI
-        and not api_key
-        and not realtime_ws_base_url
-    ):
+    # A Realtime endpoint may take no credential; Live is OpenAI's alone.
+    needs_secret = not api_key and (
+        (backend == BACKEND_OPENAI and not realtime_ws_base_url)
+        or backend == BACKEND_OPENAI_LIVE
+    )
+    if mode == "Interactive" and needs_secret:
         stop_bridge()
         stop_pipeline()
         st.info("Configure the secret to use Interactive mode.")
@@ -750,7 +804,7 @@ def main() -> None:
     event_log = get_event_log()
     get_event_watcher(pipeline, event_log)
 
-    def get_bridge() -> OpenAIRealtimeBridge | PersonaPlexBridge:
+    def get_bridge() -> OpenAIRealtimeBridge | OpenAILiveBridge | PersonaPlexBridge:
         config = (
             backend,
             api_key,
@@ -758,6 +812,10 @@ def main() -> None:
             realtime_voice,
             realtime_instructions,
             realtime_ws_base_url,
+            live_model,
+            live_voice,
+            live_instructions,
+            live_delegation_model,
             personaplex_url,
             personaplex_voice,
             personaplex_text_prompt,
@@ -775,6 +833,17 @@ def main() -> None:
                     on_audio_output=None,
                     text_prompt=personaplex_text_prompt,
                     voice_prompt=personaplex_voice,
+                )
+            elif backend == BACKEND_OPENAI_LIVE:
+                bridge = OpenAILiveBridge(
+                    api_key=api_key,
+                    pipeline=pipeline,
+                    on_audio_output=silence_pump.mark_input if silence_pump else None,
+                    model=live_model,
+                    voice=live_voice,
+                    instructions=live_instructions,
+                    delegation_model=live_delegation_model,
+                    event_log=event_log,
                 )
             else:
                 bridge = OpenAIRealtimeBridge(
