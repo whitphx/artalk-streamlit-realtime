@@ -86,6 +86,11 @@ from artalk_streamlit_realtime.streamlit_patches import (
 
 PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
+# A rerun can start while the previous script run is still inside pipeline
+# construction (nothing in there is an st.* call the runner could stop at),
+# and concurrent constructions race in process-global CUDA state: graph
+# captures against renders, and torch's non-thread-safe lazy linalg init.
+_PIPELINE_BUILD_LOCK = threading.Lock()
 SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BACKEND_OPENAI = "OpenAI Realtime"
@@ -663,43 +668,46 @@ def main() -> None:
             str(model_path) if model_path else None,
             str(tracked_path) if tracked_path else None,
         )
-        pipeline = st.session_state.get(PIPELINE_KEY)
-        if pipeline is not None and st.session_state.get(PIPELINE_CONFIG_KEY) != config:
-            stop_silence_pump()
-            pipeline.stop()
-            pipeline = None
-        if pipeline is None:
-            pipeline = ARTalkPipeline(
-                model=model,
-                streamer=streamer,
-                flame_model=flame_model,
-                mesh_renderer=mesh_renderer,
-                device=args.device,
-                style_motion=style_motion,
-                render_res=render_res,
-                render_batch_size=args.render_batch_size,
-                output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
-                output_segment_seconds=args.output_segment_seconds,
-                output_underrun_policy=args.output_underrun_policy,
-                output_rebuffer_seconds=args.output_rebuffer_seconds,
-                max_added_latency_seconds=args.max_added_latency_seconds,
-                renderer_stage_sync=args.renderer_stage_sync,
-                renderer_output_uint8=args.render_uint8_gpu,
-                warm_key_extra=(
-                    f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
-                    f"motion={args.motion_model}"
-                ),
-                profile_trace_dir=args.profile_trace_dir,
-                profile_skip_chunks=args.profile_skip_chunks,
-                profile_max_chunks=args.profile_max_chunks,
-                renderer_mode=renderer_mode,
-                gagavatar=gagavatar,
-                gagavatar_flame=gagavatar_flame,
-                shape_id=avatar_id,
-            )
-            st.session_state[PIPELINE_KEY] = pipeline
-            st.session_state[PIPELINE_CONFIG_KEY] = config
-            freeze_loaded_objects(force=True)
+        with _PIPELINE_BUILD_LOCK:
+            # A run that waited here while another run built the
+            # pipeline must adopt it, not build a twin.
+            pipeline = st.session_state.get(PIPELINE_KEY)
+            if pipeline is not None and st.session_state.get(PIPELINE_CONFIG_KEY) != config:
+                stop_silence_pump()
+                pipeline.stop()
+                pipeline = None
+            if pipeline is None:
+                pipeline = ARTalkPipeline(
+                    model=model,
+                    streamer=streamer,
+                    flame_model=flame_model,
+                    mesh_renderer=mesh_renderer,
+                    device=args.device,
+                    style_motion=style_motion,
+                    render_res=render_res,
+                    render_batch_size=args.render_batch_size,
+                    output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
+                    output_segment_seconds=args.output_segment_seconds,
+                    output_underrun_policy=args.output_underrun_policy,
+                    output_rebuffer_seconds=args.output_rebuffer_seconds,
+                    max_added_latency_seconds=args.max_added_latency_seconds,
+                    renderer_stage_sync=args.renderer_stage_sync,
+                    renderer_output_uint8=args.render_uint8_gpu,
+                    warm_key_extra=(
+                        f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
+                        f"motion={args.motion_model}"
+                    ),
+                    profile_trace_dir=args.profile_trace_dir,
+                    profile_skip_chunks=args.profile_skip_chunks,
+                    profile_max_chunks=args.profile_max_chunks,
+                    renderer_mode=renderer_mode,
+                    gagavatar=gagavatar,
+                    gagavatar_flame=gagavatar_flame,
+                    shape_id=avatar_id,
+                )
+                st.session_state[PIPELINE_KEY] = pipeline
+                st.session_state[PIPELINE_CONFIG_KEY] = config
+                freeze_loaded_objects(force=True)
         return pipeline
 
     if mode == "Loopback":
