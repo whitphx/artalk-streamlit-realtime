@@ -379,6 +379,15 @@ def parse_args() -> argparse.Namespace:
         help="GAGAvatar_track checkout directory.",
     )
     parser.add_argument(
+        "--max-sessions",
+        default=int(os.environ.get("ARTALK_MAX_SESSIONS", "0")),
+        type=int,
+        help=(
+            "Browser sessions allowed to hold a pipeline at once (0: no "
+            "limit). Each session's pipeline is a render loop on the GPU."
+        ),
+    )
+    parser.add_argument(
         "--default-mode",
         default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
         choices=["loopback", "interactive"],

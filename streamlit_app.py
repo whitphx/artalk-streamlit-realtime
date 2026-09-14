@@ -67,6 +67,7 @@ from artalk_streamlit_realtime.diagnostics import (
 )
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
 from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
+from artalk_streamlit_realtime.sessions import current_session_id, slots
 from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
@@ -257,6 +258,7 @@ def stop_pipeline() -> None:
     if pipeline is not None:
         pipeline.stop()
     st.session_state.pop(PIPELINE_CONFIG_KEY, None)
+    slots.release(current_session_id())
 
 
 def main() -> None:
@@ -274,6 +276,7 @@ def main() -> None:
             "[loop-watchdog] not armed", exc_info=True
         )
     args = parse_args()
+    slots.limit = args.max_sessions
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
     asset_dir = artalk_assets.root
@@ -729,7 +732,11 @@ def main() -> None:
             # A run that waited here while another run built the
             # pipeline must adopt it, not build a twin.
             pipeline = st.session_state.get(PIPELINE_KEY)
-            if pipeline is not None and st.session_state.get(PIPELINE_CONFIG_KEY) != config:
+            # A stopped pipeline is one the slot reaper tore down while this
+            # session was disconnected; it came back and needs a fresh one.
+            if pipeline is not None and (
+                st.session_state.get(PIPELINE_CONFIG_KEY) != config or pipeline.is_stopped
+            ):
                 stop_silence_pump()
                 pipeline.stop()
                 pipeline = None
@@ -781,6 +788,12 @@ def main() -> None:
         st.info("Enter an API key in the sidebar to use Interactive mode.")
         st.stop()
 
+    session_id = current_session_id()
+    if not slots.acquire(session_id):
+        st.warning("Another visitor is using the GPU right now. Try again in a moment.")
+        st.button("Retry")
+        st.stop()
+
     try:
         pipeline = get_pipeline()
     except Exception as exc:
@@ -789,6 +802,7 @@ def main() -> None:
         # checkpoints fail in ways the message alone does not locate.
         st.exception(exc)
         st.stop()
+    slots.attach(session_id, "pipeline", pipeline)
 
     freeze_loaded_objects()
 
@@ -799,13 +813,14 @@ def main() -> None:
         silence_pump = None
     else:
         silence_pump = get_silence_pump(pipeline)
+    slots.attach(session_id, "pump", silence_pump)
     pipeline.set_output_underrun_policy(
         st.session_state.underrun_policy,
         rebuffer_seconds=st.session_state.rebuffer_seconds,
         max_added_latency_seconds=st.session_state.max_added_latency,
     )
     event_log = get_event_log()
-    get_event_watcher(pipeline, event_log)
+    slots.attach(session_id, "watcher", get_event_watcher(pipeline, event_log))
 
     def get_bridge() -> OpenAIRealtimeBridge | OpenAILiveBridge | PersonaPlexBridge:
         config = (

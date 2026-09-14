@@ -22,6 +22,8 @@ port = 7860
 ARTALK_ICE_PROVIDER = "cloudflare"
 # Visitors bring their own OpenAI key; Loopback needs none.
 ARTALK_DEFAULT_MODE = "loopback"
+# One GPU, one realtime render loop.
+ARTALK_MAX_SESSIONS = "1"
 
 [profiles.offline]
 remote = "none"
