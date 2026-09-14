@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring a fresh Linux CUDA host to a runnable state:
-#   scripts/bootstrap.sh [--with-track]
+#   scripts/bootstrap.sh [--with-track] [--without-fallingwater]
 # then: pixi run artalk-demo assets && pixi run artalk-demo up
 set -euo pipefail
 
@@ -19,9 +19,13 @@ GAGAVATAR_REPO=https://github.com/whitphx/GAGAvatar.git
 GAGAVATAR_REV=437dadea35d3069abdcc2026f661869fd608231d
 
 WITH_TRACK=0
+WITH_FALLINGWATER=1
 for arg in "$@"; do
   case "$arg" in
     --with-track) WITH_TRACK=1 ;;
+    # The Fallingwater fork is private; hosts without GitHub credentials
+    # (the Space image) run without that motion model.
+    --without-fallingwater) WITH_FALLINGWATER=0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -57,7 +61,9 @@ fetch_rev() {
 }
 
 mkdir -p vendor
-fetch_rev "$FALLINGWATER_REPO" "$FALLINGWATER_REV" vendor/Fallingwater
+if [[ "$WITH_FALLINGWATER" == 1 ]]; then
+  fetch_rev "$FALLINGWATER_REPO" "$FALLINGWATER_REV" vendor/Fallingwater
+fi
 fetch_rev "$ARTALK_TRAIN_REPO" "$ARTALK_TRAIN_REV" vendor/ARTalk
 fetch_rev "$GAGAVATAR_REPO" "$GAGAVATAR_REV" vendor/GAGAvatar 1
 
