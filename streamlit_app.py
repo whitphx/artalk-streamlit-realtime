@@ -543,27 +543,21 @@ def main() -> None:
                 height=120,
             )
 
-        with st.expander("Register avatar"):
-            registered_flash = st.session_state.pop("avatar_registered_flash", None)
-            if registered_flash is not None:
-                elapsed_s = registered_flash.get("elapsed_s")
-                took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
-                st.success(
-                    f"Registered{took} — select "
-                    f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
-                )
-                st.image(
-                    registered_flash["vis_image"],
-                    clamp=True,
-                    caption=f"Tracked fit: {registered_flash['avatar_id']}",
-                )
-            if not user_registry.can_register:
-                st.caption(
-                    "Avatar registration needs the GAGAvatar tracker. Set "
-                    "`GAGAVATAR_TRACK_PYTHON` and `GAGAVATAR_TRACK_DIR` (or "
-                    "pass `--gagavatar-track-python` / `--gagavatar-track-dir`)."
-                )
-            else:
+        if user_registry.can_register:
+            with st.expander("Register avatar"):
+                registered_flash = st.session_state.pop("avatar_registered_flash", None)
+                if registered_flash is not None:
+                    elapsed_s = registered_flash.get("elapsed_s")
+                    took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
+                    st.success(
+                        f"Registered{took} — select "
+                        f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
+                    )
+                    st.image(
+                        registered_flash["vis_image"],
+                        clamp=True,
+                        caption=f"Tracked fit: {registered_flash['avatar_id']}",
+                    )
                 upload = st.file_uploader(
                     "Face image",
                     type=["jpg", "jpeg", "png"],
