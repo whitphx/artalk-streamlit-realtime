@@ -22,7 +22,7 @@ Goal: a public Space running this app on a Hub GPU, with the ARTalk 1 s model pu
 | Item | Choice | Why |
 | --- | --- | --- |
 | SDK | Docker, `app_port: 7860` | only way to ship the pixi stack |
-| Hardware | 1x L4 (24 GB, $0.80/h) first; A10G small (24 GB, $1.00/h) as the fallback if L4's PTX JIT or throughput disappoints; T4 small ($0.40/h) as a measured stretch goal | the fat wheel is built for sm_60/75/80+PTX, so L4 (sm_89) and A10G (sm_86) run the CUDA extensions through PTX JIT; VRAM need is ~8.5 GB plus ~3.2 GB for CUDA graphs, so either 24 GB card fits both motion models resident |
+| Hardware | 1x L4 (24 GB, $0.80/h) first; A10G small (24 GB, $1.00/h) as the fallback if L4's throughput disappoints; T4 small ($0.40/h) as a measured stretch goal | the installed rasterizer and pytorch3d carry sm_80 cubins, which run natively on sm_86 (A10G) and sm_89 (L4) without PTX JIT; VRAM need is ~8.5 GB plus ~3.2 GB for CUDA graphs, so either 24 GB card fits both motion models resident |
 | Sleep time | 15 to 30 min idle, plus pause when not demoing | billing is per minute while Running, regardless of use |
 | Visibility | private, revisited after FLAME permission | see decisions below |
 | Motion models | original ARTalk at launch; sidebar selector built now, ARTalk 1 s added once the author clears it | one Space, one URL, A/B in place later |
@@ -47,14 +47,13 @@ Estimated image: ~8 GB pixi env + ~3 GB weights at launch (ARTalk 2.0, GAGAvatar
 
 ### Phase 0: prerequisites (no Space yet)
 
-1. Build and run the existing `Dockerfile` on a docker host with the NVIDIA toolkit to shake out the pixi-in-Docker path before adding Spaces constraints.
-2. Reconcile the ARTalk pins: rebase or fast-forward the refactor branch so a pushed commit contains d6d17c1, b17cf94 and 8460342; bump `artalk` in `pixi.toml` and `ARTALK_TRAIN_REV` in `scripts/bootstrap.sh` to it; `pixi lock`; `pixi install --locked`; run `artalk-demo doctor` and the 1 s path from the locked env with no editable override.
-3. Pin reconciliation is also what makes the 1 s model's runtime fixes reach the Space later; it is not deferred with the model.
+1. ~~Build the image on a docker host first.~~ No docker host is reachable from the lab, so the private Space's own build is the first build (settled 2026-09-14).
+2. ~~Reconcile the ARTalk pins.~~ Done 2026-09-14: the refactor branch was pushed (fast-forward to 8460342), the lockfile and `ARTALK_TRAIN_REV` point at it, and the 1 s model loads and streams from the locked env through `vendor/ARTalk/train_code`.
 
 ### Phase 1: assets on the Hub (now)
 
-1. Original ARTalk and GAGAvatar: nothing to upload. Link `xg-chu/ARTalk` and `xg-chu/GAGAvatar` from the Space README `models:` metadata so the Space page credits and links them.
-2. FLAME: create the private repo `whitphx/artalk-gated-assets` holding `FLAME_with_eye.pt`; `artalk-demo assets` learns an optional `--gated-repo` that downloads it with the token when present, still printing the manual instruction otherwise.
+1. Original ARTalk and GAGAvatar: nothing to upload. The README front matter links `xg-chu/ARTalk` and `xg-chu/GAGAvatar` under `models:` (done).
+2. FLAME: `artalk-demo assets --gated-repo` (done; env `ARTALK_GATED_ASSETS_REPO`) downloads `FLAME_with_eye.pt` from a private repo with the Hub token and verifies it against the manifest hash. Still to do by the user: create the private repo `whitphx/artalk-gated-assets` and upload the file (the lab token is read-only).
 
 ### Phase 1b: the 1 s model (after the author's confirmation)
 
@@ -63,7 +62,9 @@ Estimated image: ~8 GB pixi env + ~3 GB weights at launch (ARTalk 2.0, GAGAvatar
 3. Loader: teach `load_artalk1s_model` to resolve `STATS_PATH` relative to the checkpoint's directory when it is not absolute, so the repacked file loads from any tree. This and the repack can be prepared and tested locally before the confirmation; only the upload waits.
 4. Asset plumbing: add the 1 s files to `artalk-demo assets` (manifest entry with repo, revision, size, hash, like the existing ones) so the image build and local hosts share one path; extend `doctor`'s asset check. Add the repo to the Space README `models:` list and the wav2vec prefetch to the Dockerfile.
 
-### Phase 2: app changes (each its own PR)
+### Phase 2: app changes (each its own commit)
+
+Status 2026-09-14: 1, 3, 4, 5 and 7 landed and were checked in a headless browser against the running app; 2 is deferred to phase 1b because a selector with one entry is dead code until the 1 s model is published; 6 is deferred until the Space exists and the cold-start time is measured.
 
 1. **ICE configuration.** A `rtc_configuration` for `webrtc_streamer` chosen by `ARTALK_ICE_PROVIDER` (`none` | `hf` | `twilio`). The Cloudflare credential fetch belongs in `streamlit-webrtc` (`get_cloudflare_ice_servers` next to the existing helpers, using the FastRTC credential endpoint with `HF_TOKEN`); until that release, the app can call FastRTC's `get_cloudflare_turn_credentials` directly. Credentials are short-lived, so fetch per session, not at import.
 2. **Motion model selector.** Sidebar radio over the motion models that are configured (only the original ARTalk at launch, so the radio has one entry and can stay hidden until a second appears); both model loaders stay `cache_resource` so switching only rebuilds the pipeline (the config tuple already keys on the motion model).
@@ -75,9 +76,9 @@ Estimated image: ~8 GB pixi env + ~3 GB weights at launch (ARTalk 2.0, GAGAvatar
 
 ### Phase 3: the Space
 
-1. Create `whitphx/artalk-realtime` (private, Docker SDK). Dockerfile derived from the current one: `useradd -m -u 1000 user`, `WORKDIR /home/user/app`, `COPY --chown=user`, `pixi install --locked` and `bootstrap.sh` as that user, then `artalk-demo assets` for the public weights, no GPU-dependent step at build (`doctor --no-render` if that flag is added, or skip doctor at build). `CMD ["up", "--profile", "spaces"]`.
-2. Secrets: `HF_TOKEN` (read scope on `whitphx/artalk-gated-assets`, and used for TURN). No OpenAI key.
-3. README front matter: `sdk: docker`, `app_port: 7860`, `models:` links, license note covering ARTalk (MIT), GAGAvatar (MIT), the Gaussian-Splatting research license (with its text in the repo), FLAME terms, and that Interactive mode uses the visitor's own OpenAI key.
+1. Create `whitphx/artalk-realtime` (private, Docker SDK) and push this repository to it. The `Dockerfile` already runs as uid 1000, bakes the public weights when the `BAKE_ASSETS=1` variable is set, and starts through `scripts/spaces_start.sh` (gated FLAME fetch, then the `spaces` profile on port 7860).
+2. Settings: variables `BAKE_ASSETS=1` and `ARTALK_GATED_ASSETS_REPO=whitphx/artalk-gated-assets`; secret `HF_TOKEN` (read scope on that repo, also used for TURN). No OpenAI key.
+3. README: the front matter is in place (`sdk: docker`, `app_port: 7860`, `models:`). Still to add: a license note covering ARTalk (MIT), GAGAvatar (MIT), the Gaussian-Splatting research license (with its text in the repo), FLAME terms, and that Interactive mode uses the visitor's own OpenAI key.
 4. Bring-up on L4: check the PTX JIT warm-up time for the rasterizer and the ARTalk extension, that `doctor`'s architecture audit accepts PTX-only coverage, mic permission through the Spaces iframe and on the direct `*.hf.space` URL, and TURN relay for both directions. Measure the realtime ratio and turn-first-frame latency at 512 with graphs on; if L4 is marginal, switch the hardware setting to A10G small and rerun this step. Set the sleep time.
 5. Private Space visitors need a Hub account with access, so sharing with collaborators means adding them to the repo. Going public waits on the FLAME permission; a community GPU grant application makes sense at that point.
 
