@@ -379,6 +379,18 @@ def parse_args() -> argparse.Namespace:
         help="GAGAvatar_track checkout directory.",
     )
     parser.add_argument(
+        "--ice-provider",
+        default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
+        choices=["stun", "cloudflare"],
+        help=(
+            "ICE servers handed to WebRTC. stun: Google's public STUN only, "
+            "enough when the browser can reach this host directly. "
+            "cloudflare: TURN relay credentials from FastRTC's Cloudflare "
+            "service, authenticated with a Hugging Face token; needed behind "
+            "proxies such as Hugging Face Spaces."
+        ),
+    )
+    parser.add_argument(
         "--gagavatar-track-device",
         default=os.environ.get("GAGAVATAR_TRACK_DEVICE", "cpu"),
         type=str,

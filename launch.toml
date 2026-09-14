@@ -13,6 +13,14 @@ remote = "ngrok"
 # Serve locally; reach it via `ssh -L 8501:localhost:8501 <host>`.
 remote = "none"
 
+[profiles.spaces]
+# Hugging Face Docker Space: one proxied port, no direct media path, so
+# WebRTC relays through TURN (docs/hf-spaces-plan.md).
+remote = "none"
+port = 7860
+[profiles.spaces.env]
+ARTALK_ICE_PROVIDER = "cloudflare"
+
 [profiles.offline]
 remote = "none"
 bind = "127.0.0.1"

@@ -66,6 +66,7 @@ from artalk_streamlit_realtime.diagnostics import (
     save_diagnostics_snapshot,
 )
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
+from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
 from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
@@ -936,9 +937,19 @@ def main() -> None:
                 else:
                     st.caption("Waiting for response...")
 
+    try:
+        rtc_configuration = resolve_rtc_configuration(args.ice_provider)
+    except Exception as exc:
+        st.warning(
+            f"ICE provider {args.ice_provider!r} failed ({exc}); using STUN "
+            "only, which cannot connect through a proxy or a strict NAT."
+        )
+        rtc_configuration = STUN_ONLY
+
     def render_webrtc_component() -> None:
         webrtc_streamer(
             key=streamer_key,
+            rtc_configuration=rtc_configuration,
             mode=WebRtcMode.SENDRECV,
             source_video_track=video_source_track,
             source_audio_track=audio_source_track,
