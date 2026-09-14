@@ -326,8 +326,10 @@ with web search, billed on top of the session's per-second charge.
 ## Hugging Face Spaces
 
 The repository is also a Docker Space: the YAML front matter at the top of this
-file is the Space configuration, and pushing the repository to a Space remote
-builds the `Dockerfile` there. The Space needs, in its settings:
+file is the Space configuration, and `scripts/push_space.sh` deploys the
+checked-out commit to it (as a snapshot commit, because the Hub rejects the
+branch's early history, which carried the rasterizer wheel outside LFS). The
+Space needs, in its settings:
 
 - Variable `BAKE_ASSETS=1`, so the build downloads the public weights into the
   image (a Space has no volume to mount them from).
