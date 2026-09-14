@@ -379,6 +379,12 @@ def parse_args() -> argparse.Namespace:
         help="GAGAvatar_track checkout directory.",
     )
     parser.add_argument(
+        "--default-mode",
+        default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
+        choices=["loopback", "interactive"],
+        help="Mode the sidebar starts in.",
+    )
+    parser.add_argument(
         "--ice-provider",
         default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
         choices=["stun", "cloudflare"],

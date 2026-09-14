@@ -118,6 +118,20 @@ def get_secret(name: str, default: str = "") -> str:
     return str(value) if value is not None else default
 
 
+def api_key_input(secret_name: str) -> str:
+    """The configured secret, or a key typed into this browser session."""
+    api_key = get_secret(secret_name)
+    if api_key:
+        st.success(f"`{secret_name}` loaded.")
+        return api_key
+    return st.text_input(
+        secret_name,
+        type="password",
+        key=f"api_key_{secret_name}",
+        help="Kept for this browser session only. Usage is billed to this key.",
+    ).strip()
+
+
 def register_avatar_with_progress(
     registry: UserAvatarRegistry,
     avatar_id: str,
@@ -349,7 +363,10 @@ def main() -> None:
             [DEFAULT_STYLE, *style_ids],
             index=default_style_index,
         )
-        mode = st.radio("Mode", ["Loopback", "Interactive"], index=1, horizontal=True)
+        modes = ["Loopback", "Interactive"]
+        mode = st.radio(
+            "Mode", modes, index=modes.index(args.default_mode.capitalize()), horizontal=True
+        )
         mic_processing = st.toggle(
             "Mic echo cancellation & noise suppression",
             value=True,
@@ -428,11 +445,7 @@ def main() -> None:
                 ),
             )
         if mode == "Interactive" and backend == BACKEND_OPENAI_LIVE:
-            api_key = get_secret("OPENAI_API_KEY")
-            if api_key:
-                st.success("`OPENAI_API_KEY` loaded.")
-            else:
-                st.warning("`OPENAI_API_KEY` is not configured.")
+            api_key = api_key_input("OPENAI_API_KEY")
             # Keyed so the Realtime branch's identically labelled widgets
             # cannot be mistaken for these when the backend is switched.
             live_model = st.text_input(
@@ -511,15 +524,10 @@ def main() -> None:
                 if realtime_ws_base_url:
                     st.caption(f"`{realtime_ws_base_url}`")
 
-            api_key = get_secret(secret_name) if secret_name else ""
-            if api_key:
-                st.success(f"`{secret_name}` loaded.")
-            elif not secret_name:
-                st.info("This endpoint takes no credential.")
-            elif realtime_ws_base_url:
-                st.warning(f"`{secret_name}` is not configured.")
+            if secret_name:
+                api_key = api_key_input(secret_name)
             else:
-                st.warning("Secret is not configured.")
+                st.info("This endpoint takes no credential.")
             # Keyed per endpoint so switching presets re-seeds these rather
             # than carrying the previous provider's names over.
             realtime_model = st.text_input(
@@ -770,7 +778,7 @@ def main() -> None:
     if mode == "Interactive" and needs_secret:
         stop_bridge()
         stop_pipeline()
-        st.info("Configure the secret to use Interactive mode.")
+        st.info("Enter an API key in the sidebar to use Interactive mode.")
         st.stop()
 
     try:

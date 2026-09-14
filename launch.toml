@@ -20,6 +20,8 @@ remote = "none"
 port = 7860
 [profiles.spaces.env]
 ARTALK_ICE_PROVIDER = "cloudflare"
+# Visitors bring their own OpenAI key; Loopback needs none.
+ARTALK_DEFAULT_MODE = "loopback"
 
 [profiles.offline]
 remote = "none"
