@@ -1,3 +1,16 @@
+---
+title: ARTalk Realtime
+emoji: 🗣️
+colorFrom: blue
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+models:
+  - xg-chu/ARTalk
+  - xg-chu/GAGAvatar
+---
+
 # ARTalk Streamlit Realtime
 
 Standalone Streamlit realtime demo for the packaged ARTalk + GAGAvatar stack.
@@ -30,6 +43,8 @@ because its dependency set conflicts with the runtime stack).
 
 For the server path there is a `Dockerfile` + `compose.yaml` (assets and the
 Hugging Face cache are volumes; the image needs the NVIDIA Container Toolkit).
+The same image runs as a Hugging Face Space; see
+[Hugging Face Spaces](#hugging-face-spaces).
 
 ### Developing against an ARTalk/GAGAvatar checkout
 
@@ -307,6 +322,26 @@ duplex, so like PersonaPlex it has no turn boundary to truncate at barge-in,
 and it splits the voice frontend from a backend that reasons and calls tools.
 That backend is off by default; the sidebar can hand it to a Responses model
 with web search, billed on top of the session's per-second charge.
+
+## Hugging Face Spaces
+
+The repository is also a Docker Space: the YAML front matter at the top of this
+file is the Space configuration, and pushing the repository to a Space remote
+builds the `Dockerfile` there. The Space needs, in its settings:
+
+- Variable `BAKE_ASSETS=1`, so the build downloads the public weights into the
+  image (a Space has no volume to mount them from).
+- Variable `ARTALK_GATED_ASSETS_REPO`, a private model repo of your own that
+  holds `FLAME_with_eye.pt`. FLAME cannot be redistributed, so it never enters
+  the image; `scripts/spaces_start.sh` fetches it at container start.
+- Secret `HF_TOKEN` with read access to that repo. The same token
+  authenticates the Cloudflare TURN relay (`--ice-provider cloudflare`, set by
+  the `spaces` launch profile), which WebRTC needs behind the Spaces proxy.
+- GPU hardware: the `launch.toml` presets pick render flags per GPU tier.
+
+The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
+for their own OpenAI key, kept in their browser session. Avatar registration is
+hidden because the tracker environment is not part of the image.
 
 ## Notes
 

@@ -330,6 +330,14 @@ def main() -> int:
         help="also fetch the Fallingwater checkpoint and MOSS tokenizer (~7 GB)",
     )
     assets_parser.add_argument(
+        "--gated-repo",
+        default=os.environ.get("ARTALK_GATED_ASSETS_REPO"),
+        help=(
+            "private Hub repo holding FLAME_with_eye.pt; read with the "
+            "Hugging Face token (HF_TOKEN or `hf auth login`)"
+        ),
+    )
+    assets_parser.add_argument(
         "--check-only",
         action="store_true",
         help="validate the tree without downloading",

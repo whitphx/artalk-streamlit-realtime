@@ -67,6 +67,32 @@ def _fetch_fallingwater_checkpoint(dest_dir: Path) -> bool:
     return True
 
 
+def _fetch_gated_flame(root: Path, repo_id: str) -> bool:
+    """FLAME cannot be redistributed, so a deployment keeps its copy in a
+    private Hub repo of its own and completes the tree from there."""
+    dest = root / "FLAME_with_eye.pt"
+    if dest.exists():
+        return True
+    from artalk.assets import iter_manifest_assets, verify_asset
+    from huggingface_hub import hf_hub_download
+
+    print(f"download: {repo_id}/{dest.name} -> {dest}")
+    try:
+        hf_hub_download(repo_id, dest.name, local_dir=root)
+    except Exception as exc:
+        print(f"gated asset download failed ({type(exc).__name__}): {exc}")
+        return False
+    asset = next(
+        a for a in iter_manifest_assets(include_optional=True) if a["path"] == dest.name
+    )
+    try:
+        verify_asset(dest, asset)
+    except Exception:
+        dest.unlink()
+        raise
+    return True
+
+
 def _prefetch_moss_tokenizer() -> bool:
     os.environ.setdefault("HF_HOME", str(REPO_ROOT / ".cache" / "huggingface"))
     from huggingface_hub import snapshot_download
@@ -92,6 +118,8 @@ def run(args: argparse.Namespace) -> int:
         if args.fallingwater:
             ok &= _fetch_fallingwater_checkpoint(root / "Fallingwater")
             ok &= _prefetch_moss_tokenizer()
+        if args.gated_repo:
+            ok &= _fetch_gated_flame(root, args.gated_repo)
 
     flame = root / "FLAME_with_eye.pt"
     if not flame.exists():
