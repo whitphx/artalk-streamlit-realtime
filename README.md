@@ -345,6 +345,27 @@ The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
 for their own OpenAI key, kept in their browser session. Avatar registration is
 hidden because the tracker environment is not part of the image.
 
+## Licenses
+
+This application layer is the only part of the stack that this repository
+licenses. What it runs on carries its own terms:
+
+- [ARTalk](https://github.com/xg-chu/ARTalk) and
+  [GAGAvatar](https://github.com/xg-chu/GAGAvatar): MIT. Their model weights
+  are distributed under the terms on the
+  [`xg-chu/ARTalk`](https://huggingface.co/xg-chu/ARTalk) and
+  [`xg-chu/GAGAvatar`](https://huggingface.co/xg-chu/GAGAvatar) model cards.
+- The Gaussian rasterizer (`wheels/diff_gaussian_rasterization_32d-*.whl`, a
+  build of [graphdeco-inria/diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)):
+  the Inria/MPII Gaussian-Splatting license, which permits research and
+  evaluation use only. The license text ships inside the wheel's `dist-info`.
+- FLAME (`FLAME_with_eye.pt`): the [FLAME model license](https://flame.is.tue.mpg.de/modellicense.html),
+  non-commercial scientific research only, no redistribution. This is why the
+  file is never downloaded automatically and never enters the Docker image.
+
+Taken together the demo is a non-commercial research artefact. Interactive
+mode talks to OpenAI with a key the visitor provides, billed to that key.
+
 ## Notes
 
 - [Realtime performance notes](docs/realtime-performance-notes.md)
