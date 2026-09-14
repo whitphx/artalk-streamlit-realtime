@@ -14,7 +14,10 @@ USER 1000
 ENV HOME=/home/user
 WORKDIR /home/user/app
 COPY --chown=user . .
-RUN ./scripts/bootstrap.sh
+# The gagavatar package's submodule is declared with an ssh URL, which the
+# image can neither run nor authenticate.
+RUN git config --global url.https://github.com/.insteadOf git@github.com: \
+ && ./scripts/bootstrap.sh
 
 # A Space has no volume to mount weights from, so it bakes the public ones in
 # (set the BAKE_ASSETS=1 variable on the Space); the compose path mounts them.
