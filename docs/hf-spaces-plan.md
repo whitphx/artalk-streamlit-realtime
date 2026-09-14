@@ -28,7 +28,7 @@ Goal: a public Space running this app on a Hub GPU, with the ARTalk 1 s model pu
 | Motion models | original ARTalk at launch; sidebar selector built now, ARTalk 1 s added once the author clears it | one Space, one URL, A/B in place later |
 | Appearance | mesh + built-in GAGAvatar avatars; **Register avatar** hidden | tracking needs the second, conflicting env |
 | Conversation | Loopback by default; Interactive with a visitor-supplied key | no owner key on a public URL |
-| TURN | Cloudflare via the HF partnership, `HF_TOKEN` secret | community endpoint is deprecated; Twilio is the paid fallback |
+| TURN | Cloudflare Realtime TURN with the user's own TURN key (`CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_KEY_API_TOKEN` secrets) | the FastRTC credential domains (`fastrtc.org`, `gradio-turn.com`) no longer resolve as of 2026-09-14, so the free HF partnership path is gone; Twilio is the alternative |
 | FLAME | fetched at container start from a **private** Hub repo with the `HF_TOKEN` secret, never in the image or the Space repo | keeps the file off every public surface while the compliance question is settled |
 | Public weights | baked into the image at build via the manifest downloaders | cold start after sleep is then container start + weight load, not a 4.5 GB download |
 | Persistent storage | none in phase 1 | nothing to persist without avatar registration |

@@ -400,9 +400,9 @@ def parse_args() -> argparse.Namespace:
         help=(
             "ICE servers handed to WebRTC. stun: Google's public STUN only, "
             "enough when the browser can reach this host directly. "
-            "cloudflare: TURN relay credentials from FastRTC's Cloudflare "
-            "service, authenticated with a Hugging Face token; needed behind "
-            "proxies such as Hugging Face Spaces."
+            "cloudflare: TURN relay credentials from Cloudflare Realtime "
+            "(CLOUDFLARE_TURN_KEY_ID, CLOUDFLARE_TURN_KEY_API_TOKEN); needed "
+            "behind proxies such as Hugging Face Spaces."
         ),
     )
     parser.add_argument(

@@ -13,7 +13,16 @@ RUN mkdir -p /home/user && chown 1000:1000 /home/user
 USER 1000
 ENV HOME=/home/user
 WORKDIR /home/user/app
-COPY --chown=user . .
+
+# The environment and the weights are built from the lock and the manifests
+# alone, so they sit in layers that application edits do not invalidate. The
+# editable install of this package only records paths, so empty placeholders
+# stand in for its modules until the final COPY.
+COPY --chown=user pixi.toml pixi.lock pyproject.toml ./
+COPY --chown=user wheels ./wheels
+COPY --chown=user scripts/bootstrap.sh ./scripts/
+RUN touch streamlit_app.py && mkdir artalk_streamlit_realtime \
+ && touch artalk_streamlit_realtime/__init__.py
 # The gagavatar package's submodule is declared with an ssh URL, which the
 # image can neither run nor authenticate.
 RUN git config --global url.https://github.com/.insteadOf git@github.com: \
@@ -26,6 +35,8 @@ RUN if [ "$BAKE_ASSETS" = 1 ]; then \
       pixi run python -m artalk.assets download --root assets --include-optional && \
       pixi run python -m gagavatar.assets download --root assets/GAGAvatar; \
     fi
+
+COPY --chown=user . .
 
 EXPOSE 7860 8501
 CMD ["scripts/spaces_start.sh"]

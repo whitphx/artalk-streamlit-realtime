@@ -336,9 +336,12 @@ Space needs, in its settings:
 - Variable `ARTALK_GATED_ASSETS_REPO`, a private model repo of your own that
   holds `FLAME_with_eye.pt`. FLAME cannot be redistributed, so it never enters
   the image; `scripts/spaces_start.sh` fetches it at container start.
-- Secret `HF_TOKEN` with read access to that repo. The same token
-  authenticates the Cloudflare TURN relay (`--ice-provider cloudflare`, set by
-  the `spaces` launch profile), which WebRTC needs behind the Spaces proxy.
+- Secret `HF_TOKEN` with read access to that repo.
+- Secrets `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` from a
+  [Cloudflare Realtime TURN key](https://developers.cloudflare.com/realtime/turn/).
+  Behind the Spaces proxy WebRTC media must relay through TURN, and the
+  `spaces` profile sets `--ice-provider cloudflare` to fetch short-lived relay
+  credentials from that key. Relayed traffic is billed by Cloudflare.
 - GPU hardware: the `launch.toml` presets pick render flags per GPU tier.
 
 The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
