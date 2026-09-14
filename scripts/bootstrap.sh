@@ -13,7 +13,7 @@ FALLINGWATER_REPO=https://github.com/whitphx/Fallingwater.git
 FALLINGWATER_REV=8fbde2eb99f5d7fd15fc0c74430c734cd0a9bbfd
 # train_code for --motion-model artalk1s; same repo as the artalk package.
 ARTALK_TRAIN_REPO=https://github.com/whitphx/ARTalk.git
-ARTALK_TRAIN_REV=5126a307871c8ef100009423955a86763e6844d4
+ARTALK_TRAIN_REV=8460342f4de2ec5ac9176bfd4409a4bb8872698f
 # Carries the vendored GAGAvatar_track (gagavatar/libs/GAGAvatar_track).
 GAGAVATAR_REPO=https://github.com/whitphx/GAGAvatar.git
 GAGAVATAR_REV=437dadea35d3069abdcc2026f661869fd608231d
