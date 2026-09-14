@@ -7,9 +7,10 @@ FROM ghcr.io/prefix-dev/pixi:0.78.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Spaces run the container as uid 1000.
-RUN useradd -m -u 1000 user
-USER user
+# Spaces run the container as uid 1000, which the base image already has
+# (Ubuntu's default user), so only a home directory is added.
+RUN mkdir -p /home/user && chown 1000:1000 /home/user
+USER 1000
 ENV HOME=/home/user
 WORKDIR /home/user/app
 COPY --chown=user . .
