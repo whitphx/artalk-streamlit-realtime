@@ -39,6 +39,7 @@ from artalk_streamlit_realtime.config import ARTALK_FPS, ARTALK_SAMPLE_RATE
 MODEL_LABELS = {
     "artalk": "ARTalk 4s (release)",
     "artalk1s": "ARTalk 1s (ours)",
+    "artalk1s-b": "ARTalk 1s (variant B)",
     "fallingwater": "Fallingwater",
 }
 
@@ -83,15 +84,16 @@ def write_video_with_audio(
 def build_streamer(name: str, runtime, args, device):
     if name == "artalk":
         return ARTalkStreamer(runtime.model)
-    if name == "artalk1s":
+    if name in ("artalk1s", "artalk1s-b"):
         from artalk_streamlit_realtime.artalk1s import (
             ARTalk1sStreamer,
             load_artalk1s_model,
         )
 
-        model = load_artalk1s_model(
-            args.artalk1s_train_code_dir, args.artalk1s_checkpoint, device
+        checkpoint = (
+            args.artalk1s_checkpoint_b if name == "artalk1s-b" else args.artalk1s_checkpoint
         )
+        model = load_artalk1s_model(args.artalk1s_train_code_dir, checkpoint, device)
         return ARTalk1sStreamer(model)
     from artalk_streamlit_realtime.fallingwater import (
         FallingwaterStreamer,
@@ -192,6 +194,11 @@ def main() -> None:
         "--artalk1s-train-code-dir",
         default=os.environ.get("ARTALK1S_TRAIN_CODE_DIR"),
         type=str,
+    )
+    parser.add_argument(
+        "--artalk1s-checkpoint-b",
+        type=str,
+        help="Second train-code checkpoint, rendered as model name artalk1s-b.",
     )
     parser.add_argument(
         "--artalk1s-checkpoint",
