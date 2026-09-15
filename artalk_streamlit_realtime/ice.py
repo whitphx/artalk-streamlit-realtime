@@ -33,6 +33,9 @@ def fetch_cloudflare_rtc_configuration(
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
+            # Cloudflare's edge answers urllib's default agent with a 403
+            # (error 1010, "banned based on browser signature").
+            "User-Agent": "artalk-streamlit-realtime",
         },
         method="POST",
     )
