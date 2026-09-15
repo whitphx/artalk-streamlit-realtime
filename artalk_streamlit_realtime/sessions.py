@@ -52,6 +52,13 @@ class PipelineSlots:
         with self._lock:
             if session_id in self._holders:
                 return True
+            full = bool(self.limit) and len(self._holders) >= self.limit
+        if full:
+            # A reload is a new session asking while its predecessor is still
+            # inside the grace period; a holder whose browser is gone yields
+            # at once when someone is waiting.
+            self._stop(self._take_gone(grace_seconds=0.0))
+        with self._lock:
             if self.limit and len(self._holders) >= self.limit:
                 return False
             self._holders[session_id] = {}
@@ -80,21 +87,29 @@ class PipelineSlots:
                 logger.warning("[slots] reap failed", exc_info=True)
 
     def _reap_once(self) -> None:
+        self._stop(self._take_gone(DISCONNECT_GRACE_SECONDS))
+
+    def _take_gone(self, grace_seconds: float) -> list[tuple[str, dict[str, object]]]:
+        """Remove and return the holders whose session has been gone for at
+        least `grace_seconds`."""
         active = _active_session_ids()
         if active is None:
-            return
+            return []
         now = time.monotonic()
-        doomed = []
+        gone = []
         with self._lock:
             for session_id in list(self._holders):
                 if session_id in active:
                     self._missing_since.pop(session_id, None)
                     continue
                 since = self._missing_since.setdefault(session_id, now)
-                if now - since >= DISCONNECT_GRACE_SECONDS:
-                    doomed.append((session_id, self._holders.pop(session_id)))
+                if now - since >= grace_seconds:
+                    gone.append((session_id, self._holders.pop(session_id)))
                     self._missing_since.pop(session_id, None)
-        for session_id, objects in doomed:
+        return gone
+
+    def _stop(self, gone: list[tuple[str, dict[str, object]]]) -> None:
+        for session_id, objects in gone:
             logger.info("[slots] session %s is gone; stopping its pipeline", session_id)
             # The pump feeds the pipeline and the watcher observes it, so both
             # go before it.
