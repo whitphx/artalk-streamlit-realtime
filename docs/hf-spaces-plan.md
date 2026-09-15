@@ -82,6 +82,10 @@ Status 2026-09-14: 1, 3, 4, 5 and 7 landed and were checked in a headless browse
 4. Bring-up on L4: check the PTX JIT warm-up time for the rasterizer and the ARTalk extension, that `doctor`'s architecture audit accepts PTX-only coverage, mic permission through the Spaces iframe and on the direct `*.hf.space` URL, and TURN relay for both directions. Measure the realtime ratio and turn-first-frame latency at 512 with graphs on; if L4 is marginal, switch the hardware setting to A10G small and rerun this step. Set the sleep time.
 5. Private Space visitors need a Hub account with access, so sharing with collaborators means adding them to the repo. Going public waits on the FLAME permission; a community GPU grant application makes sense at that point.
 
+### Companion: offline demo on ZeroGPU (done 2026-09-15)
+
+`whitphx/artalk-demo` (private, Gradio SDK, ZeroGPU) runs the author's Gradio demo from upstream `inference.py`: audio or text in, a rendered mesh or GAGAvatar video out. Its repository lives outside this one (`~/src/artalk-gradio-demo`, a snapshot of upstream `main` plus `app.py`). It needed torch 2.8 with CUDA 12.8, a prebuilt pytorch3d wheel, and a Gaussian rasterizer wheel built for Blackwell (sm_120); the wheel recipe is in the demo README. Measured on the half RTX Pro 6000: a 13.7 s clip renders in about 14 s wall time including the GPU attach, with GAGAvatar at about 60 frames per second. ZeroGPU charges each signed-in visitor's own daily quota, which is the "own quota" model the realtime app cannot offer.
+
 ### Later
 
 - Avatar registration (needs the tracker env in the image, about a minute of CPU per image, and persistent storage for `user_avatars/`).
