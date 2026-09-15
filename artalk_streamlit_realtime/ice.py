@@ -53,8 +53,9 @@ def resolve_rtc_configuration(provider: str) -> dict:
     now = time.monotonic()
     if cached is not None and cached["expires_at"] - now > REFRESH_MARGIN_SECONDS:
         return cached["config"]
-    key_id = os.environ.get("CLOUDFLARE_TURN_KEY_ID")
-    api_token = os.environ.get("CLOUDFLARE_TURN_KEY_API_TOKEN")
+    # Secrets pasted into a settings page tend to arrive with a trailing newline.
+    key_id = os.environ.get("CLOUDFLARE_TURN_KEY_ID", "").strip()
+    api_token = os.environ.get("CLOUDFLARE_TURN_KEY_API_TOKEN", "").strip()
     if not key_id or not api_token:
         raise RuntimeError(
             "the cloudflare ICE provider needs CLOUDFLARE_TURN_KEY_ID and "
