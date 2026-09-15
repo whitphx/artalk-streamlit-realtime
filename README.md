@@ -345,8 +345,11 @@ Space needs, in its settings:
 - GPU hardware: the `launch.toml` presets pick render flags per GPU tier.
 
 The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
-for their own OpenAI key, kept in their browser session. Avatar registration is
-hidden because the tracker environment is not part of the image.
+for their own OpenAI key, kept in their browser session. A private Space can
+instead carry the owner's key as the secret `OPENAI_API_KEY` and start in
+Interactive mode with the variable `ARTALK_DEFAULT_MODE=interactive`; Space
+variables override the profile's defaults. Avatar registration is hidden
+because the tracker environment is not part of the image.
 
 ## Licenses
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
 import signal
 import threading
 import time
@@ -112,11 +113,15 @@ EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 
 
 def get_secret(name: str, default: str = "") -> str:
+    """A secret from Streamlit's secrets file, else from the environment,
+    which is how a Space delivers its secrets."""
     try:
-        value = st.secrets.get(name, default)
+        value = st.secrets.get(name)
     except StreamlitSecretNotFoundError:
-        return default
-    return str(value) if value is not None else default
+        value = None
+    if value is None:
+        value = os.environ.get(name)
+    return str(value) if value else default
 
 
 def api_key_input(secret_name: str) -> str:
