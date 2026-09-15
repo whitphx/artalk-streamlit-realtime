@@ -12,6 +12,8 @@ model plus the network and nothing else. It needs no GPU and no ARTalk assets.
 
 from __future__ import annotations
 
+import os
+
 import av
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -47,11 +49,15 @@ CONFIG_KEY = "audio_demo_config"
 
 
 def get_secret(name: str, default: str = "") -> str:
+    """A secret from Streamlit's secrets file, else from the environment,
+    which is how a Space delivers its secrets."""
     try:
-        value = st.secrets.get(name, default)
+        value = st.secrets.get(name)
     except StreamlitSecretNotFoundError:
-        return default
-    return str(value) if value is not None else default
+        value = None
+    if value is None:
+        value = os.environ.get(name)
+    return str(value) if value else default
 
 
 def stop_bridge() -> None:
