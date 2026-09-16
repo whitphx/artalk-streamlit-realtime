@@ -295,10 +295,7 @@ def main() -> None:
         layout="wide",
     )
     st.title("ARTalk Realtime")
-    st.caption(
-        "Speak into the microphone — the avatar starts moving "
-        "~4 seconds later (model chunk floor)."
-    )
+    chunk_caption = st.empty()
 
     try:
         artalk_runtime, mesh_renderer = load_artalk_runtime(
@@ -323,17 +320,32 @@ def main() -> None:
     )
 
     with st.sidebar:
-        if args.motion_model == "fallingwater":
+        motion_labels = {"artalk": "ARTalk (4 s chunks)", "artalk1s": "ARTalk 1 s"}
+        if args.motion_model in motion_labels and args.artalk1s_train_code_dir and args.artalk1s_checkpoint:
+            motion_model = st.radio(
+                "Motion model",
+                list(motion_labels),
+                index=list(motion_labels).index(args.motion_model),
+                format_func=motion_labels.__getitem__,
+                horizontal=True,
+                help=(
+                    "The 1 s model starts speaking about three seconds sooner "
+                    "and keeps the head still. Switching rebuilds the pipeline."
+                ),
+            )
+        else:
+            motion_model = args.motion_model
+        if motion_model == "fallingwater":
             st.caption(
                 "Fallingwater model: "
                 f"`{Path(args.fallingwater_checkpoint or '?').name}`"
             )
-        elif args.motion_model == "artalk1s":
+        elif motion_model == "artalk1s":
             st.caption(
                 "ARTalk 1s model: "
                 f"`{Path(args.artalk1s_checkpoint or '?').name}`"
             )
-        elif args.motion_model == "frame":
+        elif motion_model == "frame":
             st.caption(
                 "Frame model: "
                 f"`{Path(args.frame_checkpoint or '?').name}`"
@@ -639,6 +651,11 @@ def main() -> None:
                     user_registry.delete(delete_id)
                     st.rerun()
 
+    chunk_caption.caption(
+        "Speak into the microphone — the avatar starts moving "
+        f"~{1 if motion_model == 'artalk1s' else 4} seconds later (model chunk floor)."
+    )
+
     def get_pipeline() -> ARTalkPipeline:
         renderer_mode, avatar_id = split_appearance(appearance)
         style_motion = load_style_motion(str(asset_dir), style_id)
@@ -660,7 +677,7 @@ def main() -> None:
                 compile_mode="cuda-graph" if args.renderer_compile else None,
             )
         streamer = None
-        if args.motion_model == "fallingwater":
+        if motion_model == "fallingwater":
             if not args.fallingwater_dir or not args.fallingwater_checkpoint:
                 raise RuntimeError(
                     "--fallingwater-dir and --fallingwater-checkpoint are "
@@ -673,7 +690,7 @@ def main() -> None:
                     args.device,
                 )
             )
-        elif args.motion_model == "artalk1s":
+        elif motion_model == "artalk1s":
             if not args.artalk1s_train_code_dir or not args.artalk1s_checkpoint:
                 raise RuntimeError(
                     "--artalk1s-train-code-dir and --artalk1s-checkpoint are "
@@ -687,7 +704,7 @@ def main() -> None:
                 ),
                 style_motion=style_motion,
             )
-        elif args.motion_model == "frame":
+        elif motion_model == "frame":
             if not args.frame_package_dir or not args.frame_checkpoint:
                 raise RuntimeError(
                     "--frame-package-dir and --frame-checkpoint are required "
@@ -708,7 +725,7 @@ def main() -> None:
             args.device,
             args.artalk_audio_encoder,
             args.artalk_checkpoint,
-            args.motion_model,
+            motion_model,
             args.fallingwater_checkpoint,
             args.artalk1s_checkpoint,
             args.frame_checkpoint,
@@ -764,7 +781,7 @@ def main() -> None:
                     renderer_output_uint8=args.render_uint8_gpu,
                     warm_key_extra=(
                         f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
-                        f"motion={args.motion_model}"
+                        f"motion={motion_model}"
                     ),
                     profile_trace_dir=args.profile_trace_dir,
                     profile_skip_chunks=args.profile_skip_chunks,
