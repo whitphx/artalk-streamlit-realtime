@@ -29,11 +29,14 @@ RUN git config --global url.https://github.com/.insteadOf git@github.com: \
  && ./scripts/bootstrap.sh --without-fallingwater
 
 # A Space has no volume to mount weights from, so it bakes the public ones in
-# (set the BAKE_ASSETS=1 variable on the Space); the compose path mounts them.
+# (set the BAKE_ASSETS=1 variable on the Space), including the audio encoder
+# the 1 s model loads from the Hub cache; the compose path mounts them.
 ARG BAKE_ASSETS=0
 RUN if [ "$BAKE_ASSETS" = 1 ]; then \
       pixi run python -m artalk.assets download --root assets --include-optional && \
-      pixi run python -m gagavatar.assets download --root assets/GAGAvatar; \
+      pixi run python -m gagavatar.assets download --root assets/GAGAvatar && \
+      HF_HOME=/home/user/app/.cache/huggingface pixi run python -c \
+        "from transformers import Wav2Vec2Model; Wav2Vec2Model.from_pretrained('facebook/wav2vec2-xls-r-300m')"; \
     fi
 
 COPY --chown=user . .

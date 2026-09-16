@@ -337,6 +337,9 @@ Space needs, in its settings:
   holds `FLAME_with_eye.pt`. FLAME cannot be redistributed, so it never enters
   the image; `scripts/spaces_start.sh` fetches it at container start.
 - Secret `HF_TOKEN` with read access to that repo.
+- Optionally the variable `ARTALK1S_REPO`, a Hub repo holding the retrained
+  ARTalk 1 s model (`ARTalk1s_wav2vec.pt` and `metadata_stats.json`), readable
+  with the same token. When it is set, the sidebar offers both motion models.
 - Secrets `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` from a
   [Cloudflare Realtime TURN key](https://developers.cloudflare.com/realtime/turn/).
   Behind the Spaces proxy WebRTC media must relay through TURN, and the

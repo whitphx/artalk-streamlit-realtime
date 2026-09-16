@@ -25,6 +25,14 @@ at: {path}"""
 
 MOSS_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 
+# The retrained 1 s model (docs/hf-spaces-plan.md, phase 1b). Its repo is
+# private until publication is cleared, so the files are read with the Hub
+# token and pinned here by content rather than by manifest.
+ARTALK1S_FILES = {
+    "ARTalk1s_wav2vec.pt": "d69da34d813a49ba87d05c193fe378639e5f59641a40a2bf7c4196d9a7a3b2af",
+    "metadata_stats.json": "b1e7c7b8dee5031cb5935d10f572b808c0ba60416a33f5f439c8d45e7b92a11e",
+}
+
 
 def _run_downloader(module: str, *args: str) -> bool:
     completed = subprocess.run(
@@ -93,6 +101,30 @@ def _fetch_gated_flame(root: Path, repo_id: str) -> bool:
     return True
 
 
+def _fetch_artalk1s(root: Path, repo_id: str) -> bool:
+    from artalk.assets import sha256_file
+    from huggingface_hub import hf_hub_download
+
+    dest_dir = root / "ARTalk1s"
+    ok = True
+    for name, expected in ARTALK1S_FILES.items():
+        dest = dest_dir / name
+        if dest.exists():
+            continue
+        print(f"download: {repo_id}/{name} -> {dest}")
+        try:
+            hf_hub_download(repo_id, name, local_dir=dest_dir)
+        except Exception as exc:
+            print(f"ARTalk 1s download failed ({type(exc).__name__}): {exc}")
+            ok = False
+            continue
+        if sha256_file(dest) != expected:
+            dest.unlink()
+            print(f"ARTalk 1s download failed: {name} does not match its pinned hash")
+            ok = False
+    return ok
+
+
 def _prefetch_moss_tokenizer() -> bool:
     os.environ.setdefault("HF_HOME", str(REPO_ROOT / ".cache" / "huggingface"))
     from huggingface_hub import snapshot_download
@@ -120,6 +152,8 @@ def run(args: argparse.Namespace) -> int:
             ok &= _prefetch_moss_tokenizer()
         if args.gated_repo:
             ok &= _fetch_gated_flame(root, args.gated_repo)
+        if args.artalk1s_repo:
+            ok &= _fetch_artalk1s(root, args.artalk1s_repo)
 
     flame = root / "FLAME_with_eye.pt"
     if not flame.exists():
