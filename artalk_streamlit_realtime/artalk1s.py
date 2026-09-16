@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 
 from .config import _env_flag
+from .graph_capture import coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -180,15 +181,17 @@ def _recover_device_rng(device: torch.device) -> None:
     crashes.
     """
     try:
-        torch.randn(1, device=device)
+        with coordinator.rng_work():
+            torch.randn(1, device=device)
         return
     except RuntimeError:
         pass
     index = device.index if device.index is not None else torch.cuda.current_device()
     generator = torch.cuda.default_generators[index]
     try:
-        generator.graphsafe_set_state(generator.clone_state())
-        torch.randn(1, device=device)
+        with coordinator.rng_work():
+            generator.graphsafe_set_state(generator.clone_state())
+            torch.randn(1, device=device)
     except RuntimeError as exc:
         raise RuntimeError(
             "A failed CUDA graph capture left this device's RNG generator "
@@ -248,21 +251,25 @@ class _GraphedDecoder:
         return static_out.clone()
 
     def _capture(self, inputs) -> tuple:
-        # Quiesce the device: capture aborts if other in-flight work
-        # interleaves, and the pipeline runs with stage syncs disabled.
-        torch.cuda.synchronize()
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(2):
-                self.module(*inputs)
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
-        static_in = tuple(t.clone() for t in inputs)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
-            static_out = self.module(*static_in)
-        return (graph, static_in, static_out)
+        # Exclusive: the synchronize below is forbidden while any other
+        # thread's capture is open, and concurrent captures abort each
+        # other (multiple pipelines warm up at once under Streamlit).
+        with coordinator.capture():
+            # Quiesce the device: capture aborts if other in-flight work
+            # interleaves, and the pipeline runs with stage syncs disabled.
+            torch.cuda.synchronize()
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(2):
+                    self.module(*inputs)
+            torch.cuda.current_stream().wait_stream(stream)
+            torch.cuda.synchronize()
+            static_in = tuple(t.clone() for t in inputs)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+                static_out = self.module(*static_in)
+            return (graph, static_in, static_out)
 
 
 def _fast_decode_supported(model) -> bool:
@@ -444,13 +451,16 @@ class ARTalk1sStreamer:
     def _step_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
         if self._fast:
             return self._step_chunk_fast(chunk)
-        out = self.model.inference(
-            chunk[None],
-            style_motion_code=self._style_motion,
-            prev_motion_code=self._prev_motion,
-            tau=self.tau,
-            cfg=self.cfg,
-        )
+        # Shared side of the capture coordinator: inference() samples from
+        # the default RNG generator, which a concurrent capture registers.
+        with coordinator.rng_work():
+            out = self.model.inference(
+                chunk[None],
+                style_motion_code=self._style_motion,
+                prev_motion_code=self._prev_motion,
+                tau=self.tau,
+                cfg=self.cfg,
+            )
         motion = out["pred_motion_code"]  # (1, frames_per_chunk, motion_dim)
         self._prev_motion = torch.cat([self._prev_motion, motion], dim=1)[
             :, -self._prev_frames :
@@ -483,7 +493,11 @@ class ARTalk1sStreamer:
                 logits = self.cfg * logits[:1] + (1 - self.cfg) * logits[1:]
             else:
                 logits = logits[:1]
-            patch_bits.append(self._sample_bits(logits))
+            # Shared side of the capture coordinator: sampling draws from
+            # the default RNG generator, which a concurrent capture
+            # registers.
+            with coordinator.rng_work():
+                patch_bits.append(self._sample_bits(logits))
             if pidx < len(m.patch_nums) - 1:
                 nxt = m.base_codec.vqidx_to_next_feat(
                     torch.cat(patch_bits, dim=1), pidx, "accum_next"

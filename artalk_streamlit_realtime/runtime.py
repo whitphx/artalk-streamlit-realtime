@@ -125,7 +125,13 @@ class StreamingGAGAvatarAdapter:
         return self.runtime.build_forward_batch(motion_code)
 
     def forward_expression(self, batch: dict):
-        return self.runtime.render_rgb_batch(batch)
+        # Shared side of the capture coordinator: the upsampler draws
+        # noise from the default RNG generator, which a concurrent
+        # capture registers.
+        from .graph_capture import coordinator
+
+        with coordinator.rng_work():
+            return self.runtime.render_rgb_batch(batch)
 
 
 @st.cache_resource
@@ -141,6 +147,9 @@ def load_gagavatar(
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
     from .avatar_registry import UserAvatarRegistry
+    from .graph_capture import serialize_gagavatar_captures
+
+    serialize_gagavatar_captures()
 
     runtime = GAGAvatarRuntime(
         GAGAvatarRuntimeConfig(
