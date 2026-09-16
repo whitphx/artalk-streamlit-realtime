@@ -66,9 +66,17 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
             "directory"
         ) from exc
 
+    checkpoint_path = Path(checkpoint_path).expanduser()
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:
         raise ValueError(f"{checkpoint_path} has no meta_cfg; not a self-contained checkpoint")
+    vae_config = ckpt["meta_cfg"]["MODEL"]["VAE_CONFIG"]
+    # The codec reads its motion statistics file at construction. A published
+    # checkpoint names that file relative to itself rather than by the
+    # absolute path of the training host.
+    stats_path = Path(vae_config["STATS_PATH"])
+    if not stats_path.is_absolute():
+        vae_config["STATS_PATH"] = str(checkpoint_path.parent / stats_path)
     meta_cfg = ConfigDict(ckpt["meta_cfg"], gpus=1, cli_args=[])
     model = build_model(meta_cfg.MODEL, init_submodule=False)
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
