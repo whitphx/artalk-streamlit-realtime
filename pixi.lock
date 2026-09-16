@@ -175,7 +175,7 @@ environments:
       - pypi: ./
       - pypi: ./wheels/diff_gaussian_rasterization_32d-0.0.0-cp312-cp312-linux_x86_64.whl
       - pypi: git+https://github.com/whitphx/ARTalk.git?rev=8460342f4de2ec5ac9176bfd4409a4bb8872698f#8460342f4de2ec5ac9176bfd4409a4bb8872698f
-      - pypi: git+https://github.com/whitphx/GAGAvatar.git?rev=437dadea35d3069abdcc2026f661869fd608231d#437dadea35d3069abdcc2026f661869fd608231d
+      - pypi: git+https://github.com/whitphx/GAGAvatar.git?rev=6916f0f69254c50abe3fc8dec55cbeda7492272d#6916f0f69254c50abe3fc8dec55cbeda7492272d
       - pypi: https://files.pythonhosted.org/packages/01/11/ccac4393629bd51859fcfaaae479c06e7c37848811e8d0bcc736ae4ede76/torchmetrics-1.4.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/8f/d2f3f532616be4d06c316ef119683e832bd3d41e112bf3a88f4151c95b17/rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
@@ -2482,7 +2482,7 @@ packages:
   name: artalk
   version: 0.1.0
   requires_python: '>=3.11'
-- pypi: git+https://github.com/whitphx/GAGAvatar.git?rev=437dadea35d3069abdcc2026f661869fd608231d#437dadea35d3069abdcc2026f661869fd608231d
+- pypi: git+https://github.com/whitphx/GAGAvatar.git?rev=6916f0f69254c50abe3fc8dec55cbeda7492272d#6916f0f69254c50abe3fc8dec55cbeda7492272d
   name: gagavatar
   version: 0.1.0
   requires_python: '>=3.11'
