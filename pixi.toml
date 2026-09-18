@@ -47,7 +47,7 @@ diff-gaussian-rasterization-32d = { path = "wheels/diff_gaussian_rasterization_3
 # The monkey-patches in artalk_streamlit_realtime/streamlit_patches.py and
 # .streamlit/config.toml target Streamlit internals; bump only after re-testing them.
 streamlit = "==1.58.0"
-streamlit-webrtc = "==0.78.0"
+streamlit-webrtc = "==0.78.1"
 # `client.live`, which the GPT-Live bridge needs, first ships in openai 3.12.
 openai = "==3.13.0"
 # The WebRTC frame path is validated against this build.
