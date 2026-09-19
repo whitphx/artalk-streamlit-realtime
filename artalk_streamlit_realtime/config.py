@@ -215,6 +215,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--silence-mouth-gate",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_SILENCE_MOUTH_GATE", True),
+        help=(
+            "Freeze the mouth-dominant motion dimensions while decoded audio "
+            "is silent, so the avatar's lips do not flap between turns. "
+            "Blinking, brows and head motion pass through."
+        ),
+    )
+    parser.add_argument(
         "--renderer-stage-sync",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", False),
