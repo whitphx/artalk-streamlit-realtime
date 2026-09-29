@@ -10,6 +10,7 @@ from artalk.assets import ARTalkAssets
 from artalk.flame_model import RenderMesh
 from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
 
+from .graph_capture import coordinator
 from .config import DEFAULT_STYLE
 
 
@@ -125,7 +126,10 @@ class StreamingGAGAvatarAdapter:
         return self.runtime.build_forward_batch(motion_code)
 
     def forward_expression(self, batch: dict):
-        return self.runtime.render_rgb_batch(batch)
+        # Shared side: the upsampler draws noise inside this call, which is
+        # not visible from here. See graph_capture.
+        with coordinator.rng_work():
+            return self.runtime.render_rgb_batch(batch)
 
 
 @st.cache_resource
@@ -141,6 +145,9 @@ def load_gagavatar(
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
     from .avatar_registry import UserAvatarRegistry
+    from .graph_capture import serialize_gagavatar_captures
+
+    serialize_gagavatar_captures()
 
     runtime = GAGAvatarRuntime(
         GAGAvatarRuntimeConfig(

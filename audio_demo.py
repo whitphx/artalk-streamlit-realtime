@@ -12,6 +12,8 @@ model plus the network and nothing else. It needs no GPU and no ARTalk assets.
 
 from __future__ import annotations
 
+import os
+
 import av
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -23,6 +25,10 @@ from artalk_streamlit_realtime.audio_only_pipeline import (
 )
 from artalk_streamlit_realtime.config import (
     CUSTOM_ENDPOINT_LABEL,
+    DEFAULT_LIVE_DELEGATION_MODEL,
+    DEFAULT_LIVE_INSTRUCTIONS,
+    DEFAULT_LIVE_MODEL,
+    DEFAULT_LIVE_VOICE,
     DEFAULT_PERSONAPLEX_TEXT_PROMPT,
     DEFAULT_PERSONAPLEX_URL,
     DEFAULT_PERSONAPLEX_VOICE,
@@ -30,6 +36,8 @@ from artalk_streamlit_realtime.config import (
     DEFAULT_REALTIME_MODEL,
     DEFAULT_REALTIME_VOICE,
     DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
+    LIVE_VOICES,
+    OPENAI_LIVE_SAMPLE_RATE,
     OPENAI_REALTIME_SAMPLE_RATE,
     PERSONAPLEX_SAMPLE_RATE,
     PERSONAPLEX_VOICES,
@@ -37,9 +45,11 @@ from artalk_streamlit_realtime.config import (
     REALTIME_VOICES,
 )
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
+from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
 from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
 
 BACKEND_OPENAI = "OpenAI Realtime"
+BACKEND_OPENAI_LIVE = "OpenAI Live"
 BACKEND_PERSONAPLEX = "PersonaPlex"
 PIPELINE_KEY = "audio_demo_pipeline"
 BRIDGE_KEY = "audio_demo_bridge"
@@ -47,11 +57,15 @@ CONFIG_KEY = "audio_demo_config"
 
 
 def get_secret(name: str, default: str = "") -> str:
+    """A secret from Streamlit's secrets file, else from the environment,
+    which is how a Space delivers its secrets."""
     try:
-        value = st.secrets.get(name, default)
+        value = st.secrets.get(name)
     except StreamlitSecretNotFoundError:
-        return default
-    return str(value) if value is not None else default
+        value = None
+    if value is None:
+        value = os.environ.get(name)
+    return str(value) if value else default
 
 
 def stop_bridge() -> None:
@@ -67,7 +81,9 @@ def main() -> None:
     st.caption("Audio only, so latency is the model and the network, not the avatar.")
 
     with st.sidebar:
-        backend = st.radio("Backend", [BACKEND_OPENAI, BACKEND_PERSONAPLEX])
+        backend = st.radio(
+            "Backend", [BACKEND_OPENAI, BACKEND_OPENAI_LIVE, BACKEND_PERSONAPLEX]
+        )
         prebuffer = st.slider(
             "Output prebuffer (s)",
             0.0, 1.0, DEFAULT_AUDIO_ONLY_PREBUFFER_SECONDS, 0.05,
@@ -82,6 +98,7 @@ def main() -> None:
         pp_url = DEFAULT_PERSONAPLEX_URL
         pp_voice = DEFAULT_PERSONAPLEX_VOICE
         pp_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
+        delegation_model = ""
 
         if backend == BACKEND_OPENAI:
             names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
@@ -117,6 +134,42 @@ def main() -> None:
             instructions = st.text_area(
                 "Instructions", value=DEFAULT_REALTIME_INSTRUCTIONS, height=120
             )
+        elif backend == BACKEND_OPENAI_LIVE:
+            api_key = get_secret("OPENAI_API_KEY")
+            if api_key:
+                st.success("`OPENAI_API_KEY` loaded.")
+            else:
+                st.warning("`OPENAI_API_KEY` is not configured.")
+            model = st.text_input(
+                "Model", value=DEFAULT_LIVE_MODEL, key="live_model"
+            ).strip()
+            voice = st.selectbox(
+                "Voice",
+                LIVE_VOICES,
+                index=LIVE_VOICES.index(DEFAULT_LIVE_VOICE),
+                key="live_voice",
+            )
+            instructions = st.text_area(
+                "Instructions",
+                value=DEFAULT_LIVE_INSTRUCTIONS,
+                height=120,
+                key="live_instructions",
+            )
+            if st.toggle(
+                "Delegate tasks to a Responses backend",
+                value=False,
+                key="live_delegate",
+                help=(
+                    "Billed on top of the session's per-second charge. Without "
+                    "it the Live model answers alone."
+                ),
+            ):
+                delegation_model = st.text_input(
+                    "Backend model",
+                    value=DEFAULT_LIVE_DELEGATION_MODEL,
+                    key="live_delegation_model",
+                ).strip()
+                st.caption("Web search is the only tool offered to the backend.")
         else:
             pp_url = st.text_input("moshi server URL", value=DEFAULT_PERSONAPLEX_URL).strip()
             pp_voice = st.selectbox(
@@ -129,13 +182,14 @@ def main() -> None:
             )
 
     # Each backend speaks at its own rate; keeping it avoids a resample.
-    sample_rate = (
-        PERSONAPLEX_SAMPLE_RATE if backend == BACKEND_PERSONAPLEX
-        else OPENAI_REALTIME_SAMPLE_RATE
-    )
+    sample_rate = {
+        BACKEND_OPENAI: OPENAI_REALTIME_SAMPLE_RATE,
+        BACKEND_OPENAI_LIVE: OPENAI_LIVE_SAMPLE_RATE,
+        BACKEND_PERSONAPLEX: PERSONAPLEX_SAMPLE_RATE,
+    }[backend]
     config = (
         backend, prebuffer, sample_rate, api_key, model, voice, instructions,
-        ws_base_url, pp_url, pp_voice, pp_prompt,
+        ws_base_url, delegation_model, pp_url, pp_voice, pp_prompt,
     )
     if st.session_state.get(CONFIG_KEY) != config:
         stop_bridge()
@@ -153,6 +207,16 @@ def main() -> None:
                 on_audio_output=None,
                 text_prompt=pp_prompt,
                 voice_prompt=pp_voice,
+            )
+        elif backend == BACKEND_OPENAI_LIVE:
+            bridge = OpenAILiveBridge(
+                api_key=api_key,
+                pipeline=pipeline,
+                on_audio_output=None,
+                model=model,
+                voice=voice,
+                instructions=instructions,
+                delegation_model=delegation_model,
             )
         else:
             bridge = OpenAIRealtimeBridge(

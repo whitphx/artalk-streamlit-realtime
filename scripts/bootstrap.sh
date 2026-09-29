@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring a fresh Linux CUDA host to a runnable state:
-#   scripts/bootstrap.sh [--with-track]
+#   scripts/bootstrap.sh [--with-track] [--without-fallingwater]
 # then: pixi run artalk-demo assets && pixi run artalk-demo up
 set -euo pipefail
 
@@ -12,16 +12,25 @@ REPO_ROOT="$PWD"
 FALLINGWATER_REPO=https://github.com/whitphx/Fallingwater.git
 FALLINGWATER_REV=8fbde2eb99f5d7fd15fc0c74430c734cd0a9bbfd
 # train_code for --motion-model artalk1s; same repo as the artalk package.
+# Deliberately behind the package pin in pixi.toml: later revisions add an
+# audio-context argument to CrossAttention.forward, and the decoder constant
+# cache in artalk_streamlit_realtime/artalk1s.py recognises the model by that
+# signature, so it would quietly disable itself and the graph capture with it.
+# Published checkpoints still load here; move both pins together.
 ARTALK_TRAIN_REPO=https://github.com/whitphx/ARTalk.git
-ARTALK_TRAIN_REV=5126a307871c8ef100009423955a86763e6844d4
+ARTALK_TRAIN_REV=8460342f4de2ec5ac9176bfd4409a4bb8872698f
 # Carries the vendored GAGAvatar_track (gagavatar/libs/GAGAvatar_track).
 GAGAVATAR_REPO=https://github.com/whitphx/GAGAvatar.git
 GAGAVATAR_REV=437dadea35d3069abdcc2026f661869fd608231d
 
 WITH_TRACK=0
+WITH_FALLINGWATER=1
 for arg in "$@"; do
   case "$arg" in
     --with-track) WITH_TRACK=1 ;;
+    # The Fallingwater fork is private; hosts without GitHub credentials
+    # (the Space image) run without that motion model.
+    --without-fallingwater) WITH_FALLINGWATER=0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -57,7 +66,9 @@ fetch_rev() {
 }
 
 mkdir -p vendor
-fetch_rev "$FALLINGWATER_REPO" "$FALLINGWATER_REV" vendor/Fallingwater
+if [[ "$WITH_FALLINGWATER" == 1 ]]; then
+  fetch_rev "$FALLINGWATER_REPO" "$FALLINGWATER_REV" vendor/Fallingwater
+fi
 fetch_rev "$ARTALK_TRAIN_REPO" "$ARTALK_TRAIN_REV" vendor/ARTalk
 fetch_rev "$GAGAVATAR_REPO" "$GAGAVATAR_REV" vendor/GAGAvatar 1
 

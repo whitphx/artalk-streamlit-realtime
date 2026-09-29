@@ -329,8 +329,11 @@ class OpenAIRealtimeBridge:
             return
         if item_id != self._assistant_item_id:
             counters = self._pipeline.metrics_snapshot()["counters"]
-            queued_ahead_16k = (
-                counters.get("audio_out_buffer_samples", 0)
+            # The output buffer is read in seconds because the audio-only
+            # pipeline holds it at the backend's rate rather than ARTalk's;
+            # the stages behind it are ARTalk's own and always count at its.
+            queued_ahead_16k = int(
+                counters.get("audio_out_buffer_seconds", 0.0) * ARTALK_SAMPLE_RATE
                 + counters.get("pending_audio_for_output_samples", 0)
                 + counters.get("streamer_buffer_samples", 0)
             )

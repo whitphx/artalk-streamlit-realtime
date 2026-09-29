@@ -174,11 +174,11 @@ class OpenAILiveBridge:
         # Audio that has been pushed but not yet served is what the listener
         # still has to sit through before hearing anything said after it, so
         # it stands in for the turn boundary a full-duplex session never draws.
-        queued_16k = (
-            counters.get("audio_out_buffer_samples", 0)
-            + counters.get("pending_audio_for_output_samples", 0)
+        # Units as in OpenAIRealtimeBridge._track_response_item.
+        trailing_s = counters.get("audio_out_buffer_seconds", 0.0) + (
+            counters.get("pending_audio_for_output_samples", 0)
             + counters.get("streamer_buffer_samples", 0)
-        )
+        ) / ARTALK_SAMPLE_RATE
         with self._state_lock:
             return {
                 "connected": self._connected,
@@ -186,7 +186,7 @@ class OpenAILiveBridge:
                 "user": self._user_transcript,
                 "assistant": self._assistant_transcript,
                 "model_audio_s": self._model_samples_out / OPENAI_LIVE_SAMPLE_RATE,
-                "trailing_s": queued_16k / ARTALK_SAMPLE_RATE,
+                "trailing_s": trailing_s,
             }
 
     def _queue_input(self, pcm: bytes) -> None:

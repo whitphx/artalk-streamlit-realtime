@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 
 from .config import _env_flag
+from .graph_capture import coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,17 @@ def load_artalk1s_model(train_code_dir: str | Path, checkpoint_path: str | Path,
             "directory"
         ) from exc
 
+    checkpoint_path = Path(checkpoint_path).expanduser()
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "meta_cfg" not in ckpt:
         raise ValueError(f"{checkpoint_path} has no meta_cfg; not a self-contained checkpoint")
+    vae_config = ckpt["meta_cfg"]["MODEL"]["VAE_CONFIG"]
+    # The codec reads its motion statistics file at construction. A published
+    # checkpoint names that file relative to itself rather than by the
+    # absolute path of the training host.
+    stats_path = Path(vae_config["STATS_PATH"])
+    if not stats_path.is_absolute():
+        vae_config["STATS_PATH"] = str(checkpoint_path.parent / stats_path)
     meta_cfg = ConfigDict(ckpt["meta_cfg"], gpus=1, cli_args=[])
     model = build_model(meta_cfg.MODEL, init_submodule=False)
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
@@ -158,6 +167,43 @@ def _install_decoder_constant_cache() -> bool:
     return True
 
 
+def _recover_device_rng(device: torch.device) -> None:
+    """Heal the device RNG after a CUDA graph capture failed mid-flight.
+
+    A capture that dies between begin and end can leave the device's
+    default RNG generator registered to the dead capture, after which
+    every sampling op in the process (the photoreal renderer draws noise
+    per frame) raises "Offset increment outside graph capture". Swapping
+    in a fresh clone of the generator state clears the registration; the
+    other candidates (graph.reset(), deleting the graph, set_rng_state)
+    measurably do not. If even that fails, raise with the operator's way
+    out instead of letting the process limp into unrelated-looking
+    crashes.
+    """
+    try:
+        with coordinator.rng_work():
+            torch.randn(1, device=device)
+        return
+    except RuntimeError:
+        pass
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    generator = torch.cuda.default_generators[index]
+    try:
+        with coordinator.rng_work():
+            generator.graphsafe_set_state(generator.clone_state())
+            torch.randn(1, device=device)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "A failed CUDA graph capture left this device's RNG generator "
+            "unusable and recovery did not take. Restart the process; set "
+            "ARTALK1S_GRAPH_DECODER=0 to disable decoder graph capture."
+        ) from exc
+    logger.warning(
+        "[artalk1s] recovered the device RNG generator after a failed "
+        "graph capture"
+    )
+
+
 class _GraphedDecoder:
     """Replay the AR decoder's kernel sequence from a CUDA graph.
 
@@ -191,6 +237,9 @@ class _GraphedDecoder:
                     "[artalk1s] decoder graph capture failed; continuing eager",
                     exc_info=True,
                 )
+                # Eager is only a safe fallback once the RNG generator is
+                # confirmed (or restored to) usable.
+                _recover_device_rng(inputs[0].device)
                 return self.module(*inputs)
             self._graphs[key] = entry
         graph, static_in, static_out = entry
@@ -202,21 +251,25 @@ class _GraphedDecoder:
         return static_out.clone()
 
     def _capture(self, inputs) -> tuple:
-        # Quiesce the device: capture aborts if other in-flight work
-        # interleaves, and the pipeline runs with stage syncs disabled.
-        torch.cuda.synchronize()
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(2):
-                self.module(*inputs)
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
-        static_in = tuple(t.clone() for t in inputs)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
-            static_out = self.module(*static_in)
-        return (graph, static_in, static_out)
+        # Exclusive: the synchronize below is forbidden while any other
+        # thread's capture is open, and concurrent captures abort each
+        # other (multiple pipelines warm up at once under Streamlit).
+        with coordinator.capture():
+            # Quiesce the device: capture aborts if other in-flight work
+            # interleaves, and the pipeline runs with stage syncs disabled.
+            torch.cuda.synchronize()
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(2):
+                    self.module(*inputs)
+            torch.cuda.current_stream().wait_stream(stream)
+            torch.cuda.synchronize()
+            static_in = tuple(t.clone() for t in inputs)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+                static_out = self.module(*static_in)
+            return (graph, static_in, static_out)
 
 
 def _fast_decode_supported(model) -> bool:
@@ -277,8 +330,12 @@ class ARTalk1sStreamer:
 
             self._sample_bits = sample_idx_with_top_p_
             self._decoder = model.attn_blocks
+            # Opt-in until validated on the deployment GPU: capture is the
+            # riskiest machinery in the stack (a mid-capture failure poisons
+            # the process-global RNG generator; recovery below is
+            # best-effort). The eager fast path alone is the safe default.
             if (
-                _env_flag("ARTALK1S_GRAPH_DECODER", True)
+                _env_flag("ARTALK1S_GRAPH_DECODER", False)
                 and self.device.type == "cuda"
                 # Capture needs the decoder's constant tensors on-device;
                 # without the cache every step does pageable host-to-device
@@ -394,13 +451,15 @@ class ARTalk1sStreamer:
     def _step_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
         if self._fast:
             return self._step_chunk_fast(chunk)
-        out = self.model.inference(
-            chunk[None],
-            style_motion_code=self._style_motion,
-            prev_motion_code=self._prev_motion,
-            tau=self.tau,
-            cfg=self.cfg,
-        )
+        # Shared side; see graph_capture.
+        with coordinator.rng_work():
+            out = self.model.inference(
+                chunk[None],
+                style_motion_code=self._style_motion,
+                prev_motion_code=self._prev_motion,
+                tau=self.tau,
+                cfg=self.cfg,
+            )
         motion = out["pred_motion_code"]  # (1, frames_per_chunk, motion_dim)
         self._prev_motion = torch.cat([self._prev_motion, motion], dim=1)[
             :, -self._prev_frames :
@@ -433,7 +492,9 @@ class ARTalk1sStreamer:
                 logits = self.cfg * logits[:1] + (1 - self.cfg) * logits[1:]
             else:
                 logits = logits[:1]
-            patch_bits.append(self._sample_bits(logits))
+            # Shared side; see graph_capture.
+            with coordinator.rng_work():
+                patch_bits.append(self._sample_bits(logits))
             if pidx < len(m.patch_nums) - 1:
                 nxt = m.base_codec.vqidx_to_next_feat(
                     torch.cat(patch_bits, dim=1), pidx, "accum_next"

@@ -208,6 +208,9 @@ def _compute_env(profile: dict, preset: dict | None, gpu: Gpu | None) -> dict[st
     if track_python.exists():
         env.setdefault("GAGAVATAR_TRACK_PYTHON", str(track_python))
     asset_dir = os.environ.get("ARTALK_ASSET_DIR")
+    artalk1s = Path(asset_dir or REPO_ROOT / "assets") / "ARTalk1s" / "ARTalk1s_wav2vec.pt"
+    if artalk1s.exists():
+        env.setdefault("ARTALK1S_CHECKPOINT", str(artalk1s))
     if asset_dir:
         env.setdefault("GAGAVATAR_MODEL_PATH", f"{asset_dir}/GAGAvatar/GAGAvatar.pt")
         env.setdefault("GAGAVATAR_TRACKED_PATH", f"{asset_dir}/GAGAvatar/tracked.pt")
@@ -328,6 +331,19 @@ def main() -> int:
         "--fallingwater",
         action="store_true",
         help="also fetch the Fallingwater checkpoint and MOSS tokenizer (~7 GB)",
+    )
+    assets_parser.add_argument(
+        "--gated-repo",
+        default=os.environ.get("ARTALK_GATED_ASSETS_REPO"),
+        help=(
+            "private Hub repo holding FLAME_with_eye.pt; read with the "
+            "Hugging Face token (HF_TOKEN or `hf auth login`)"
+        ),
+    )
+    assets_parser.add_argument(
+        "--artalk1s-repo",
+        default=os.environ.get("ARTALK1S_REPO"),
+        help="Hub repo holding the retrained 1 s model (read with the Hub token)",
     )
     assets_parser.add_argument(
         "--check-only",

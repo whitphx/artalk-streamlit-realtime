@@ -37,8 +37,8 @@ pip = "*"
 
 [pypi-dependencies]
 artalk-streamlit-realtime = { path = ".", editable = true, extras = ["personaplex", "fallingwater"] }
-artalk = { git = "https://github.com/whitphx/ARTalk.git", rev = "b88ebe37ef800f9c59453451a8ee8a5cc44757da" }
-gagavatar = { git = "https://github.com/whitphx/GAGAvatar.git", rev = "437dadea35d3069abdcc2026f661869fd608231d" }
+artalk = { git = "https://github.com/whitphx/ARTalk.git", rev = "74b1ce8d1723618a5f4198886c4e9bf5209e990a" }
+gagavatar = { git = "https://github.com/whitphx/GAGAvatar.git", rev = "6916f0f69254c50abe3fc8dec55cbeda7492272d" }
 # Prebuilt fat binary (sm_60/75/80+PTX) from whitphx/diff-gaussian-rasterization
 # branch fix/unconditional-launch-error-check (4d71ef9); ABI-tied to the torch
 # pin above. Rebuild recipe: docs/realtime-performance-notes.md.
@@ -47,7 +47,7 @@ diff-gaussian-rasterization-32d = { path = "wheels/diff_gaussian_rasterization_3
 # The monkey-patches in artalk_streamlit_realtime/streamlit_patches.py and
 # .streamlit/config.toml target Streamlit internals; bump only after re-testing them.
 streamlit = "==1.58.0"
-streamlit-webrtc = "==0.74.1"
+streamlit-webrtc = "==0.78.1"
 # `client.live`, which the GPT-Live bridge needs, first ships in openai 3.12.
 openai = "==3.13.0"
 # The WebRTC frame path is validated against this build.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
 import signal
 import threading
 import time
@@ -66,6 +67,8 @@ from artalk_streamlit_realtime.diagnostics import (
     save_diagnostics_snapshot,
 )
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
+from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
+from artalk_streamlit_realtime.sessions import current_session_id, slots
 from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
@@ -110,11 +113,29 @@ EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 
 
 def get_secret(name: str, default: str = "") -> str:
+    """A secret from Streamlit's secrets file, else from the environment,
+    which is how a Space delivers its secrets."""
     try:
-        value = st.secrets.get(name, default)
+        value = st.secrets.get(name)
     except StreamlitSecretNotFoundError:
-        return default
-    return str(value) if value is not None else default
+        value = None
+    if value is None:
+        value = os.environ.get(name)
+    return str(value) if value else default
+
+
+def api_key_input(secret_name: str) -> str:
+    """The configured secret, or a key typed into this browser session."""
+    api_key = get_secret(secret_name)
+    if api_key:
+        st.success(f"`{secret_name}` loaded.")
+        return api_key
+    return st.text_input(
+        secret_name,
+        type="password",
+        key=f"api_key_{secret_name}",
+        help="Kept for this browser session only. Usage is billed to this key.",
+    ).strip()
 
 
 def register_avatar_with_progress(
@@ -242,6 +263,7 @@ def stop_pipeline() -> None:
     if pipeline is not None:
         pipeline.stop()
     st.session_state.pop(PIPELINE_CONFIG_KEY, None)
+    slots.release(current_session_id())
 
 
 def main() -> None:
@@ -259,6 +281,7 @@ def main() -> None:
             "[loop-watchdog] not armed", exc_info=True
         )
     args = parse_args()
+    slots.limit = args.max_sessions
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
     asset_dir = artalk_assets.root
@@ -272,10 +295,7 @@ def main() -> None:
         layout="wide",
     )
     st.title("ARTalk Realtime")
-    st.caption(
-        "Speak into the microphone — the avatar starts moving "
-        "~4 seconds later (model chunk floor)."
-    )
+    chunk_caption = st.empty()
 
     try:
         artalk_runtime, mesh_renderer = load_artalk_runtime(
@@ -300,17 +320,32 @@ def main() -> None:
     )
 
     with st.sidebar:
-        if args.motion_model == "fallingwater":
+        motion_labels = {"artalk": "ARTalk (4 s chunks)", "artalk1s": "ARTalk 1 s"}
+        if args.motion_model in motion_labels and args.artalk1s_train_code_dir and args.artalk1s_checkpoint:
+            motion_model = st.radio(
+                "Motion model",
+                list(motion_labels),
+                index=list(motion_labels).index(args.motion_model),
+                format_func=motion_labels.__getitem__,
+                horizontal=True,
+                help=(
+                    "The 1 s model starts speaking about three seconds sooner. "
+                    "Switching rebuilds the pipeline."
+                ),
+            )
+        else:
+            motion_model = args.motion_model
+        if motion_model == "fallingwater":
             st.caption(
                 "Fallingwater model: "
                 f"`{Path(args.fallingwater_checkpoint or '?').name}`"
             )
-        elif args.motion_model == "artalk1s":
+        elif motion_model == "artalk1s":
             st.caption(
                 "ARTalk 1s model: "
                 f"`{Path(args.artalk1s_checkpoint or '?').name}`"
             )
-        elif args.motion_model == "frame":
+        elif motion_model == "frame":
             st.caption(
                 "Frame model: "
                 f"`{Path(args.frame_checkpoint or '?').name}`"
@@ -348,7 +383,10 @@ def main() -> None:
             [DEFAULT_STYLE, *style_ids],
             index=default_style_index,
         )
-        mode = st.radio("Mode", ["Loopback", "Interactive"], index=1, horizontal=True)
+        modes = ["Loopback", "Interactive"]
+        mode = st.radio(
+            "Mode", modes, index=modes.index(args.default_mode.capitalize()), horizontal=True
+        )
         mic_processing = st.toggle(
             "Mic echo cancellation & noise suppression",
             value=True,
@@ -427,11 +465,7 @@ def main() -> None:
                 ),
             )
         if mode == "Interactive" and backend == BACKEND_OPENAI_LIVE:
-            api_key = get_secret("OPENAI_API_KEY")
-            if api_key:
-                st.success("`OPENAI_API_KEY` loaded.")
-            else:
-                st.warning("`OPENAI_API_KEY` is not configured.")
+            api_key = api_key_input("OPENAI_API_KEY")
             # Keyed so the Realtime branch's identically labelled widgets
             # cannot be mistaken for these when the backend is switched.
             live_model = st.text_input(
@@ -510,15 +544,10 @@ def main() -> None:
                 if realtime_ws_base_url:
                     st.caption(f"`{realtime_ws_base_url}`")
 
-            api_key = get_secret(secret_name) if secret_name else ""
-            if api_key:
-                st.success(f"`{secret_name}` loaded.")
-            elif not secret_name:
-                st.info("This endpoint takes no credential.")
-            elif realtime_ws_base_url:
-                st.warning(f"`{secret_name}` is not configured.")
+            if secret_name:
+                api_key = api_key_input(secret_name)
             else:
-                st.warning("Secret is not configured.")
+                st.info("This endpoint takes no credential.")
             # Keyed per endpoint so switching presets re-seeds these rather
             # than carrying the previous provider's names over.
             realtime_model = st.text_input(
@@ -542,27 +571,21 @@ def main() -> None:
                 height=120,
             )
 
-        with st.expander("Register avatar"):
-            registered_flash = st.session_state.pop("avatar_registered_flash", None)
-            if registered_flash is not None:
-                elapsed_s = registered_flash.get("elapsed_s")
-                took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
-                st.success(
-                    f"Registered{took} — select "
-                    f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
-                )
-                st.image(
-                    registered_flash["vis_image"],
-                    clamp=True,
-                    caption=f"Tracked fit: {registered_flash['avatar_id']}",
-                )
-            if not user_registry.can_register:
-                st.caption(
-                    "Avatar registration needs the GAGAvatar tracker. Set "
-                    "`GAGAVATAR_TRACK_PYTHON` and `GAGAVATAR_TRACK_DIR` (or "
-                    "pass `--gagavatar-track-python` / `--gagavatar-track-dir`)."
-                )
-            else:
+        if user_registry.can_register:
+            with st.expander("Register avatar"):
+                registered_flash = st.session_state.pop("avatar_registered_flash", None)
+                if registered_flash is not None:
+                    elapsed_s = registered_flash.get("elapsed_s")
+                    took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
+                    st.success(
+                        f"Registered{took} — select "
+                        f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
+                    )
+                    st.image(
+                        registered_flash["vis_image"],
+                        clamp=True,
+                        caption=f"Tracked fit: {registered_flash['avatar_id']}",
+                    )
                 upload = st.file_uploader(
                     "Face image",
                     type=["jpg", "jpeg", "png"],
@@ -628,6 +651,11 @@ def main() -> None:
                     user_registry.delete(delete_id)
                     st.rerun()
 
+    chunk_caption.caption(
+        "Speak into the microphone — the avatar starts moving "
+        f"~{1 if motion_model == 'artalk1s' else 4} seconds later (model chunk floor)."
+    )
+
     def get_pipeline() -> ARTalkPipeline:
         renderer_mode, avatar_id = split_appearance(appearance)
         style_motion = load_style_motion(str(asset_dir), style_id)
@@ -649,7 +677,7 @@ def main() -> None:
                 compile_mode="cuda-graph" if args.renderer_compile else None,
             )
         streamer = None
-        if args.motion_model == "fallingwater":
+        if motion_model == "fallingwater":
             if not args.fallingwater_dir or not args.fallingwater_checkpoint:
                 raise RuntimeError(
                     "--fallingwater-dir and --fallingwater-checkpoint are "
@@ -662,7 +690,7 @@ def main() -> None:
                     args.device,
                 )
             )
-        elif args.motion_model == "artalk1s":
+        elif motion_model == "artalk1s":
             if not args.artalk1s_train_code_dir or not args.artalk1s_checkpoint:
                 raise RuntimeError(
                     "--artalk1s-train-code-dir and --artalk1s-checkpoint are "
@@ -676,7 +704,7 @@ def main() -> None:
                 ),
                 style_motion=style_motion,
             )
-        elif args.motion_model == "frame":
+        elif motion_model == "frame":
             if not args.frame_package_dir or not args.frame_checkpoint:
                 raise RuntimeError(
                     "--frame-package-dir and --frame-checkpoint are required "
@@ -697,7 +725,7 @@ def main() -> None:
             args.device,
             args.artalk_audio_encoder,
             args.artalk_checkpoint,
-            args.motion_model,
+            motion_model,
             args.fallingwater_checkpoint,
             args.artalk1s_checkpoint,
             args.frame_checkpoint,
@@ -726,7 +754,11 @@ def main() -> None:
             # A run that waited here while another run built the
             # pipeline must adopt it, not build a twin.
             pipeline = st.session_state.get(PIPELINE_KEY)
-            if pipeline is not None and st.session_state.get(PIPELINE_CONFIG_KEY) != config:
+            # A stopped pipeline is one the slot reaper tore down while this
+            # session was disconnected; it came back and needs a fresh one.
+            if pipeline is not None and (
+                st.session_state.get(PIPELINE_CONFIG_KEY) != config or pipeline.is_stopped
+            ):
                 stop_silence_pump()
                 pipeline.stop()
                 pipeline = None
@@ -746,10 +778,11 @@ def main() -> None:
                     output_rebuffer_seconds=args.output_rebuffer_seconds,
                     max_added_latency_seconds=args.max_added_latency_seconds,
                     renderer_stage_sync=args.renderer_stage_sync,
+                    silence_mouth_gate=args.silence_mouth_gate,
                     renderer_output_uint8=args.render_uint8_gpu,
                     warm_key_extra=(
                         f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
-                        f"motion={args.motion_model}"
+                        f"motion={motion_model}"
                     ),
                     profile_trace_dir=args.profile_trace_dir,
                     profile_skip_chunks=args.profile_skip_chunks,
@@ -775,7 +808,13 @@ def main() -> None:
     if mode == "Interactive" and needs_secret:
         stop_bridge()
         stop_pipeline()
-        st.info("Configure the secret to use Interactive mode.")
+        st.info("Enter an API key in the sidebar to use Interactive mode.")
+        st.stop()
+
+    session_id = current_session_id()
+    if not slots.acquire(session_id):
+        st.warning("Another visitor is using the GPU right now. Try again in a moment.")
+        st.button("Retry")
         st.stop()
 
     try:
@@ -786,6 +825,7 @@ def main() -> None:
         # checkpoints fail in ways the message alone does not locate.
         st.exception(exc)
         st.stop()
+    slots.attach(session_id, "pipeline", pipeline)
 
     freeze_loaded_objects()
 
@@ -796,13 +836,14 @@ def main() -> None:
         silence_pump = None
     else:
         silence_pump = get_silence_pump(pipeline)
+    slots.attach(session_id, "pump", silence_pump)
     pipeline.set_output_underrun_policy(
         st.session_state.underrun_policy,
         rebuffer_seconds=st.session_state.rebuffer_seconds,
         max_added_latency_seconds=st.session_state.max_added_latency,
     )
     event_log = get_event_log()
-    get_event_watcher(pipeline, event_log)
+    slots.attach(session_id, "watcher", get_event_watcher(pipeline, event_log))
 
     def get_bridge() -> OpenAIRealtimeBridge | OpenAILiveBridge | PersonaPlexBridge:
         config = (
@@ -936,9 +977,19 @@ def main() -> None:
                 else:
                     st.caption("Waiting for response...")
 
+    try:
+        rtc_configuration = resolve_rtc_configuration(args.ice_provider)
+    except Exception as exc:
+        st.warning(
+            f"ICE provider {args.ice_provider!r} failed ({exc}); using STUN "
+            "only, which cannot connect through a proxy or a strict NAT."
+        )
+        rtc_configuration = STUN_ONLY
+
     def render_webrtc_component() -> None:
         webrtc_streamer(
             key=streamer_key,
+            rtc_configuration=rtc_configuration,
             mode=WebRtcMode.SENDRECV,
             source_video_track=video_source_track,
             source_audio_track=audio_source_track,

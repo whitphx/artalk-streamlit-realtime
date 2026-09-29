@@ -25,6 +25,14 @@ at: {path}"""
 
 MOSS_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 
+# The retrained 1 s model (docs/hf-spaces-plan.md, phase 1b). Its repo is
+# private until publication is cleared, so the files are read with the Hub
+# token and pinned here by content rather than by manifest.
+ARTALK1S_FILES = {
+    "ARTalk1s_wav2vec.pt": "a8cf9cc72cd6804d2710280a51c447448dabfacef2f730a79c41bc304942902b",
+    "metadata_stats.json": "24b5c0b86c8b0aae9b3ea277dff42f919e4bb69b7e79ebb9548a96890dd4ec9e",
+}
+
 
 def _run_downloader(module: str, *args: str) -> bool:
     completed = subprocess.run(
@@ -67,6 +75,61 @@ def _fetch_fallingwater_checkpoint(dest_dir: Path) -> bool:
     return True
 
 
+def _fetch_gated_flame(root: Path, repo_id: str) -> bool:
+    """FLAME cannot be redistributed, so a deployment keeps its copy in a
+    private Hub repo of its own and completes the tree from there."""
+    dest = root / "FLAME_with_eye.pt"
+    if dest.exists():
+        return True
+    from artalk.assets import iter_manifest_assets, verify_asset
+    from huggingface_hub import hf_hub_download
+
+    print(f"download: {repo_id}/{dest.name} -> {dest}")
+    try:
+        hf_hub_download(repo_id, dest.name, local_dir=root)
+    except Exception as exc:
+        print(f"gated asset download failed ({type(exc).__name__}): {exc}")
+        return False
+    asset = next(
+        a for a in iter_manifest_assets(include_optional=True) if a["path"] == dest.name
+    )
+    try:
+        verify_asset(dest, asset)
+    except Exception:
+        dest.unlink()
+        raise
+    return True
+
+
+def _fetch_artalk1s(root: Path, repo_id: str) -> bool:
+    from artalk.assets import sha256_file
+    from huggingface_hub import hf_hub_download
+
+    dest_dir = root / "ARTalk1s"
+    ok = True
+    for name, expected in ARTALK1S_FILES.items():
+        dest = dest_dir / name
+        if dest.exists():
+            if sha256_file(dest) == expected:
+                continue
+            # A host that fetched an earlier release of this repo keeps serving
+            # it otherwise, and nothing downstream can tell which model it ran.
+            print(f"replace: {dest} does not match the pinned digest")
+            dest.unlink()
+        print(f"download: {repo_id}/{name} -> {dest}")
+        try:
+            hf_hub_download(repo_id, name, local_dir=dest_dir)
+        except Exception as exc:
+            print(f"ARTalk 1s download failed ({type(exc).__name__}): {exc}")
+            ok = False
+            continue
+        if sha256_file(dest) != expected:
+            dest.unlink()
+            print(f"ARTalk 1s download failed: {name} does not match its pinned hash")
+            ok = False
+    return ok
+
+
 def _prefetch_moss_tokenizer() -> bool:
     os.environ.setdefault("HF_HOME", str(REPO_ROOT / ".cache" / "huggingface"))
     from huggingface_hub import snapshot_download
@@ -92,6 +155,10 @@ def run(args: argparse.Namespace) -> int:
         if args.fallingwater:
             ok &= _fetch_fallingwater_checkpoint(root / "Fallingwater")
             ok &= _prefetch_moss_tokenizer()
+        if args.gated_repo:
+            ok &= _fetch_gated_flame(root, args.gated_repo)
+        if args.artalk1s_repo:
+            ok &= _fetch_artalk1s(root, args.artalk1s_repo)
 
     flame = root / "FLAME_with_eye.pt"
     if not flame.exists():

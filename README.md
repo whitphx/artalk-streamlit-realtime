@@ -1,3 +1,16 @@
+---
+title: ARTalk Realtime
+emoji: 🗣️
+colorFrom: blue
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+models:
+  - xg-chu/ARTalk
+  - xg-chu/GAGAvatar
+---
+
 # ARTalk Streamlit Realtime
 
 Standalone Streamlit realtime demo for the packaged ARTalk + GAGAvatar stack.
@@ -9,6 +22,7 @@ lockfile by default, or editable checkouts for development.
 ## Quick start (fresh CUDA host)
 
 ```bash
+git lfs install               # the rasterizer wheel is stored in LFS
 scripts/bootstrap.sh          # pixi env from pixi.lock + pinned vendor checkouts
 pixi run artalk-demo assets   # model weights (FLAME_with_eye.pt stays manual)
 pixi run artalk-demo doctor   # validates install, CUDA arch coverage, assets
@@ -30,6 +44,8 @@ because its dependency set conflicts with the runtime stack).
 
 For the server path there is a `Dockerfile` + `compose.yaml` (assets and the
 Hugging Face cache are volumes; the image needs the NVIDIA Container Toolkit).
+The same image runs as a Hugging Face Space; see
+[Hugging Face Spaces](#hugging-face-spaces).
 
 ### Developing against an ARTalk/GAGAvatar checkout
 
@@ -307,6 +323,58 @@ duplex, so like PersonaPlex it has no turn boundary to truncate at barge-in,
 and it splits the voice frontend from a backend that reasons and calls tools.
 That backend is off by default; the sidebar can hand it to a Responses model
 with web search, billed on top of the session's per-second charge.
+
+## Hugging Face Spaces
+
+The repository is also a Docker Space: the YAML front matter at the top of this
+file is the Space configuration, and `scripts/push_space.sh` deploys the
+checked-out commit to it (as a snapshot commit, because the Hub rejects the
+branch's early history, which carried the rasterizer wheel outside LFS). The
+Space needs, in its settings:
+
+- Variable `BAKE_ASSETS=1`, so the build downloads the public weights into the
+  image (a Space has no volume to mount them from).
+- Variable `ARTALK_GATED_ASSETS_REPO`, a private model repo of your own that
+  holds `FLAME_with_eye.pt`. FLAME cannot be redistributed, so it never enters
+  the image; `scripts/spaces_start.sh` fetches it at container start.
+- Secret `HF_TOKEN` with read access to that repo.
+- Optionally the variable `ARTALK1S_REPO`, a Hub repo holding the retrained
+  ARTalk 1 s model (`ARTalk1s_wav2vec.pt` and `metadata_stats.json`), readable
+  with the same token. When it is set, the sidebar offers both motion models.
+- Secrets `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` from a
+  [Cloudflare Realtime TURN key](https://developers.cloudflare.com/realtime/turn/).
+  Behind the Spaces proxy WebRTC media must relay through TURN, and the
+  `spaces` profile sets `--ice-provider cloudflare` to fetch short-lived relay
+  credentials from that key. Relayed traffic is billed by Cloudflare.
+- GPU hardware: the `launch.toml` presets pick render flags per GPU tier.
+
+The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
+for their own OpenAI key, kept in their browser session. A private Space can
+instead carry the owner's key as the secret `OPENAI_API_KEY` and start in
+Interactive mode with the variable `ARTALK_DEFAULT_MODE=interactive`; Space
+variables override the profile's defaults. Avatar registration is hidden
+because the tracker environment is not part of the image.
+
+## Licenses
+
+This application layer is the only part of the stack that this repository
+licenses. What it runs on carries its own terms:
+
+- [ARTalk](https://github.com/xg-chu/ARTalk) and
+  [GAGAvatar](https://github.com/xg-chu/GAGAvatar): MIT. Their model weights
+  are distributed under the terms on the
+  [`xg-chu/ARTalk`](https://huggingface.co/xg-chu/ARTalk) and
+  [`xg-chu/GAGAvatar`](https://huggingface.co/xg-chu/GAGAvatar) model cards.
+- The Gaussian rasterizer (`wheels/diff_gaussian_rasterization_32d-*.whl`, a
+  build of [graphdeco-inria/diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)):
+  the Inria/MPII Gaussian-Splatting license, which permits research and
+  evaluation use only. The license text ships inside the wheel's `dist-info`.
+- FLAME (`FLAME_with_eye.pt`): the [FLAME model license](https://flame.is.tue.mpg.de/modellicense.html),
+  non-commercial scientific research only, no redistribution. This is why the
+  file is never downloaded automatically and never enters the Docker image.
+
+Taken together the demo is a non-commercial research artefact. Interactive
+mode talks to OpenAI with a key the visitor provides, billed to that key.
 
 ## Notes
 

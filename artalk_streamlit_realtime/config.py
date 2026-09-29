@@ -215,6 +215,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--silence-mouth-gate",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_SILENCE_MOUTH_GATE", True),
+        help=(
+            "Freeze the mouth-dominant motion dimensions while decoded audio "
+            "is silent, so the avatar's lips do not flap between turns. "
+            "Blinking, brows and head motion pass through."
+        ),
+    )
+    parser.add_argument(
         "--renderer-stage-sync",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", False),
@@ -377,6 +387,33 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("GAGAVATAR_TRACK_DIR"),
         type=str,
         help="GAGAvatar_track checkout directory.",
+    )
+    parser.add_argument(
+        "--max-sessions",
+        default=int(os.environ.get("ARTALK_MAX_SESSIONS", "0")),
+        type=int,
+        help=(
+            "Browser sessions allowed to hold a pipeline at once (0: no "
+            "limit). Each session's pipeline is a render loop on the GPU."
+        ),
+    )
+    parser.add_argument(
+        "--default-mode",
+        default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
+        choices=["loopback", "interactive"],
+        help="Mode the sidebar starts in.",
+    )
+    parser.add_argument(
+        "--ice-provider",
+        default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
+        choices=["stun", "cloudflare"],
+        help=(
+            "ICE servers handed to WebRTC. stun: Google's public STUN only, "
+            "enough when the browser can reach this host directly. "
+            "cloudflare: TURN relay credentials from Cloudflare Realtime "
+            "(CLOUDFLARE_TURN_KEY_ID, CLOUDFLARE_TURN_KEY_API_TOKEN); needed "
+            "behind proxies such as Hugging Face Spaces."
+        ),
     )
     parser.add_argument(
         "--gagavatar-track-device",
