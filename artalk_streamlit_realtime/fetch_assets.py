@@ -29,8 +29,8 @@ MOSS_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 # private until publication is cleared, so the files are read with the Hub
 # token and pinned here by content rather than by manifest.
 ARTALK1S_FILES = {
-    "ARTalk1s_wav2vec.pt": "d69da34d813a49ba87d05c193fe378639e5f59641a40a2bf7c4196d9a7a3b2af",
-    "metadata_stats.json": "b1e7c7b8dee5031cb5935d10f572b808c0ba60416a33f5f439c8d45e7b92a11e",
+    "ARTalk1s_wav2vec.pt": "a8cf9cc72cd6804d2710280a51c447448dabfacef2f730a79c41bc304942902b",
+    "metadata_stats.json": "24b5c0b86c8b0aae9b3ea277dff42f919e4bb69b7e79ebb9548a96890dd4ec9e",
 }
 
 
