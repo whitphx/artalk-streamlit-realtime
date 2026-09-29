@@ -813,8 +813,18 @@ def main() -> None:
 
     session_id = current_session_id()
     if not slots.acquire(session_id):
+        # Reached here after a takeover too, so drop whatever this session was
+        # still running before offering to take the GPU back.
+        stop_pipeline()
         st.warning("Another visitor is using the GPU right now. Try again in a moment.")
         st.button("Retry")
+        if st.button("Take the GPU over"):
+            slots.take_over(session_id)
+            st.rerun()
+        st.caption(
+            "Taking over ends the other session, for when it is stuck rather "
+            "than in use."
+        )
         st.stop()
 
     try:
@@ -825,7 +835,11 @@ def main() -> None:
         # checkpoints fail in ways the message alone does not locate.
         st.exception(exc)
         st.stop()
-    slots.attach(session_id, "pipeline", pipeline)
+    if not slots.attach(session_id, "pipeline", pipeline):
+        # Taken over while this pipeline was being built; it is untracked, so
+        # stop it here rather than leave it running against a lost slot.
+        pipeline.stop()
+        st.rerun()
 
     freeze_loaded_objects()
 

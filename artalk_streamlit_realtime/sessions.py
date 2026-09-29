@@ -57,26 +57,57 @@ class PipelineSlots:
             # A reload is a new session asking while its predecessor is still
             # inside the grace period; a holder whose browser is gone yields
             # at once when someone is waiting.
-            self._stop(self._take_gone(grace_seconds=0.0))
+            self._stop(self._take_gone(grace_seconds=0.0), "its browser is gone")
         with self._lock:
             if self.limit and len(self._holders) >= self.limit:
                 return False
             self._holders[session_id] = {}
-            if self._reaper is None:
-                self._reaper = threading.Thread(
-                    target=self._reap_loop, name="pipeline-slot-reaper", daemon=True
-                )
-                self._reaper.start()
+            self._start_reaper()
             return True
 
-    def attach(self, session_id: str, name: str, obj) -> None:
+    def take_over(self, session_id: str) -> None:
+        """Stop every other holder and hand this session the slot.
+
+        The escape hatch for a holder the reaper will not collect because its
+        session is still connected, such as a tab left open on a machine that
+        went to sleep.
+        """
         with self._lock:
-            self._holders.setdefault(session_id, {})[name] = obj
+            evicted = [
+                (other, self._holders.pop(other))
+                for other in list(self._holders)
+                if other != session_id
+            ]
+            for other, _ in evicted:
+                self._missing_since.pop(other, None)
+            self._holders.setdefault(session_id, {})
+            self._start_reaper()
+        self._stop(evicted, "taken over by another session")
+
+    def attach(self, session_id: str, name: str, obj) -> bool:
+        """Put an object under this session's slot, to be stopped when the
+        slot is reclaimed. False means the slot was taken meanwhile, and the
+        object is the caller's to dispose of; attaching must not resurrect a
+        holder that was already evicted."""
+        with self._lock:
+            holder = self._holders.get(session_id)
+            if holder is None:
+                return False
+            holder[name] = obj
+            return True
 
     def release(self, session_id: str) -> None:
         with self._lock:
             self._holders.pop(session_id, None)
             self._missing_since.pop(session_id, None)
+
+    def _start_reaper(self) -> None:
+        """Caller holds the lock."""
+        if self._reaper is None:
+            self._reaper = threading.Thread(
+                target=self._reap_loop, name="pipeline-slot-reaper", daemon=True
+            )
+            self._reaper.start()
 
     def _reap_loop(self) -> None:
         while True:
@@ -87,7 +118,7 @@ class PipelineSlots:
                 logger.warning("[slots] reap failed", exc_info=True)
 
     def _reap_once(self) -> None:
-        self._stop(self._take_gone(DISCONNECT_GRACE_SECONDS))
+        self._stop(self._take_gone(DISCONNECT_GRACE_SECONDS), "its browser is gone")
 
     def _take_gone(self, grace_seconds: float) -> list[tuple[str, dict[str, object]]]:
         """Remove and return the holders whose session has been gone for at
@@ -108,9 +139,9 @@ class PipelineSlots:
                     self._missing_since.pop(session_id, None)
         return gone
 
-    def _stop(self, gone: list[tuple[str, dict[str, object]]]) -> None:
+    def _stop(self, gone: list[tuple[str, dict[str, object]]], reason: str) -> None:
         for session_id, objects in gone:
-            logger.info("[slots] session %s is gone; stopping its pipeline", session_id)
+            logger.info("[slots] stopping session %s: %s", session_id, reason)
             # The pump feeds the pipeline and the watcher observes it, so both
             # go before it.
             for name in ("pump", "watcher", "pipeline"):
