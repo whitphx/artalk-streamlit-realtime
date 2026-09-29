@@ -355,6 +355,11 @@ Interactive mode with the variable `ARTALK_DEFAULT_MODE=interactive`; Space
 variables override the profile's defaults. Avatar registration is hidden
 because the tracker environment is not part of the image.
 
+The profile also allows one session at a time (`--max-sessions`), since each
+session is its own render loop on the GPU. A slot is freed shortly after its
+browser disconnects; a visitor refused while the holder is still connected can
+stop that session and take the GPU over from the notice.
+
 ## Licenses
 
 This application layer is the only part of the stack that this repository
