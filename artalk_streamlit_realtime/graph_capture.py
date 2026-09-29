@@ -14,6 +14,12 @@ Captures therefore take the exclusive side of this coordinator and RNG
 draws the shared side. A thread that opens a capture from inside its own
 shared section (the upsampler captures lazily mid-render) steps its own
 share aside for the duration, so the nesting cannot deadlock.
+
+The draws sit deep inside ``inference()`` and the render batch, so the
+shared sections are drawn around those whole calls rather than around the
+draws themselves. A pending capture therefore waits out the widest call
+in flight, and blocks other sessions' draws while it waits. Narrowing
+this means reaching into those libraries for the draws.
 """
 
 from __future__ import annotations
@@ -90,6 +96,8 @@ def serialize_gagavatar_captures() -> None:
     from gagavatar import runtime as gagavatar_runtime
 
     replay = getattr(gagavatar_runtime, "CudaGraphReplay", None)
+    if getattr(replay, "_capture", None) is None:
+        return
     if replay is None or getattr(replay, "_capture_coordinated", False):
         return
     orig_capture = replay._capture

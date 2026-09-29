@@ -10,6 +10,7 @@ from artalk.assets import ARTalkAssets
 from artalk.flame_model import RenderMesh
 from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
 
+from .graph_capture import coordinator
 from .config import DEFAULT_STYLE
 
 
@@ -125,11 +126,8 @@ class StreamingGAGAvatarAdapter:
         return self.runtime.build_forward_batch(motion_code)
 
     def forward_expression(self, batch: dict):
-        # Shared side of the capture coordinator: the upsampler draws
-        # noise from the default RNG generator, which a concurrent
-        # capture registers.
-        from .graph_capture import coordinator
-
+        # Shared side: the upsampler draws noise inside this call, which is
+        # not visible from here. See graph_capture.
         with coordinator.rng_work():
             return self.runtime.render_rgb_batch(batch)
 

@@ -329,8 +329,8 @@ def main() -> None:
                 format_func=motion_labels.__getitem__,
                 horizontal=True,
                 help=(
-                    "The 1 s model starts speaking about three seconds sooner "
-                    "and keeps the head still. Switching rebuilds the pipeline."
+                    "The 1 s model starts speaking about three seconds sooner. "
+                    "Switching rebuilds the pipeline."
                 ),
             )
         else:

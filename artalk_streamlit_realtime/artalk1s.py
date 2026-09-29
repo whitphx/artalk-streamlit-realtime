@@ -451,8 +451,7 @@ class ARTalk1sStreamer:
     def _step_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
         if self._fast:
             return self._step_chunk_fast(chunk)
-        # Shared side of the capture coordinator: inference() samples from
-        # the default RNG generator, which a concurrent capture registers.
+        # Shared side; see graph_capture.
         with coordinator.rng_work():
             out = self.model.inference(
                 chunk[None],
@@ -493,9 +492,7 @@ class ARTalk1sStreamer:
                 logits = self.cfg * logits[:1] + (1 - self.cfg) * logits[1:]
             else:
                 logits = logits[:1]
-            # Shared side of the capture coordinator: sampling draws from
-            # the default RNG generator, which a concurrent capture
-            # registers.
+            # Shared side; see graph_capture.
             with coordinator.rng_work():
                 patch_bits.append(self._sample_bits(logits))
             if pidx < len(m.patch_nums) - 1:

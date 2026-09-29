@@ -22,6 +22,6 @@ def resolve_rtc_configuration(provider: str) -> dict:
             "the cloudflare ICE provider needs CLOUDFLARE_TURN_KEY_ID and "
             "CLOUDFLARE_TURN_KEY_API_TOKEN"
         )
-    # streamlit-webrtc caches the credentials process-wide for an hour and
-    # asks Cloudflare for twice that lifetime.
+    # streamlit-webrtc caches these process-wide, so this needs no cache
+    # of its own.
     return {"iceServers": get_cloudflare_ice_servers(key_id, api_token)}

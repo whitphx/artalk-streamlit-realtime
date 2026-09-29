@@ -110,7 +110,12 @@ def _fetch_artalk1s(root: Path, repo_id: str) -> bool:
     for name, expected in ARTALK1S_FILES.items():
         dest = dest_dir / name
         if dest.exists():
-            continue
+            if sha256_file(dest) == expected:
+                continue
+            # A host that fetched an earlier release of this repo keeps serving
+            # it otherwise, and nothing downstream can tell which model it ran.
+            print(f"replace: {dest} does not match the pinned digest")
+            dest.unlink()
         print(f"download: {repo_id}/{name} -> {dest}")
         try:
             hf_hub_download(repo_id, name, local_dir=dest_dir)

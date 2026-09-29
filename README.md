@@ -22,6 +22,7 @@ lockfile by default, or editable checkouts for development.
 ## Quick start (fresh CUDA host)
 
 ```bash
+git lfs install               # the rasterizer wheel is stored in LFS
 scripts/bootstrap.sh          # pixi env from pixi.lock + pinned vendor checkouts
 pixi run artalk-demo assets   # model weights (FLAME_with_eye.pt stays manual)
 pixi run artalk-demo doctor   # validates install, CUDA arch coverage, assets
