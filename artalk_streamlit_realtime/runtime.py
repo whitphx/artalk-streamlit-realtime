@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import logging
 from pathlib import Path
 
 import streamlit as st
@@ -12,6 +14,27 @@ from artalk.runtime import ARTalkRuntime, ARTalkRuntimeConfig, available_styles
 
 from .graph_capture import coordinator
 from .config import DEFAULT_STYLE
+
+logger = logging.getLogger(__name__)
+
+# Packages that snapshot `sys.path` on first import and later restore it by
+# assigning the snapshot back, dropping whatever another thread inserted
+# meanwhile. `torch.hub.load` keeps the checkout it imports from on `sys.path`
+# for as long as the model takes to build, then removes that entry by value,
+# so it raises "list.remove(x): x not in list" when one of these lands inside
+# its scope. Both are imported lazily from model-loading code: OpenCV through
+# face-alignment on the GAGAvatar path, wandb through the training code the
+# 1 s model is built from.
+_SYS_PATH_REBINDERS = ("cv2", "wandb")
+
+
+def preimport_path_rebinders() -> None:
+    """Import those packages up front, while nothing else is loading a model."""
+    for name in _SYS_PATH_REBINDERS:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            logger.info("[startup] %s is not installed", name)
 
 
 @st.cache_resource

@@ -81,12 +81,13 @@ from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
 from artalk_streamlit_realtime.runtime import (
     list_gagavatar_ids,
     list_style_ids,
-    load_artalk_runtime,
     load_artalk1s_streamer_model,
+    load_artalk_runtime,
     load_fallingwater_streamer_model,
     load_frame_streamer_model,
     load_gagavatar,
     load_style_motion,
+    preimport_path_rebinders,
 )
 from artalk_streamlit_realtime.silence import PipelineSilencePump
 from artalk_streamlit_realtime.streamlit_patches import (
@@ -95,11 +96,14 @@ from artalk_streamlit_realtime.streamlit_patches import (
 
 PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
-# A rerun can start while the previous script run is still inside pipeline
-# construction (nothing in there is an st.* call the runner could stop at),
-# and concurrent constructions race in process-global CUDA state: graph
-# captures against renders, and torch's non-thread-safe lazy linalg init.
-_PIPELINE_BUILD_LOCK = threading.Lock()
+# A rerun can start while the previous script run is still loading models
+# (nothing in there is an st.* call the runner could stop at), and two runs
+# doing that at once race in process-global state: CUDA graph captures
+# against renders, torch's non-thread-safe lazy linalg init, and `sys.path`
+# between torch.hub and the packages that rebind it (see
+# runtime.preimport_path_rebinders). One lock covers the loads and the
+# construction they feed.
+_MODEL_BUILD_LOCK = threading.Lock()
 SILENCE_PUMP_KEY = "artalk_silence_pump"
 SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BACKEND_OPENAI = "OpenAI Realtime"
@@ -272,6 +276,7 @@ def main() -> None:
     # launcher terminal) — the first thing to reach for when the app hangs.
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     disable_streamlit_source_watcher()
+    preimport_path_rebinders()
     try:
         from streamlit_webrtc.eventloop import get_global_event_loop
 
@@ -298,13 +303,14 @@ def main() -> None:
     chunk_caption = st.empty()
 
     try:
-        artalk_runtime, mesh_renderer = load_artalk_runtime(
-            args.device,
-            args.render_res,
-            str(asset_dir),
-            audio_encoder=args.artalk_audio_encoder,
-            checkpoint_path=args.artalk_checkpoint,
-        )
+        with _MODEL_BUILD_LOCK:
+            artalk_runtime, mesh_renderer = load_artalk_runtime(
+                args.device,
+                args.render_res,
+                str(asset_dir),
+                audio_encoder=args.artalk_audio_encoder,
+                checkpoint_path=args.artalk_checkpoint,
+            )
     except Exception as exc:
         st.error(f"Failed to initialize ARTalk runtime: {exc}")
         st.stop()
@@ -750,51 +756,50 @@ def main() -> None:
             str(model_path) if model_path else None,
             str(tracked_path) if tracked_path else None,
         )
-        with _PIPELINE_BUILD_LOCK:
-            # A run that waited here while another run built the
-            # pipeline must adopt it, not build a twin.
-            pipeline = st.session_state.get(PIPELINE_KEY)
-            # A stopped pipeline is one the slot reaper tore down while this
-            # session was disconnected; it came back and needs a fresh one.
-            if pipeline is not None and (
-                st.session_state.get(PIPELINE_CONFIG_KEY) != config or pipeline.is_stopped
-            ):
-                stop_silence_pump()
-                pipeline.stop()
-                pipeline = None
-            if pipeline is None:
-                pipeline = ARTalkPipeline(
-                    model=model,
-                    streamer=streamer,
-                    flame_model=flame_model,
-                    mesh_renderer=mesh_renderer,
-                    device=args.device,
-                    style_motion=style_motion,
-                    render_res=render_res,
-                    render_batch_size=args.render_batch_size,
-                    output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
-                    output_segment_seconds=args.output_segment_seconds,
-                    output_underrun_policy=args.output_underrun_policy,
-                    output_rebuffer_seconds=args.output_rebuffer_seconds,
-                    max_added_latency_seconds=args.max_added_latency_seconds,
-                    renderer_stage_sync=args.renderer_stage_sync,
-                    silence_mouth_gate=args.silence_mouth_gate,
-                    renderer_output_uint8=args.render_uint8_gpu,
-                    warm_key_extra=(
-                        f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
-                        f"motion={motion_model}"
-                    ),
-                    profile_trace_dir=args.profile_trace_dir,
-                    profile_skip_chunks=args.profile_skip_chunks,
-                    profile_max_chunks=args.profile_max_chunks,
-                    renderer_mode=renderer_mode,
-                    gagavatar=gagavatar,
-                    gagavatar_flame=gagavatar_flame,
-                    shape_id=avatar_id,
-                )
-                st.session_state[PIPELINE_KEY] = pipeline
-                st.session_state[PIPELINE_CONFIG_KEY] = config
-                freeze_loaded_objects(force=True)
+        # A run that waited for the build lock must adopt the pipeline the
+        # run ahead of it built, not build a twin.
+        pipeline = st.session_state.get(PIPELINE_KEY)
+        # A stopped pipeline is one the slot reaper tore down while this
+        # session was disconnected; it came back and needs a fresh one.
+        if pipeline is not None and (
+            st.session_state.get(PIPELINE_CONFIG_KEY) != config or pipeline.is_stopped
+        ):
+            stop_silence_pump()
+            pipeline.stop()
+            pipeline = None
+        if pipeline is None:
+            pipeline = ARTalkPipeline(
+                model=model,
+                streamer=streamer,
+                flame_model=flame_model,
+                mesh_renderer=mesh_renderer,
+                device=args.device,
+                style_motion=style_motion,
+                render_res=render_res,
+                render_batch_size=args.render_batch_size,
+                output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
+                output_segment_seconds=args.output_segment_seconds,
+                output_underrun_policy=args.output_underrun_policy,
+                output_rebuffer_seconds=args.output_rebuffer_seconds,
+                max_added_latency_seconds=args.max_added_latency_seconds,
+                renderer_stage_sync=args.renderer_stage_sync,
+                silence_mouth_gate=args.silence_mouth_gate,
+                renderer_output_uint8=args.render_uint8_gpu,
+                warm_key_extra=(
+                    f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
+                    f"motion={motion_model}"
+                ),
+                profile_trace_dir=args.profile_trace_dir,
+                profile_skip_chunks=args.profile_skip_chunks,
+                profile_max_chunks=args.profile_max_chunks,
+                renderer_mode=renderer_mode,
+                gagavatar=gagavatar,
+                gagavatar_flame=gagavatar_flame,
+                shape_id=avatar_id,
+            )
+            st.session_state[PIPELINE_KEY] = pipeline
+            st.session_state[PIPELINE_CONFIG_KEY] = config
+            freeze_loaded_objects(force=True)
         return pipeline
 
     if mode == "Loopback":
@@ -828,7 +833,8 @@ def main() -> None:
         st.stop()
 
     try:
-        pipeline = get_pipeline()
+        with _MODEL_BUILD_LOCK:
+            pipeline = get_pipeline()
     except Exception as exc:
         st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
         # Initialization spans several optional model paths whose imports and
