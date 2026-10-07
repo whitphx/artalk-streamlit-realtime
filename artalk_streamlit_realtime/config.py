@@ -371,6 +371,20 @@ def parse_args() -> argparse.Namespace:
         type=str,
     )
     parser.add_argument(
+        "--preload-gagavatar",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_PRELOAD_GAGAVATAR", False),
+        help=(
+            "Load the photoreal renderer on the first page load instead of "
+            "on the first switch to a photoreal appearance. Building it "
+            "holds the GIL for about a second at a time, more than once, "
+            "which stalls the outbound media of a session already playing; "
+            "the browser then needs up to a minute to bring audio and video "
+            "back in step. Costs the load time and VRAM up front even if no "
+            "photoreal avatar is used."
+        ),
+    )
+    parser.add_argument(
         "--user-avatar-dir",
         default=os.environ.get("ARTALK_USER_AVATAR_DIR", "user_avatars"),
         type=str,

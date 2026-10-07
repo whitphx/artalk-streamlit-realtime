@@ -318,6 +318,28 @@ def main() -> None:
     model = artalk_runtime.model
     flame_model = artalk_runtime.flame_model
 
+    # The preload and the pipeline build must pass identical arguments, or
+    # the preload misses the resource cache and the build loads again.
+    def load_photoreal_renderer():
+        return load_gagavatar(
+            args.device,
+            str(model_path),
+            str(tracked_path) if tracked_path else None,
+            str(flame_model_path) if flame_model_path else None,
+            args.user_avatar_dir,
+            autocast_dtype="float16" if args.renderer_fp16 else None,
+            compile_mode="cuda-graph" if args.renderer_compile else None,
+        )
+
+    if args.preload_gagavatar and model_path is not None:
+        try:
+            with _MODEL_BUILD_LOCK:
+                load_photoreal_renderer()
+        except Exception as exc:
+            # Keep mesh mode usable; only a photoreal pick should fail, as it
+            # does without the preload.
+            st.warning(f"Failed to preload the photoreal renderer: {exc}")
+
     user_registry = UserAvatarRegistry(
         args.user_avatar_dir,
         track_python=args.gagavatar_track_python,
@@ -673,15 +695,7 @@ def main() -> None:
                 raise RuntimeError(
                     "GAGAVATAR_MODEL_PATH is required for GAGAvatar appearance."
                 )
-            gagavatar, gagavatar_flame = load_gagavatar(
-                args.device,
-                str(model_path),
-                str(tracked_path) if tracked_path else None,
-                str(flame_model_path) if flame_model_path else None,
-                args.user_avatar_dir,
-                autocast_dtype="float16" if args.renderer_fp16 else None,
-                compile_mode="cuda-graph" if args.renderer_compile else None,
-            )
+            gagavatar, gagavatar_flame = load_photoreal_renderer()
         streamer = None
         if motion_model == "fallingwater":
             if not args.fallingwater_dir or not args.fallingwater_checkpoint:
