@@ -221,7 +221,28 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Freeze the mouth-dominant motion dimensions while decoded audio "
             "is silent, so the avatar's lips do not flap between turns. "
-            "Blinking, brows and head motion pass through."
+            "Brows and head motion pass through. Blinks mostly do not, since "
+            "part of the eyelid closure lives in the frozen dimensions; "
+            "--blink-injector adds blinks after the gate."
+        ),
+    )
+    parser.add_argument(
+        "--blink-injector",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_BLINK_INJECTOR", False),
+        help=(
+            "Overlay stochastic eye blinks on the generated motion. The motion "
+            "models almost never blink on their own. Mouth dimensions are "
+            "left untouched."
+        ),
+    )
+    parser.add_argument(
+        "--blink-scale",
+        default=float(os.environ.get("ARTALK_BLINK_SCALE", "2.0")),
+        type=float,
+        help=(
+            "Depth of injected blinks, as a multiple of the corpus mean blink. "
+            "The default closes the eyes fully; lower values leave a slit."
         ),
     )
     parser.add_argument(

@@ -798,6 +798,8 @@ def main() -> None:
                 max_added_latency_seconds=args.max_added_latency_seconds,
                 renderer_stage_sync=args.renderer_stage_sync,
                 silence_mouth_gate=args.silence_mouth_gate,
+                blink_injector=args.blink_injector,
+                blink_scale=args.blink_scale,
                 renderer_output_uint8=args.render_uint8_gpu,
                 warm_key_extra=(
                     f"fp16={args.renderer_fp16},compile={args.renderer_compile},"

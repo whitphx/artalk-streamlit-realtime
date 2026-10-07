@@ -37,7 +37,7 @@ pip = "*"
 
 [pypi-dependencies]
 artalk-streamlit-realtime = { path = ".", editable = true, extras = ["personaplex", "fallingwater"] }
-artalk = { git = "https://github.com/whitphx/ARTalk.git", rev = "74b1ce8d1723618a5f4198886c4e9bf5209e990a" }
+artalk = { git = "https://github.com/whitphx/ARTalk.git", rev = "369c36d9c57829a72f7d2affe90ca3e161afb2f5" }
 gagavatar = { git = "https://github.com/whitphx/GAGAvatar.git", rev = "6916f0f69254c50abe3fc8dec55cbeda7492272d" }
 # Prebuilt fat binary (sm_60/75/80+PTX) from whitphx/diff-gaussian-rasterization
 # branch fix/unconditional-launch-error-check (4d71ef9); ABI-tied to the torch
