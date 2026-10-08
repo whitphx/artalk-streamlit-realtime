@@ -246,6 +246,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--blink-lip-cancel",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_BLINK_LIP_CANCEL", True),
+        help=(
+            "Blink along a direction that keeps the lips nearly still (about "
+            "0.25 mm of lip motion at the blink peak on the mesh, against "
+            "about 1 mm for the corpus mean blink) at the cost of expression "
+            "coefficients further outside the range seen in real blinks. The "
+            "eyelids close the same either way."
+        ),
+    )
+    parser.add_argument(
         "--renderer-stage-sync",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_RENDERER_STAGE_SYNC", False),

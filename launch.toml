@@ -27,6 +27,8 @@ ARTALK_MAX_SESSIONS = "1"
 # The Space opens on the mesh, so without this a visitor's first photoreal
 # pick builds the renderer mid-session and stalls the outgoing media.
 ARTALK_PRELOAD_GAGAVATAR = "1"
+# The motion models almost never blink, so without this the face stares.
+ARTALK_BLINK_INJECTOR = "1"
 
 [profiles.offline]
 remote = "none"
