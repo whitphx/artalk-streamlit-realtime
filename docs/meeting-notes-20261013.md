@@ -4,7 +4,7 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 
 ## 1. Results for the directions agreed on 2026-09-30
 
-**Eye blinking without retraining: the 1 s model emits almost no blinks and none in silence; a runtime blink injector restores a natural rate with mouth and head untouched.** It is on main behind an opt-in launch flag; turning it on in the Space waits for a live verdict on the side-by-side clips.
+**Eye blinking without retraining: the 1 s model emits almost no blinks and none in silence; a runtime blink injector restores a natural rate with mouth and head untouched.** It is on main and enabled in the Space's configuration.
 
 - Measurement first, because our previous minutes said blinks pass through the silence handling while the demo showed none. Over all 485 clips, ground truth blinks 16.8 times per minute. The 1 s model emits 0.99 per minute (6% of ground truth) and the 4 s release 1.51 (9%). In 60 s of silence both emit none. The ratios depend on the threshold: counting deep closures only, as here, the models reach 6 to 9% of ground truth; counting shallow dips as well, 20 to 40%.
 - The 4 s release behaves differently with a style input. With the app's default style it blinks at a ground-truth-like rate while speaking (about 21 per minute on 26 clips). The 1 s model stays at about 1 per minute with or without style. In silence neither model blinks, with or without style. So the blinkless face in the demo is the 1 s model's, and the idle face of both models.
@@ -13,8 +13,9 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 - Scale 2 of the corpus direction is the default: in GAGAvatar renders on two avatars, closure deepens from 1.5 to 2 and stops changing from 2 to 2.5. One residual: on one avatar the far eye keeps a slit when the head is turned.
 - Rates with the injector at scale 2, on 12 test clips streamed back to back (7.9 min, ground truth 20.6 per minute there, 5 seeds): 1 s model 13 to 18 per minute without style and 16 to 20 with style; 4 s release 12 to 20 without style. With the release and the default style the combined rate is 25 to 27 per minute, because about 7 injected blinks per minute still pass while the model blinks on its own. That is above this stretch's ground truth but within the human range (the 90th percentile of per-clip ground-truth rates is 45 per minute), and we kept it so the face recovers quickly after a turn. In silence the injector gives 17.3 per minute for both models.
 - Turn boundaries: in the first 10 s of silence after speech, the injector runs at 12.9 per minute. A sliding 60 s rate window that we tried first gave 2.0 per minute there, i.e. a stare after every speaking turn.
-- Known side effect: FLAME couples eyelids and lips, so even with the mouth dimensions untouched, the lip landmarks move about 1.0 mm on average at the peak of an injected blink at scale 2, against about 0.2 mm in natural blinks. It is not visible in the 512 px renders we checked; a direction that cancels lip motion exists but needs much larger, off-distribution coefficients, so it is held in reserve.
-- Side-by-side clips (off vs scale 2, idle and speech, two avatars) are ready for a live verdict.
+- Live verdict on side-by-side clips: blinks look almost natural, the rate looks right, and closure at scale 2 is not complete but acceptable. The lips visibly dropped on each blink.
+- Lip motion: FLAME couples eyelids and lips, so with the corpus blink direction the lip landmarks move about 1.0 mm at the blink peak even though the mouth dimensions are untouched, against about 0.2 mm attributable to natural blinks. The default is now a lip-cancelling direction, a regularized fit that keeps every eyelid aperture identical while moving the lips about 0.25 mm on the mesh (the same across 200 random face shapes). In GAGAvatar renders on four avatars the mouth motion during a blink drops by 30 to 60%; a small residual (about 0.4 to 1.3 px at 512 px) remains because the renderer responds to the expression as a whole.
+- The cost is distance from real blinks: at the peak, about 27 expression coefficients fall outside the range seen in tracked data, against about 9 for the corpus direction. No odd expressions appeared on the four avatars rendered, and a launch flag switches back to the corpus direction.
 
 **Sliding 4 s window on the 4 s model, keeping the last 1 s: implemented and evaluated; not adopted.**
 
@@ -57,7 +58,7 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 
 ## 2. Deployment
 
-- The realtime Space was redeployed on 2026-10-08 with the current main: the face-switch preload is enabled there, and the blink injector is included but off. Neither has been checked live on the L4 yet.
+- The realtime Space was redeployed on 2026-10-08 with the current main: the face-switch preload and the blink injector (lip-cancelling by default) are enabled there. Neither has been checked live on the L4 yet.
 - No new model was trained this cycle; the 1 s head-pose checkpoint and the 4 s release remain the models of record.
 
 ## 3. Corrections to the previous minutes
@@ -70,7 +71,7 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 
 ## 4. Open questions / proposed next directions
 
-1. Blinks: a live verdict on the side-by-side clips. If the combined rate with the 4 s release and its default style (25 to 27 per minute) reads as too much, a leaky-bucket credit counter would cut the leak without slowing the recovery after a turn. If the lip motion during a blink is visible live, try a partly lip-cancelling direction.
+1. Blinks: the comparison clips (off, corpus direction, lip-cancelling direction) are ready to show. If the combined rate with the 4 s release and its default style (25 to 27 per minute) reads as too much, a leaky-bucket credit counter would cut the leak without slowing the recovery after a turn. Removing the renderer's residual mouth motion would need a renderer-side change.
 2. Face-switch preload: enabled on the Space; verify it on the L4. The motion-model switch drift is a separate, smaller fix.
 3. PersonaPlex barge-in: a scripted interruption mid-reply through the bridge, judged by ear and by the playback offset. Full duplex has no explicit turn boundary and the listener hears audio about 2.9 s behind the model, so this is the largest open risk of that route. Hours on one A100.
 4. int8 PersonaPlex, alone and next to the avatar, first on an A100 and then on an L4: the only way to fit the 24 GB card. GPU-day scale.
