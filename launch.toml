@@ -29,6 +29,9 @@ ARTALK_MAX_SESSIONS = "1"
 ARTALK_PRELOAD_GAGAVATAR = "1"
 # The motion models almost never blink, so without this the face stares.
 ARTALK_BLINK_INJECTOR = "1"
+# The Space runs the OpenAI backends, whose idle feeder would otherwise let
+# the face freeze in long pauses.
+ARTALK_IDLE_MOTION = "1"
 
 [profiles.offline]
 remote = "none"
