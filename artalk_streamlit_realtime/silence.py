@@ -6,10 +6,11 @@ import threading
 import time
 
 from artalk.metrics import current_pipeline_metrics
-from artalk.realtime_pipeline import ARTalkPipeline
+from artalk.realtime_pipeline import AUDIO_OUT_SAMPLES_PER_FRAME, ARTalkPipeline
 
 from .config import (
     ARTALK_SAMPLE_RATE,
+    IDLE_MOTION_LEAD_SAMPLES,
     SILENCE_PUMP_CHUNK_SAMPLES,
     SILENCE_PUMP_CHUNK_SECONDS,
     SILENCE_PUMP_IDLE_SECONDS,
@@ -41,10 +42,18 @@ class PipelineSilencePump:
     The same padding also covers the silence before the first response, so
     the avatar idles from the moment the pipeline is ready rather than
     holding its resting frame until the conversation starts.
+
+    With ``idle_motion`` the pump keeps going after that flush, one whole
+    model chunk at a time, whenever the output has nearly drained, so the
+    face keeps moving and blinking through a long silence. That idle output
+    is only filler, and the next real input must not wait behind it, so the
+    first real input after it drops it, including the chunk the worker is
+    rendering (see ``mark_input``).
     """
 
-    def __init__(self, pipeline: ARTalkPipeline) -> None:
+    def __init__(self, pipeline: ARTalkPipeline, idle_motion: bool = False) -> None:
         self._pipeline = pipeline
+        self._idle_motion = idle_motion
         self._flush_budget_samples = int(
             pipeline.metrics_snapshot()["counters"].get(
                 "streamer_chunk_samples",
@@ -56,6 +65,7 @@ class PipelineSilencePump:
         self._last_real_input_s = 0.0
         self._last_pump_s = 0.0
         self._pumped_since_input_samples = 0
+        self._idle_output_queued = False
         self._thread: threading.Thread | None = None
 
         with self._pipeline.metrics_context() as metrics:
@@ -111,11 +121,57 @@ class PipelineSilencePump:
         self._thread = None
 
     def mark_input(self) -> None:
+        """Call before pushing each piece of real input audio."""
         with self._lock:
             self._last_real_input_s = time.perf_counter()
             self._pumped_since_input_samples = 0
+            drop_idle_output = self._idle_output_queued
+            self._idle_output_queued = False
         with self._pipeline.metrics_context():
             current_pipeline_metrics().inc("silence_pump_real_input_marks")
+            if drop_idle_output:
+                # The input pushed next still waits for the worker to finish
+                # the render batch or model step it is in.
+                self._pipeline.flush_output(discard_in_flight=True)
+                current_pipeline_metrics().inc("silence_pump_idle_output_drops")
+
+    def _pump_idle_chunk(self, metrics) -> None:
+        """Queue silence up to the next model chunk boundary once the output
+        has nearly drained."""
+        snapshot = self._pipeline.output_buffer_snapshot()
+        if snapshot["worker_busy"] or snapshot["audio_in_queue_depth"] > 0:
+            metrics.inc("silence_pump_idle_motion_busy_skips")
+            return
+        with self._lock:
+            continuing = self._idle_output_queued
+        # mark_input drops everything queued once idle output is, so the first
+        # idle chunk waits for the output to play out completely: the tail of
+        # the last response may still be in it. Playback never takes less than
+        # a whole frame, so a shorter remainder counts as played out.
+        lead = IDLE_MOTION_LEAD_SAMPLES if continuing else AUDIO_OUT_SAMPLES_PER_FRAME
+        if snapshot["audio_out_buffer_samples"] >= lead or (
+            not continuing and snapshot["video_queue_depth"] > 0
+        ):
+            metrics.inc("silence_pump_idle_motion_lead_skips")
+            return
+        buffered = int(
+            self._pipeline.metrics_snapshot()["counters"].get(
+                "streamer_buffer_samples", 0
+            )
+        )
+        # Whole chunks keep the streamer on a chunk boundary, so the context
+        # reset at the next turn start discards no idle audio that is already
+        # staged for output.
+        n_samples = self._flush_budget_samples - buffered % self._flush_budget_samples
+        with self._lock:
+            # Checked under the lock so a concurrent mark_input either sees
+            # this chunk as queued or stops it from being pushed.
+            if time.perf_counter() - self._last_real_input_s < SILENCE_PUMP_IDLE_SECONDS:
+                return
+            self._idle_output_queued = True
+            self._pipeline.push_silence(n_samples / ARTALK_SAMPLE_RATE)
+        metrics.inc("silence_pump_idle_motion_chunks")
+        metrics.inc("silence_pump_idle_motion_samples", n_samples)
 
     def _run(self) -> None:
         with self._pipeline.metrics_context():
@@ -139,7 +195,10 @@ class PipelineSilencePump:
                     metrics.inc("silence_pump_recent_input_skips")
                     continue
                 if pumped_since_input >= self._flush_budget_samples:
-                    metrics.inc("silence_pump_flush_complete_skips")
+                    if self._idle_motion:
+                        self._pump_idle_chunk(metrics)
+                    else:
+                        metrics.inc("silence_pump_flush_complete_skips")
                     continue
                 if last_pump_s and now - last_pump_s < SILENCE_PUMP_CHUNK_SECONDS:
                     metrics.inc("silence_pump_pacing_skips")

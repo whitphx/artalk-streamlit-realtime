@@ -208,14 +208,14 @@ def stop_silence_pump() -> None:
     st.session_state.pop(SILENCE_PUMP_CONFIG_KEY, None)
 
 
-def get_silence_pump(pipeline: ARTalkPipeline) -> PipelineSilencePump:
-    config = id(pipeline)
+def get_silence_pump(pipeline: ARTalkPipeline, idle_motion: bool) -> PipelineSilencePump:
+    config = (id(pipeline), idle_motion)
     pump = st.session_state.get(SILENCE_PUMP_KEY)
     if pump is not None and st.session_state.get(SILENCE_PUMP_CONFIG_KEY) != config:
         pump.stop()
         pump = None
     if pump is None:
-        pump = PipelineSilencePump(pipeline)
+        pump = PipelineSilencePump(pipeline, idle_motion=idle_motion)
         pump.start()
         st.session_state[SILENCE_PUMP_KEY] = pump
         st.session_state[SILENCE_PUMP_CONFIG_KEY] = config
@@ -872,7 +872,7 @@ def main() -> None:
         stop_silence_pump()
         silence_pump = None
     else:
-        silence_pump = get_silence_pump(pipeline)
+        silence_pump = get_silence_pump(pipeline, args.idle_motion)
     slots.attach(session_id, "pump", silence_pump)
     pipeline.set_output_underrun_policy(
         st.session_state.underrun_policy,

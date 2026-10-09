@@ -174,7 +174,7 @@ environments:
       - conda: https://conda.anaconda.org/pytorch3d/linux-64/pytorch3d-0.7.8-py312_cu121_pyt241.tar.bz2
       - pypi: ./
       - pypi: ./wheels/diff_gaussian_rasterization_32d-0.0.0-cp312-cp312-linux_x86_64.whl
-      - pypi: git+https://github.com/whitphx/ARTalk.git?rev=fc45ee96aaf2af6023b730cd22fc011c392c5c0a#fc45ee96aaf2af6023b730cd22fc011c392c5c0a
+      - pypi: git+https://github.com/whitphx/ARTalk.git?rev=b1ef32114c2550f44bebf92758ea1dab01f21a88#b1ef32114c2550f44bebf92758ea1dab01f21a88
       - pypi: git+https://github.com/whitphx/GAGAvatar.git?rev=6916f0f69254c50abe3fc8dec55cbeda7492272d#6916f0f69254c50abe3fc8dec55cbeda7492272d
       - pypi: https://files.pythonhosted.org/packages/01/11/ccac4393629bd51859fcfaaae479c06e7c37848811e8d0bcc736ae4ede76/torchmetrics-1.4.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
@@ -2478,7 +2478,7 @@ packages:
 - pypi: ./wheels/diff_gaussian_rasterization_32d-0.0.0-cp312-cp312-linux_x86_64.whl
   name: diff-gaussian-rasterization-32d
   version: 0.0.0
-- pypi: git+https://github.com/whitphx/ARTalk.git?rev=fc45ee96aaf2af6023b730cd22fc011c392c5c0a#fc45ee96aaf2af6023b730cd22fc011c392c5c0a
+- pypi: git+https://github.com/whitphx/ARTalk.git?rev=b1ef32114c2550f44bebf92758ea1dab01f21a88#b1ef32114c2550f44bebf92758ea1dab01f21a88
   name: artalk
   version: 0.1.0
   requires_python: '>=3.11'

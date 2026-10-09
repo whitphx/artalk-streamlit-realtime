@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 import av
 import numpy as np
 
+from artalk.realtime_pipeline import TURN_GAP_S
+
 from .config import ARTALK_SAMPLE_RATE, OPENAI_REALTIME_SAMPLE_RATE
 from .event_log import SessionEventLog
 
@@ -72,6 +74,9 @@ class OpenAIRealtimeBridge:
         self._assistant_item_content_index = 0
         self._assistant_item_pushed_ms = 0.0
         self._assistant_item_play_start_16k = 0
+        # When response audio was last pushed, to tell whether the next push
+        # starts a pipeline turn (see TURN_GAP_S).
+        self._last_response_push_s = float("-inf")
 
     def _record_event(self, category: str, message: str, detail: str = "") -> None:
         if self._event_log is not None:
@@ -271,6 +276,10 @@ class OpenAIRealtimeBridge:
             etype = getattr(event, "type", "")
             if etype == "response.output_audio.delta":
                 pcm = base64.b64decode(event.delta)
+                # Before the item's start is read off the pipeline: this may
+                # flush idle output and credit it to the served clock.
+                if self._on_audio_output is not None:
+                    self._on_audio_output()
                 self._track_response_item(event, pcm)
                 self._push_response_audio(pcm)
             elif etype == "response.output_audio.done":
@@ -329,13 +338,17 @@ class OpenAIRealtimeBridge:
             return
         if item_id != self._assistant_item_id:
             counters = self._pipeline.metrics_snapshot()["counters"]
+            staged_16k = counters.get("pending_audio_for_output_samples", 0)
+            # Staged audio includes the streamer buffer, which the pipeline
+            # drops when this audio starts a new turn, so none of it plays.
+            if time.perf_counter() - self._last_response_push_s > TURN_GAP_S:
+                staged_16k -= counters.get("streamer_buffer_samples", 0)
             # The output buffer is read in seconds because the audio-only
             # pipeline holds it at the backend's rate rather than ARTalk's;
             # the stages behind it are ARTalk's own and always count at its.
             queued_ahead_16k = int(
                 counters.get("audio_out_buffer_seconds", 0.0) * ARTALK_SAMPLE_RATE
-                + counters.get("pending_audio_for_output_samples", 0)
-                + counters.get("streamer_buffer_samples", 0)
+                + max(staged_16k, 0)
             )
             self._assistant_item_id = item_id
             self._assistant_item_content_index = int(
@@ -406,6 +419,5 @@ class OpenAIRealtimeBridge:
             samples[np.newaxis, :], format="s16", layout="mono"
         )
         frame.sample_rate = OPENAI_REALTIME_SAMPLE_RATE
-        if self._on_audio_output is not None:
-            self._on_audio_output()
         self._pipeline.push_audio_frame(frame)
+        self._last_response_push_s = time.perf_counter()

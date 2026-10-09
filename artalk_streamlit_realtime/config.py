@@ -137,6 +137,12 @@ SILENCE_PUMP_MAX_AUDIO_BUFFER_SAMPLES = int(
     ARTALK_SAMPLE_RATE * SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS
 )
 SILENCE_PUMP_MAX_VIDEO_FRAMES = int(ARTALK_FPS * SILENCE_PUMP_MAX_AUDIO_BUFFER_SECONDS)
+# Output left to play when the next idle chunk is queued. It has to cover the
+# model step for that chunk plus the render of its first output segment, or
+# playback holds at every idle-chunk boundary; this is sized for GAGAvatar on a
+# P100, the slowest setup measured. A longer lead costs a response nothing,
+# since the response drops the queued idle output.
+IDLE_MOTION_LEAD_SAMPLES = int(ARTALK_SAMPLE_RATE * 2.50)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -234,6 +240,20 @@ def parse_args() -> argparse.Namespace:
             "Overlay stochastic eye blinks on the generated motion. The motion "
             "models almost never blink on their own. Mouth dimensions are "
             "left untouched."
+        ),
+    )
+    parser.add_argument(
+        "--idle-motion",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_IDLE_MOTION", False),
+        help=(
+            "Keep feeding the model silence through long pauses in the "
+            "Realtime and Live backends, so the avatar keeps its idle motion "
+            "and blinks between turns instead of freezing on its last frame. "
+            "Costs continuous rendering through every pause. When a response "
+            "arrives, the idle output is dropped, including a chunk still "
+            "rendering, but the response waits for the render batch or model "
+            "step in progress."
         ),
     )
     parser.add_argument(

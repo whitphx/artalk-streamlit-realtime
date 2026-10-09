@@ -174,11 +174,12 @@ class OpenAILiveBridge:
         # Audio that has been pushed but not yet served is what the listener
         # still has to sit through before hearing anything said after it, so
         # it stands in for the turn boundary a full-duplex session never draws.
-        # Units as in OpenAIRealtimeBridge._track_response_item.
-        trailing_s = counters.get("audio_out_buffer_seconds", 0.0) + (
-            counters.get("pending_audio_for_output_samples", 0)
-            + counters.get("streamer_buffer_samples", 0)
-        ) / ARTALK_SAMPLE_RATE
+        # Units as in OpenAIRealtimeBridge._track_response_item; the staged
+        # audio already includes the streamer buffer.
+        trailing_s = (
+            counters.get("audio_out_buffer_seconds", 0.0)
+            + counters.get("pending_audio_for_output_samples", 0) / ARTALK_SAMPLE_RATE
+        )
         with self._state_lock:
             return {
                 "connected": self._connected,
@@ -332,9 +333,11 @@ class OpenAILiveBridge:
         async for event in conn:
             etype = getattr(event, "type", "")
             if etype == "session.output_audio.delta":
+                self._push_output_audio(base64.b64decode(event.delta))
+                # Stamped after the push, so the flush loop never counts time
+                # spent inside it as the output going idle.
                 self._last_output_delta_s = time.monotonic()
                 self._chunk_flush_pending = True
-                self._push_output_audio(base64.b64decode(event.delta))
             elif etype == "session.started":
                 with self._state_lock:
                     self._connected = True
