@@ -17,6 +17,8 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 - Lip motion: FLAME couples eyelids and lips, so with the corpus blink direction the lip landmarks move about 1.0 mm at the blink peak even though the mouth dimensions are untouched, against about 0.2 mm attributable to natural blinks. The default is now a lip-cancelling direction, a regularized fit that keeps every eyelid aperture identical while moving the lips about 0.25 mm on the mesh (the same across 200 random face shapes). In GAGAvatar renders on four avatars the mouth motion during a blink drops by 30 to 60%; a small residual (about 0.4 to 1.3 px at 512 px) remains because the renderer responds to the expression as a whole.
 - The cost is distance from real blinks: at the peak, about 27 expression coefficients fall outside the range seen in tracked data, against about 9 for the corpus direction. No odd expressions appeared on the four avatars rendered, and a launch flag switches back to the corpus direction.
 
+- Live check on the Space (L4, OpenAI conversation mode) found the face freezing in long silences: between turns the idle feeder stops after one 4 s chunk, so no frames are rendered and no blinks can show. An opt-in idle-motion setting now keeps the avatar rendering through pauses (22 to 24 new frames per second in silence on a P100, with injected blinks at a rate consistent with the target) and adds no latency to the next reply: a reply arriving mid idle render stops it within one model step or render batch (first frame 2.09 vs 2.20 s on the mesh, 2.39 vs 2.50 s on GAGAvatar, flag on vs off, 8 replies each). One hold of about 1.4 s remains early in a pause on the P100. In Loopback mode the face never froze.
+
 **Sliding 4 s window on the 4 s model, keeping the last 1 s: implemented and evaluated; not adopted.**
 
 - Each 1 s step runs the released 4 s model unchanged on the last 4 s of audio and commits only the newest 25 frames. The decision rule was written in advance: adopt if LVE is within 2% of the release and the chunk-boundary jerk is no worse than the 1 s model's.
@@ -56,9 +58,14 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 - Fix: an option, off by default, that loads the photoreal renderer at the first page load instead of at the first switch. With it on, the gap and the offset are gone. It is on main and enabled on the Space; it costs some startup time and VRAM.
 - Evidence and limits: three cold reproductions without the fix and one run with it, all on a P100 with Chrome over loopback; not yet tested on the L4 Space. Absolute browser offsets carry a constant bias of about ±30 ms, so the before/after comparison is what counts. A motion-model switch mid-session causes a smaller drift of the same kind, which this fix does not cover.
 
+**Stale audio after barge-in: found and fixed.**
+
+- When the user interrupted the avatar, audio already staged for the interrupted reply was not dropped at the next turn, so it played before the new reply and the avatar's audio drifted behind its video for the rest of the session. In a test session with 12 interruptions the stale audio grew to 9.7 s and the last reply took 10.8 s to start; with the fix it stays at the 0.16 s smoothing lag and the last reply starts in 2.2 s.
+- A related miscount made the app think replies started up to two buffers later than they did, so interrupted replies were cut short too early; corrected.
+
 ## 2. Deployment
 
-- The realtime Space was redeployed on 2026-10-08 with the current main: the face-switch preload and the blink injector (lip-cancelling by default) are enabled there. Neither has been checked live on the L4 yet.
+- The realtime Space was redeployed on 2026-10-08 with the face-switch preload and the blink injector (lip-cancelling by default) enabled. A live check on its L4 confirmed the preload: no audio concealment or jitter-buffer growth around the first photoreal switch. The same check found the frozen idle face described above; the idle-motion fix and the stale-audio fix are on main but not yet on the Space.
 - No new model was trained this cycle; the 1 s head-pose checkpoint and the 4 s release remain the models of record.
 
 ## 3. Corrections to the previous minutes
@@ -68,11 +75,12 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 - "Synthesizing training data containing silent segments with only head motion and eye blinking": the augmentation holds the mouth at the window's pose on real pause windows while eyes, brows and blinks stay real (2 to 3x less flapping). Most of the silence fix comes from the runtime silent-mouth gate (10 to 25x).
 - "The retrained one-second model has been uploaded to Hugging Face": it is in a private model repo, not public. Making it public is still pending the dataset author's OK.
 - "For single users, it might be faster than GPU due to kernel launch overhead": measured and refuted on our hardware (section 1). The GPU is 4.7 to 6.1x faster at batch 1 even without CUDA graphs.
+- "The idle pump keeps the model fed between turns" (our 2026-09-30 minutes): true in Loopback mode only. With the OpenAI realtime backends the feeder stopped after one chunk per pause, so the face froze in long silences; fixed behind the idle-motion setting (section 1).
 
 ## 4. Open questions / proposed next directions
 
 1. Blinks: the comparison clips (off, corpus direction, lip-cancelling direction) are ready to show. If the combined rate with the 4 s release and its default style (25 to 27 per minute) reads as too much, a leaky-bucket credit counter would cut the leak without slowing the recovery after a turn. Removing the renderer's residual mouth motion would need a renderer-side change.
-2. Face-switch preload: enabled on the Space; verify it on the L4. The motion-model switch drift is a separate, smaller fix.
+2. Face-switch preload: enabled on the Space and checked live on the L4. The motion-model switch drift is a separate, smaller fix.
 3. PersonaPlex barge-in: a scripted interruption mid-reply through the bridge, judged by ear and by the playback offset. Full duplex has no explicit turn boundary and the listener hears audio about 2.9 s behind the model, so this is the largest open risk of that route. Hours on one A100.
 4. int8 PersonaPlex, alone and next to the avatar, first on an A100 and then on an L4: the only way to fit the 24 GB card. GPU-day scale.
 5. A cascaded local stack (ASR, LLM, TTS) is the alternative if English-only or the latency is unacceptable. The app has an endpoint preset for it, but nothing about it has been measured.
@@ -80,3 +88,4 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 7. Possible train/test overlap: on some test clips the 1 s model's output follows ground truth almost exactly for 100+ frames, which suggests those clips share source videos with training data. Worth checking the split, since it would flatter every model's absolute eval numbers.
 8. If rendering moves to the client, the server keeps only the motion model; how many motion-only sessions one GPU can serve is unmeasured, and the decode being launch-bound means contention may cost more than the sum.
 9. Not attempted this cycle: mixed chunk sizes in one model and the frame-level follow-ups (context plus 2-frame lookahead, delay-line streamer). Neither was raised at the meeting; both remain available if wanted.
+10. Idle motion on the Space: enable it there and check on the L4; remove the remaining early-pause hold (the feeder skips while the renderer is busy). The bridge could also take the pipeline's own turn-start decision instead of inferring it from push times.
