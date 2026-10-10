@@ -65,7 +65,7 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 
 ## 2. Deployment
 
-- The realtime Space was redeployed on 2026-10-08 with the face-switch preload and the blink injector (lip-cancelling by default) enabled. A live check on its L4 confirmed the preload: no audio concealment or jitter-buffer growth around the first photoreal switch. The same check found the frozen idle face described above; the idle-motion fix and the stale-audio fix are on main but not yet on the Space.
+- The realtime Space runs the current main with the face-switch preload, the blink injector (lip-cancelling by default) and idle motion enabled. Live checks on its L4: the preload removes the first-switch stall (no audio concealment or jitter-buffer growth around the switch). With idle motion, the face keeps moving through 80 s of true silence (median frame difference 0.33 vs 0.05 when it froze) and blinks are clearly present where there were none. The first reply after a 90 s silence was served in 1.42 s, within the normal photoreal range. Queued audio stayed at or below 2.5 s over the session (it had climbed to 14 s before the stale-audio fix), and photoreal reply latency stayed flat at 1.5 to 2.6 s. Idle rendering keeps the L4 about 86% busy while nobody speaks, and the hand-off from a reply to idle shows about 2 s of held frames.
 - No new model was trained this cycle; the 1 s head-pose checkpoint and the 4 s release remain the models of record.
 
 ## 3. Corrections to the previous minutes
@@ -88,4 +88,4 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 7. Possible train/test overlap: on some test clips the 1 s model's output follows ground truth almost exactly for 100+ frames, which suggests those clips share source videos with training data. Worth checking the split, since it would flatter every model's absolute eval numbers.
 8. If rendering moves to the client, the server keeps only the motion model; how many motion-only sessions one GPU can serve is unmeasured, and the decode being launch-bound means contention may cost more than the sum.
 9. Not attempted this cycle: mixed chunk sizes in one model and the frame-level follow-ups (context plus 2-frame lookahead, delay-line streamer). Neither was raised at the meeting; both remain available if wanted.
-10. Idle motion on the Space: enable it there and check on the L4; remove the remaining early-pause hold (the feeder skips while the renderer is busy). The bridge could also take the pipeline's own turn-start decision instead of inferring it from push times.
+10. Idle motion: smooth the hand-off from a reply to idle (about 2 s of held frames on the L4) and the remaining early-pause hold (the feeder skips while the renderer is busy). The bridge could also take the pipeline's own turn-start decision instead of inferring it from push times.
