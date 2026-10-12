@@ -39,9 +39,28 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 - Motion model on CPU, 8 pinned cores of a 2016 Xeon with native PyTorch: the 1 s model takes 401 ms per 1 s chunk (0.40x realtime), 4.7x slower than a P100 and 6.1x slower than an A100 on the same eager path. The 4 s release takes 812 ms per 4 s chunk (single clean run). Kernel-launch overhead is real on GPU, but it costs tens of ms where the CPU's arithmetic costs hundreds. This is not a laptop and not a browser runtime, which would likely be slower still. The GPU reference timings come from an earlier 1 s checkpoint of the same architecture.
 - A client CPU can still run the motion model in realtime, at about 0.3 to 0.4 s of extra latency per chunk. But see section 4: on some clips the 1 s model's output on CPU differs badly from its GPU output, so quality needs checking before relying on this.
 - Photoreal rendering: GAGAvatar's cost is its neural upsampler, 48.7 M parameters and 137 GFLOP per 512 px frame, so 25 fps needs about 3.4 TFLOP/s sustained. A June browser prototype running it through ONNX Runtime Web on WebGPU reached about 2 fps end to end (including fetching server-rasterized input; the browser hardware was not recorded). On CPU it takes 0.62 s per frame.
-- Library gap: the per-frame dynamic data is small (5,023 head Gaussian positions, the same as the mesh), but GAGAvatar composites 32 feature channels per Gaussian before the upsampler, and none of the browser splatting libraries we surveyed (Spark, GaussianSplats3D, Babylon.js, PlayCanvas, Visionary, LAM's web renderer) is documented to composite more than RGB. Visionary, built for per-frame generated Gaussians, is the closest fit. A custom 32-channel WebGPU rasterizer would be modest work but only helps once the upsampler is fast enough.
+- Library gap: the per-frame dynamic data is small (5,023 head Gaussian positions, the same as the mesh), but GAGAvatar composites 32 feature channels per Gaussian before the upsampler, and none of the browser splatting libraries we surveyed (Spark, GaussianSplats3D, Babylon.js, PlayCanvas, Visionary, LAM's web renderer) is documented to composite more than RGB.
 - FLAME mesh fallback: already runs in the browser, and needs 424 bytes per frame if the client evaluates FLAME from the 106-float motion code, or 60 KB per frame if the server sends vertices. Shipping FLAME to browsers needs a check against its licence, which restricts redistribution.
-- Not attempted: building a WebGPU renderer (the ask was feasibility).
+- Photoreal rendering in the browser was then taken further; see the next item.
+
+**Photoreal rendering in the browser: the compute side now runs at 25 fps on a fanless laptop. A small upsampler distilled from GAGAvatar does not reach its quality (preliminary), while a per-avatar baked Gaussian head with no network comes closer.**
+
+- Approach: keep GAGAvatar's pipeline and shrink both halves. The 32 feature channels go down to 16 through a fixed projection folded into each avatar (GAGAvatar's own upsampler on the projected features: LPIPS 0.006 to 0.009 against the full features). A new WebGPU splatter composites the 16 channels. The upsampler (68.5 GMAC per 512 px frame) is replaced by a plain convolutional network distilled from it: 18.3 GMAC at 512 px, or 4.7 GMAC with a 256 px core and 2x upscaling. The alternative with no network fits a per-avatar RGB Gaussian head, bound to the FLAME mesh, to GAGAvatar's renders.
+- Network runtime (ONNX Runtime Web on WebGPU, networks of the target shapes with random weights): on a MacBook Air M4 in Chrome the 256 px-core network takes 12.1 ms per frame and the 512 px networks 31 to 35 ms. On a Galaxy Z Fold 7 the 256 px core takes 27.6 ms. Under continuous back-to-back load on a warm M4, the 256 px network slows to about 27 ms.
+- Splatter, written from scratch in WGSL: matches the CUDA rasterizer at 95 to 110 dB PSNR in the browser, takes 5.96 ms at 512 px and 3.21 ms at 256 px on the M4, and does not slow down over 5 minutes.
+- End to end at 25 fps for 10 minutes on the M4 (splat at 256 px, network and display on one GPU queue, no CPU copy): 24.98 fps, 0.21% of frames missed, frame latency median 21.5 ms (p90 24.6), and no thermal drift (20.7 ms median in the first minute, 21.4 in the last). The compute fits a base laptop.
+- Quality of the distilled networks, trained for 100k steps on 18 identities (the bundled example portraits) and evaluated on 2 held-out ones. Preliminary; the evaluation is being checked. The gate was LPIPS at most 0.05 and PSNR at least 30 dB against GAGAvatar, and mouth LPIPS at most 0.08 on jaw-open frames. Both networks fail:
+
+| against GAGAvatar | 512 px network | 256 px-core network | splat, no network |
+|---|---|---|---|
+| LPIPS, whole frame | 0.083 | 0.098 | 0.091 |
+| PSNR | 24.2 dB | 24.9 dB | |
+| mouth LPIPS, jaw open | 0.092 | 0.101 | 0.140 |
+| mouth opening error, jaw open | 0.058 | 0.033 | 0.340 |
+
+  The networks learn the mouth (the raw splat keeps the source photo's mouth shape) but barely improve the whole frame over the raw splat. Scores stopped improving after about 30k steps.
+- Per-avatar bake, three avatars: whole-frame LPIPS against GAGAvatar 0.050 to 0.057, and the mouth opens with the jaw (opening error 0.02 to 0.09). The fit takes about 3 minutes per avatar on an A100. Rendering needs about 2 ms per 512 px frame on an A100 (3.5 ms on a P100) with no network, from 1.5 to 2.2 MB per avatar. Weak points: one avatar's flat mouth interior (mouth LPIPS 0.093), a pucker combined with an open jaw renders as a wide-open mouth, and identity similarity is lower than GAGAvatar's (ArcFace 0.72 to 0.86 against 0.96).
+- LAM, a public one-shot head avatar with an existing web renderer, was also measured as a ready-made alternative: identity similarity 0.62 to 0.85 against GAGAvatar's 0.97 on the same photos, eyelid and hair detail lost, and non-commercial weights. Dropped.
 
 **Local conversation model: PersonaPlex and the avatar run together in realtime on one 80 GB A100; it does not fit a 24 GB L4 without quantization.**
 
@@ -66,7 +85,7 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 ## 2. Deployment
 
 - The realtime Space runs the current main with the face-switch preload, the blink injector (lip-cancelling by default) and idle motion enabled. Live checks on its L4: the preload removes the first-switch stall (no audio concealment or jitter-buffer growth around the switch). With idle motion, the face keeps moving through 80 s of true silence (median frame difference 0.33 vs 0.05 when it froze) and blinks are clearly present where there were none. The first reply after a 90 s silence was served in 1.42 s, within the normal photoreal range. Queued audio stayed at or below 2.5 s over the session (it had climbed to 14 s before the stale-audio fix), and photoreal reply latency stayed flat at 1.5 to 2.6 s. Idle rendering keeps the L4 about 86% busy while nobody speaks, and the hand-off from a reply to idle shows about 2 s of held frames.
-- No new model was trained this cycle; the 1 s head-pose checkpoint and the 4 s release remain the models of record.
+- No new motion model was trained this cycle; the 1 s head-pose checkpoint and the 4 s release remain the models of record.
 
 ## 3. Corrections to the previous minutes
 
@@ -88,4 +107,5 @@ Everything below is measured. Eval numbers are LVE/MHD in mm on the 485-clip hel
 7. Possible train/test overlap: on some test clips the 1 s model's output follows ground truth almost exactly for 100+ frames, which suggests those clips share source videos with training data. Worth checking the split, since it would flatter every model's absolute eval numbers.
 8. If rendering moves to the client, the server keeps only the motion model; how many motion-only sessions one GPU can serve is unmeasured, and the decode being launch-bound means contention may cost more than the sum.
 9. Not attempted this cycle: mixed chunk sizes in one model and the frame-level follow-ups (context plus 2-frame lookahead, delay-line streamer). Neither was raised at the meeting; both remain available if wanted.
-10. Idle motion: smooth the hand-off from a reply to idle (about 2 s of held frames on the L4) and the remaining early-pause hold (the feeder skips while the renderer is busy). The bridge could also take the pipeline's own turn-start decision instead of inferring it from push times.
+10. Browser rendering: if the distilled-network result holds, the per-avatar bake becomes the main browser route, with its mouth interior and lip shapes as the first work; a stronger network would be a later option for faster laptops. Before shipping anything to browsers: FLAME's licence (redistribution), the licence status of GAGAvatar's weights (no licence text is published with them), and whether a network distilled from them can be distributed. Untested: a mid-range laptop, Safari and Firefox.
+11. Idle motion: smooth the hand-off from a reply to idle (about 2 s of held frames on the L4) and the remaining early-pause hold (the feeder skips while the renderer is busy). The bridge could also take the pipeline's own turn-start decision instead of inferring it from push times.
