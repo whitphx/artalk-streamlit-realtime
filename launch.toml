@@ -22,6 +22,9 @@ port = 7860
 ARTALK_ICE_PROVIDER = "cloudflare"
 # Visitors bring their own OpenAI key; Loopback needs none.
 ARTALK_DEFAULT_MODE = "loopback"
+# Open on the model that starts speaking about three seconds sooner; the
+# sidebar still switches to the 4 s release.
+ARTALK_MOTION_MODEL = "artalk1s"
 # One GPU, one realtime render loop.
 ARTALK_MAX_SESSIONS = "1"
 # The Space opens on the mesh, so without this a visitor's first photoreal
