@@ -152,7 +152,7 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--device",
@@ -580,5 +580,5 @@ def parse_args() -> argparse.Namespace:
             "builds that lack kernels for older GPUs."
         ),
     )
-    args, _ = parser.parse_known_args()
+    args, _ = parser.parse_known_args(argv)
     return args

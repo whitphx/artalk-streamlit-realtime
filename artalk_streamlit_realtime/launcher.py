@@ -18,7 +18,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from .config import _env_flag
+from .config import _env_flag, parse_args
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -295,6 +295,12 @@ def up(args: argparse.Namespace, app_args: list[str]) -> int:
 
         if write_hf_oauth_secrets(REPO_ROOT / ".streamlit" / "secrets.toml"):
             print("login: configured the Space's HF OAuth client for st.login")
+    app_config = parse_args(app_args)
+    if app_config.feedback or app_config.session_logging:
+        # The app itself only finds out on its first page load.
+        from .session_records import load_consent_notice
+
+        load_consent_notice(app_config.consent_notice)
     services = _start_services(profile)
     if services:
         # exec would orphan the services; supervise the app instead.
