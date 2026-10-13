@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import importlib
 import logging
+import threading
 from pathlib import Path
 
 import streamlit as st
@@ -126,12 +129,30 @@ def load_style_motion(asset_dir: str, style_id: str):
     return style_motion
 
 
+# The upsampler's CUDA graph replays from one static input buffer, which a
+# second render thread could overwrite between another's copy-in and replay.
+# Renders share the default stream, so ordering the enqueues orders the work.
+_GRAPH_REPLAY_LOCK = threading.Lock()
+
+
 class StreamingGAGAvatarAdapter:
-    """Adapter from packaged ``gagavatar.runtime`` to ARTalk's renderer API."""
+    """One renderer's view of a GAGAvatar runtime, which may be shared.
+
+    The runtime keeps the selected avatar and the caches derived from it on
+    itself, and the source-Gaussian cache on its model, so renderers sharing
+    it would all show whichever avatar was selected last. Shallow copies of
+    both share the weights and the upsampler but keep that state per view.
+    """
 
     def __init__(self, runtime, user_registry=None):
-        self.runtime = runtime
+        self.runtime = copy.copy(runtime)
+        self.runtime.model = copy.copy(runtime.model)
         self.user_registry = user_registry
+        self._replay_lock = (
+            _GRAPH_REPLAY_LOCK
+            if runtime.config.compile_mode is not None
+            else contextlib.nullcontext()
+        )
 
     def set_avatar_id(self, avatar_id: str):
         if (
@@ -149,9 +170,13 @@ class StreamingGAGAvatarAdapter:
         return self.runtime.build_forward_batch(motion_code)
 
     def forward_expression(self, batch: dict):
+        # The replay lock goes outside the shared section, not inside it.
+        # A render that captures the upsampler graph holds the lock while it
+        # waits for every other share to drain. A thread queued on the lock
+        # with its share already taken would never drain, and both would hang.
         # Shared side: the upsampler draws noise inside this call, which is
         # not visible from here. See graph_capture.
-        with coordinator.rng_work():
+        with self._replay_lock, coordinator.rng_work():
             return self.runtime.render_rgb_batch(batch)
 
 
@@ -161,13 +186,11 @@ def load_gagavatar(
     model_path: str,
     tracked_path: str | None,
     flame_model_path: str | None,
-    user_avatar_dir: str | None = None,
     autocast_dtype: str | None = None,
     compile_mode: str | None = None,
 ):
     from gagavatar.runtime import GAGAvatarRuntime, GAGAvatarRuntimeConfig
 
-    from .avatar_registry import UserAvatarRegistry
     from .graph_capture import serialize_gagavatar_captures
 
     serialize_gagavatar_captures()
@@ -182,8 +205,5 @@ def load_gagavatar(
             compile_mode=compile_mode,
         )
     )
-    user_registry = (
-        UserAvatarRegistry(user_avatar_dir) if user_avatar_dir else None
-    )
-    return StreamingGAGAvatarAdapter(runtime, user_registry), runtime.flame_model
+    return runtime
 

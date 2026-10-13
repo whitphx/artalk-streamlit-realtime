@@ -80,6 +80,7 @@ from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
 from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
 from artalk_streamlit_realtime.runtime import (
+    StreamingGAGAvatarAdapter,
     list_gagavatar_ids,
     list_style_ids,
     load_artalk1s_streamer_model,
@@ -333,7 +334,6 @@ def main() -> None:
             str(model_path),
             str(tracked_path) if tracked_path else None,
             str(flame_model_path) if flame_model_path else None,
-            args.user_avatar_dir,
             autocast_dtype="float16" if args.renderer_fp16 else None,
             compile_mode="cuda-graph" if args.renderer_compile else None,
         )
@@ -702,7 +702,9 @@ def main() -> None:
                 raise RuntimeError(
                     "GAGAVATAR_MODEL_PATH is required for GAGAvatar appearance."
                 )
-            gagavatar, gagavatar_flame = load_photoreal_renderer()
+            gagavatar_runtime = load_photoreal_renderer()
+            gagavatar = StreamingGAGAvatarAdapter(gagavatar_runtime, user_registry)
+            gagavatar_flame = gagavatar_runtime.flame_model
         streamer = None
         if motion_model == "fallingwater":
             if not args.fallingwater_dir or not args.fallingwater_checkpoint:

@@ -67,15 +67,19 @@ def build_renderer(device: str, asset_dir: str | None, variant: dict, avatar: st
             compile_mode=variant["compile_mode"],
         )
     )
-    return StreamingRenderer(
+    adapter = StreamingGAGAvatarAdapter(runtime)
+    renderer = StreamingRenderer(
         mode="gagavatar",
-        gagavatar=StreamingGAGAvatarAdapter(runtime),
+        gagavatar=adapter,
         gagavatar_flame=runtime.flame_model,
         shape_id=avatar,
         device=torch.device(device),
         stage_sync=False,
         output_uint8=variant["uint8"],
-    ), runtime
+    )
+    # The stage timings drive the runtime directly, so they need the view
+    # that holds the selected avatar.
+    return renderer, adapter.runtime
 
 
 def time_batches(renderer, motion, batch_size: int, n_batches: int) -> float:
