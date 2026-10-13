@@ -8,6 +8,10 @@ port = 8501
 [profiles.lab]
 # HTTPS tunnel: browsers only grant microphone access in a secure context.
 remote = "ngrok"
+[profiles.lab.env]
+# Lab hosts expose dozens of cores, and torch's default of one intra-op
+# thread per core lets a few sessions saturate a shared machine.
+ARTALK_TORCH_THREADS = "1"
 
 [profiles.server]
 # Serve locally; reach it via `ssh -L 8501:localhost:8501 <host>`.
