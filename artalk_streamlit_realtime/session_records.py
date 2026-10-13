@@ -1,0 +1,372 @@
+"""Optional session logging and a feedback widget, both off by default.
+
+Nothing is written until the visitor accepts a notice whose text the operator
+supplies (``--consent-notice``). Records hold session settings, durations,
+pipeline latency counters and ratings. They never hold audio, video,
+transcripts, API keys, uploaded photos or names of registered avatars.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import functools
+import hashlib
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Protocol
+
+import streamlit as st
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 1
+COMMENT_MAX_CHARS = 500
+# st.feedback("faces") returns the index of the face, 0 (worst) to 4 (best).
+RATING_SCALE = 5
+
+SubjectKind = Literal["user", "anonymous"]
+EndReason = Literal["stopped", "disconnected", "server"]
+
+
+@dataclass(frozen=True)
+class RecordBase:
+    """Fields every record carries.
+
+    ``subject_id`` is the login id (issuer|sub) with ``--login``, otherwise a
+    random id made for the browser session, which is then the same as
+    ``browser_session``. A reload starts a new browser session.
+    """
+
+    record: str
+    subject_kind: SubjectKind
+    subject_id: str
+    browser_session: str
+    time_utc: str
+    schema_version: int
+
+
+@dataclass(frozen=True)
+class ConsentRecord(RecordBase):
+    # Identifies which version of the operator's notice was accepted.
+    notice_sha256: str
+
+
+@dataclass(frozen=True)
+class MediaSessionStart(RecordBase):
+    media_session: str
+    mode: str
+    backend: str | None
+    motion_model: str
+    appearance_kind: Literal["mesh", "photoreal-builtin", "photoreal-registered"]
+    style: str
+    session_time_limit_s: float
+
+
+@dataclass(frozen=True)
+class MediaSessionEnd(RecordBase):
+    media_session: str
+    end_reason: EndReason
+    duration_s: float
+    # Counters of the pipeline in use when the session ended; switching the
+    # appearance or motion model mid-session builds a new pipeline whose
+    # counters start from zero.
+    pipeline: dict[str, float | int | None]
+
+
+@dataclass(frozen=True)
+class FeedbackRecord(RecordBase):
+    rating: int
+    rating_scale: int
+    comment: str
+    # The media session rated, when session logging is on as well.
+    media_session: str | None
+
+
+class RecordStore(Protocol):
+    """Where records go. ``JsonlRecordStore`` is the only implementation.
+
+    Another destination, such as a remote database or bucket, implements
+    ``append`` and is chosen in ``open_record_store``. ``append`` is called
+    from the script thread and from WebRTC and reaper threads, so it must be
+    thread-safe, and it should not block for long: a session end is written
+    from the thread that stops the session.
+    """
+
+    def append(self, record: dict) -> None: ...
+
+
+class JsonlRecordStore:
+    """One JSON object per line, in one file per UTC day."""
+
+    def __init__(self, directory: str | os.PathLike) -> None:
+        self.directory = Path(directory)
+        self._lock = threading.Lock()
+
+    def path_for(self, now: datetime) -> Path:
+        return self.directory / f"records-{now:%Y-%m-%d}.jsonl"
+
+    def append(self, record: dict) -> None:
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with self._lock:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            # One write per line on an O_APPEND descriptor, so lines from
+            # several server processes sharing the directory do not interleave.
+            fd = os.open(
+                self.path_for(datetime.now(timezone.utc)),
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+                0o600,
+            )
+            try:
+                os.write(fd, line.encode())
+            finally:
+                os.close(fd)
+
+
+def open_record_store(location: str) -> RecordStore:
+    return JsonlRecordStore(location)
+
+
+@dataclass(frozen=True)
+class ConsentNotice:
+    text: str
+    sha256: str
+
+
+def load_consent_notice(path: str | None) -> ConsentNotice | None:
+    """The operator's notice, or None (with a warning, once per process) when
+    it is not configured or cannot be read."""
+    if not path:
+        _warn_once(
+            "session logging / feedback is enabled but --consent-notice is not "
+            "set; nothing will be collected"
+        )
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        _warn_once(f"cannot read --consent-notice {path!r} ({exc}); nothing will be collected")
+        return None
+    if not text.strip():
+        _warn_once(f"--consent-notice {path!r} is empty; nothing will be collected")
+        return None
+    return ConsentNotice(text, hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+
+@functools.cache
+def _warn_once(message: str) -> None:
+    logger.warning("[session-records] %s", message)
+
+
+def appearance_kind(appearance: str, registered_ids: list[str]) -> str:
+    """The kind of appearance only: a registered avatar's id is a name the
+    visitor chose, often their photo's file name."""
+    if not appearance.startswith("gagavatar:"):
+        return "mesh"
+    if appearance.split(":", 1)[1] in registered_ids:
+        return "photoreal-registered"
+    return "photoreal-builtin"
+
+
+_PIPELINE_DURATIONS = (
+    "frame_audio_to_video_served_latency",
+    "segment_render_latency",
+)
+_PIPELINE_COUNTERS = (
+    "first_motion_latency_s",
+    "last_render_realtime_ratio",
+    "rendered_frames",
+    "video_frames_served",
+    "video_placeholder_frames",
+    "audio_playback_underrun_frames",
+    "audio_rebuffer_events",
+)
+
+
+def pipeline_summary(snapshot: dict) -> dict[str, float | int | None]:
+    counters = snapshot.get("counters", {})
+    durations = snapshot.get("durations", {})
+    summary: dict[str, float | int | None] = {
+        key: counters.get(key) for key in _PIPELINE_COUNTERS
+    }
+    for key in _PIPELINE_DURATIONS:
+        stat = durations.get(key, {})
+        summary[f"{key}_count"] = int(stat.get("count", 0))
+        summary[f"{key}_avg_ms"] = stat.get("avg_ms")
+        summary[f"{key}_max_ms"] = stat.get("max_ms")
+    return summary
+
+
+class SessionRecorder:
+    """Collects one browser session's records once its visitor has accepted
+    the notice; until then, and after a decline, every method is a no-op."""
+
+    def __init__(
+        self,
+        store: RecordStore,
+        notice: ConsentNotice,
+        *,
+        login_id: str | None,
+        log_sessions: bool,
+        feedback: bool,
+    ) -> None:
+        self.store = store
+        self.notice = notice
+        self.log_sessions = log_sessions
+        self.feedback = feedback
+        self.browser_session = uuid.uuid4().hex
+        self.subject_kind: SubjectKind = "user" if login_id else "anonymous"
+        self.subject_id = login_id or self.browser_session
+        self.consent: Literal["pending", "accepted", "declined"] = "pending"
+        self.media_sessions_started = 0
+        self.last_media_session: str | None = None
+        self.pipeline = None
+        self._lock = threading.Lock()
+        # (media session id, start time, whether its start was recorded)
+        self._open: tuple[str, float, bool] | None = None
+
+    @property
+    def collecting(self) -> bool:
+        return self.consent == "accepted"
+
+    def _base(self, record: str) -> dict:
+        return {
+            "record": record,
+            "subject_kind": self.subject_kind,
+            "subject_id": self.subject_id,
+            "browser_session": self.browser_session,
+            "time_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "schema_version": SCHEMA_VERSION,
+        }
+
+    def _write(self, record_type: type[RecordBase], record: str, **fields) -> None:
+        # Building the dataclass rejects a missing or unknown field.
+        payload = dataclasses.asdict(record_type(**self._base(record), **fields))
+        try:
+            self.store.append(payload)
+        except Exception:
+            logger.warning("[session-records] could not store a record", exc_info=True)
+
+    def accept(self) -> None:
+        self.consent = "accepted"
+        self._write(ConsentRecord, "consent", notice_sha256=self.notice.sha256)
+
+    def decline(self) -> None:
+        self.consent = "declined"
+
+    def start_media(
+        self,
+        *,
+        mode: str,
+        backend: str | None,
+        motion_model: str,
+        appearance_kind: str,
+        style: str,
+        session_time_limit_s: float,
+    ) -> None:
+        """Open a media session record unless one is open already."""
+        with self._lock:
+            if self._open is not None:
+                return
+            media_session = uuid.uuid4().hex
+            # A session started before the visitor accepted stays unrecorded
+            # to its end, so no end record lacks its start.
+            recorded = self.collecting and self.log_sessions
+            self._open = (media_session, time.monotonic(), recorded)
+            self.media_sessions_started += 1
+            self.last_media_session = media_session if recorded else None
+        if recorded:
+            self._write(
+                MediaSessionStart,
+                "media_session_start",
+                media_session=media_session,
+                mode=mode,
+                backend=backend,
+                motion_model=motion_model,
+                appearance_kind=appearance_kind,
+                style=style,
+                session_time_limit_s=session_time_limit_s,
+            )
+
+    def end_media(self, reason: EndReason) -> None:
+        # Called whenever the session's pipeline is stopped, and this
+        # reference would otherwise keep a stopped pipeline's GPU memory
+        # alive until the session's next script run.
+        pipeline, self.pipeline = self.pipeline, None
+        with self._lock:
+            if self._open is None:
+                return
+            media_session, started, recorded = self._open
+            self._open = None
+        if not recorded:
+            return
+        summary = {}
+        if pipeline is not None:
+            try:
+                summary = pipeline_summary(pipeline.metrics_snapshot())
+            except Exception:
+                logger.warning("[session-records] no pipeline metrics", exc_info=True)
+        self._write(
+            MediaSessionEnd,
+            "media_session_end",
+            media_session=media_session,
+            end_reason=reason,
+            duration_s=round(time.monotonic() - started, 3),
+            pipeline=summary,
+        )
+
+    def stop(self) -> None:
+        """Called by the session slot when the server stops the session (time
+        limit, take-over, browser gone)."""
+        self.end_media("server")
+
+    def submit_feedback(self, rating: int, comment: str) -> None:
+        if not (self.collecting and self.feedback):
+            return
+        if not 0 <= rating < RATING_SCALE:
+            raise ValueError(f"rating must be in [0, {RATING_SCALE}), got {rating}")
+        self._write(
+            FeedbackRecord,
+            "feedback",
+            rating=rating,
+            rating_scale=RATING_SCALE,
+            comment=comment.strip()[:COMMENT_MAX_CHARS],
+            media_session=self.last_media_session,
+        )
+
+
+def render_consent_gate(recorder: SessionRecorder) -> None:
+    if recorder.consent != "pending":
+        return
+    with st.container(border=True):
+        st.markdown(recorder.notice.text)
+        accept_col, decline_col = st.columns(2)
+        accept_col.button(
+            "Accept", key="consent_accept", type="primary", on_click=recorder.accept
+        )
+        decline_col.button("No thanks", key="consent_decline", on_click=recorder.decline)
+
+
+def render_feedback_form(recorder: SessionRecorder) -> None:
+    if not (recorder.collecting and recorder.feedback):
+        return
+    if recorder.media_sessions_started == 0:
+        return
+    with st.form("feedback_form", clear_on_submit=True, border=True):
+        st.caption("How was it?")
+        rating = st.feedback("faces", key="feedback_rating")
+        comment = st.text_input(
+            "Comment (optional)", max_chars=COMMENT_MAX_CHARS, key="feedback_comment"
+        )
+        if st.form_submit_button("Send feedback"):
+            if rating is None:
+                st.warning("Pick a face first.")
+            else:
+                recorder.submit_feedback(rating, comment)
+                st.success("Thanks, feedback sent.")

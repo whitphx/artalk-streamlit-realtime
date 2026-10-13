@@ -99,6 +99,14 @@ from artalk_streamlit_realtime.runtime import (
     load_style_motion,
     preimport_path_rebinders,
 )
+from artalk_streamlit_realtime.session_records import (
+    SessionRecorder,
+    appearance_kind,
+    load_consent_notice,
+    open_record_store,
+    render_consent_gate,
+    render_feedback_form,
+)
 from artalk_streamlit_realtime.silence import PipelineSilencePump
 from artalk_streamlit_realtime.streamlit_patches import (
     disable_streamlit_source_watcher,
@@ -125,6 +133,7 @@ EVENT_LOG_KEY = "artalk_event_log"
 EVENT_WATCHER_KEY = "artalk_event_watcher"
 EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 SESSION_EXPIRED_KEY = "artalk_session_expired"
+SESSION_RECORDER_KEY = "artalk_session_recorder"
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -275,7 +284,27 @@ def stop_bridge() -> None:
     st.session_state.pop(BRIDGE_CONFIG_KEY, None)
 
 
+def get_session_recorder(args, login_id: str | None) -> SessionRecorder | None:
+    recorder = st.session_state.get(SESSION_RECORDER_KEY)
+    if recorder is None:
+        notice = load_consent_notice(args.consent_notice)
+        if notice is None:
+            return None
+        recorder = SessionRecorder(
+            open_record_store(args.session_data_dir),
+            notice,
+            login_id=login_id,
+            log_sessions=args.session_logging,
+            feedback=args.feedback,
+        )
+        st.session_state[SESSION_RECORDER_KEY] = recorder
+    return recorder
+
+
 def stop_pipeline() -> None:
+    recorder = st.session_state.get(SESSION_RECORDER_KEY)
+    if recorder is not None:
+        recorder.end_media("stopped")
     stop_silence_pump()
     stop_event_watcher()
     pipeline = st.session_state.pop(PIPELINE_KEY, None)
@@ -318,6 +347,11 @@ def main() -> None:
     )
     st.title("ARTalk Realtime")
     login_id = require_login() if args.login else None
+    recorder = None
+    if args.feedback or args.session_logging:
+        recorder = get_session_recorder(args, login_id)
+        if recorder is not None:
+            render_consent_gate(recorder)
     chunk_caption = st.empty()
 
     try:
@@ -881,6 +915,8 @@ def main() -> None:
         stop_bridge()
         stop_pipeline()
         render_expired_notice("restart_after_limit")
+        if recorder is not None:
+            render_feedback_form(recorder)
         st.stop()
 
     if not slots.acquire(session_id):
@@ -1021,6 +1057,8 @@ def main() -> None:
             bridge.push_input(frame)
 
     def on_audio_ended() -> None:
+        if recorder is not None:
+            recorder.end_media("disconnected")
         stop_bridge()
         stop_pipeline()
 
@@ -1137,6 +1175,22 @@ def main() -> None:
             if ctx is not None and ctx.state.playing:
                 slots.start_clock(session_id, args.session_time_limit)
             render_time_limit_fragment()
+        if recorder is not None:
+            recorder.pipeline = pipeline
+            # Through the slot, the server's own stops (time limit,
+            # take-over, browser gone) close the session's record too.
+            slots.attach(session_id, "recorder", recorder)
+            ctx = st.session_state.get(streamer_key)
+            if ctx is not None and ctx.state.playing:
+                recorder.start_media(
+                    mode=mode.lower(),
+                    backend=backend if mode == "Interactive" else None,
+                    motion_model=motion_model,
+                    appearance_kind=appearance_kind(appearance, user_avatar_ids),
+                    style=style_id,
+                    session_time_limit_s=args.session_time_limit,
+                )
+            render_feedback_form(recorder)
         if bridge is not None:
             render_interactive_status()
 

@@ -19,3 +19,4 @@ benchmarks/
 comparisons/
 vendor/
 .envs/
+session_data/

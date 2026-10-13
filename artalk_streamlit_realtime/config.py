@@ -513,6 +513,45 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--feedback",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_FEEDBACK", False),
+        help=(
+            "Offer visitors a rating (five faces) with an optional comment "
+            "once they have started a session, and store what they send. "
+            "Needs --consent-notice."
+        ),
+    )
+    parser.add_argument(
+        "--session-logging",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_SESSION_LOGGING", False),
+        help=(
+            "Record each media session's settings, duration and pipeline "
+            "latency counters. Never audio, video, transcripts, API keys or "
+            "uploaded photos. Needs --consent-notice."
+        ),
+    )
+    parser.add_argument(
+        "--consent-notice",
+        default=os.environ.get("ARTALK_CONSENT_NOTICE"),
+        type=str,
+        help=(
+            "Markdown file shown to visitors when --feedback or "
+            "--session-logging is on. Nothing is stored for a visitor until "
+            "they accept it, and without this file nothing is stored at all."
+        ),
+    )
+    parser.add_argument(
+        "--session-data-dir",
+        default=os.environ.get("ARTALK_SESSION_DATA_DIR", "session_data"),
+        type=str,
+        help=(
+            "Directory for --feedback and --session-logging records, one "
+            "JSON Lines file per UTC day."
+        ),
+    )
+    parser.add_argument(
         "--default-mode",
         default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
         choices=["loopback", "interactive"],
