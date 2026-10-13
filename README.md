@@ -384,6 +384,14 @@ Still shared between sessions in one process:
 - The GC pause panel shows process-wide counters.
 - An API key set as a server secret (`OPENAI_API_KEY`) is used by every visitor. A key typed into the sidebar stays in that browser session.
 
+## Session logging and feedback
+
+Two more options, also off by default, collect data about how sessions go. `--feedback` offers visitors a rating of five faces and an optional comment once they have started a session. `--session-logging` records each media session: its mode, backend, motion model, kind of appearance (mesh, built-in or registered photoreal, never the avatar's name), style, duration, how it ended, and a fixed set of the pipeline's latency and playback counters. Neither records audio, video, transcripts, API keys or uploaded photos.
+
+Both need `--consent-notice`, a Markdown file that the visitor sees at the top of the page with Accept and No thanks. The app ships no notice text: what it says is the operator's to write. Nothing is stored for a visitor until they accept, and if the file is not set or cannot be read, nothing is stored at all and the server logs a warning. Each consent record carries the SHA-256 of the notice the visitor saw.
+
+Records are keyed by the login id with `--login`, otherwise by a random id made for the browser session, which a reload replaces. No IP addresses are recorded. They go to `--session-data-dir` as JSON Lines, one file per UTC day, readable by the server's user only; the record types are the dataclasses in `artalk_streamlit_realtime/session_records.py`. The app deletes nothing, so retention is up to whoever runs it. A Space's disk is lost when the Space restarts unless it has persistent storage. Storing records somewhere else means implementing `RecordStore` and choosing it in `open_record_store`.
+
 ## Licenses
 
 This application layer is the only part of the stack that this repository
