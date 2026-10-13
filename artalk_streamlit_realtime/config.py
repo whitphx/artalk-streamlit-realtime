@@ -455,6 +455,18 @@ def parse_args() -> argparse.Namespace:
         help="Directory holding user-registered GAGAvatar avatars.",
     )
     parser.add_argument(
+        "--isolate-user-avatars",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_ISOLATE_USER_AVATARS", False),
+        help=(
+            "Show and use a registered avatar only in the browser session "
+            "that registered it. Each owner gets a subdirectory of "
+            "--user-avatar-dir; avatars stored directly in it stay hidden. A "
+            "session's avatars are deleted once Streamlit can no longer "
+            "resume the session."
+        ),
+    )
+    parser.add_argument(
         "--gagavatar-track-python",
         default=os.environ.get("GAGAVATAR_TRACK_PYTHON"),
         type=str,

@@ -8,6 +8,7 @@ GAGAvatar_track subprocess. Per-avatar files keep the built-in
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -27,6 +28,28 @@ class AvatarRegistrationError(RuntimeError):
 
 def slugify_avatar_id(name: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", name.strip().lower()).strip("-.")
+
+
+def owner_dir(root: Path | str, kind: str, owner_id: str) -> Path:
+    """The registry root for one owner's avatars under the shared root.
+
+    The name is a digest, so a directory listing does not reveal who
+    uploaded what (owner ids can be e-mail addresses).
+    """
+    digest = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
+    return Path(root) / f"{kind}-{digest}"
+
+
+def prune_session_owners(root: Path | str, live_session_ids: Iterable[str]) -> None:
+    """Delete the avatars of browser sessions Streamlit can no longer resume.
+
+    A reload starts a new session, so nothing can select these again, and
+    they hold faces their uploader may not expect the server to keep.
+    """
+    live = {owner_dir(root, "session", sid).name for sid in live_session_ids}
+    for path in Path(root).glob("session-*"):
+        if path.name not in live:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 class UserAvatarRegistry:

@@ -35,6 +35,8 @@ from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
 from artalk_streamlit_realtime.avatar_registry import (
     AvatarRegistrationError,
     UserAvatarRegistry,
+    owner_dir,
+    prune_session_owners,
     slugify_avatar_id,
 )
 from artalk_streamlit_realtime.config import (
@@ -69,7 +71,11 @@ from artalk_streamlit_realtime.diagnostics import (
 )
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
 from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
-from artalk_streamlit_realtime.sessions import current_session_id, slots
+from artalk_streamlit_realtime.sessions import (
+    current_session_id,
+    live_session_ids,
+    slots,
+)
 from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
 from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
@@ -348,8 +354,14 @@ def main() -> None:
             # does without the preload.
             st.warning(f"Failed to preload the photoreal renderer: {exc}")
 
+    avatar_root = args.user_avatar_dir
+    if args.isolate_user_avatars:
+        live = live_session_ids()
+        if live is not None:
+            prune_session_owners(args.user_avatar_dir, live)
+        avatar_root = owner_dir(args.user_avatar_dir, "session", current_session_id())
     user_registry = UserAvatarRegistry(
-        args.user_avatar_dir,
+        avatar_root,
         track_python=args.gagavatar_track_python,
         track_dir=args.gagavatar_track_dir,
         track_device=args.gagavatar_track_device,

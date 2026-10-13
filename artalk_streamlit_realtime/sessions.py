@@ -30,6 +30,15 @@ def current_session_id() -> str:
     return ctx.session_id if ctx is not None else "no-session"
 
 
+def live_session_ids() -> set[str] | None:
+    """Sessions Streamlit can still resume: connected, or disconnected but
+    within its reconnect window. None outside a Streamlit server."""
+    if not Runtime.exists():
+        return None
+    session_mgr = Runtime.instance()._session_mgr
+    return {info.session.id for info in session_mgr.list_sessions()}
+
+
 def _active_session_ids() -> set[str] | None:
     if not Runtime.exists():
         return None
