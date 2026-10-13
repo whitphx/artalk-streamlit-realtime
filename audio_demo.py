@@ -95,6 +95,7 @@ def main() -> None:
         voice = DEFAULT_REALTIME_VOICE
         instructions = DEFAULT_REALTIME_INSTRUCTIONS
         ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+        declare_audio_format = False
         pp_url = DEFAULT_PERSONAPLEX_URL
         pp_voice = DEFAULT_PERSONAPLEX_VOICE
         pp_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
@@ -120,6 +121,7 @@ def main() -> None:
                 endpoint = REALTIME_ENDPOINT_PRESETS[chosen]
                 ws_base_url = endpoint.base_url
                 secret_name = endpoint.secret
+                declare_audio_format = endpoint.declares_audio_format
                 if ws_base_url:
                     st.caption(f"`{ws_base_url}`")
             api_key = get_secret(secret_name) if secret_name else ""
@@ -189,7 +191,8 @@ def main() -> None:
     }[backend]
     config = (
         backend, prebuffer, sample_rate, api_key, model, voice, instructions,
-        ws_base_url, delegation_model, pp_url, pp_voice, pp_prompt,
+        ws_base_url, declare_audio_format, delegation_model, pp_url, pp_voice,
+        pp_prompt,
     )
     if st.session_state.get(CONFIG_KEY) != config:
         stop_bridge()
@@ -227,6 +230,7 @@ def main() -> None:
                 voice=voice,
                 instructions=instructions,
                 websocket_base_url=ws_base_url,
+                declare_audio_format=declare_audio_format,
             )
         st.session_state[BRIDGE_KEY] = bridge
         st.session_state[CONFIG_KEY] = config

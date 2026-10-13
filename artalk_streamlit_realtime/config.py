@@ -104,6 +104,10 @@ class RealtimeEndpoint(NamedTuple):
     secret: str
     model: str
     voices: tuple[str, ...]
+    # Whether the session must name its PCM rate. OpenAI and xAI default to
+    # 24 kHz, but speech-to-speech falls back to its own 16 kHz pipeline rate
+    # in both directions, which garbles the input and plays replies too fast.
+    declares_audio_format: bool = False
 
 
 # https://docs.x.ai/developers/model-capabilities/audio/voice-agent
@@ -119,7 +123,11 @@ REALTIME_ENDPOINT_PRESETS = {
     # huggingface/speech-to-speech defaults to port 8765, ignores the model
     # query param, and takes its voice from its own TTS configuration.
     "Local speech-to-speech": RealtimeEndpoint(
-        "ws://127.0.0.1:8765/v1", "", DEFAULT_REALTIME_MODEL, ()
+        "ws://127.0.0.1:8765/v1",
+        "",
+        DEFAULT_REALTIME_MODEL,
+        (),
+        declares_audio_format=True,
     ),
 }
 CUSTOM_ENDPOINT_LABEL = "Custom"

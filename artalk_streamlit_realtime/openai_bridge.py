@@ -37,6 +37,7 @@ class OpenAIRealtimeBridge:
         voice: str,
         instructions: str,
         websocket_base_url: str = "",
+        declare_audio_format: bool = False,
         event_log: SessionEventLog | None = None,
     ) -> None:
         self._api_key = api_key
@@ -47,6 +48,7 @@ class OpenAIRealtimeBridge:
         self._voice = voice
         self._instructions = instructions
         self._websocket_base_url = websocket_base_url
+        self._declare_audio_format = declare_audio_format
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._input_queue: Optional["asyncio.Queue[bytes]"] = None
@@ -216,15 +218,18 @@ class OpenAIRealtimeBridge:
         try:
             async with client.realtime.connect(model=self._model) as conn:
                 self._conn = conn
+                audio_input: dict = {"turn_detection": {"type": "server_vad"}}
+                audio_output: dict = {"voice": self._voice}
+                if self._declare_audio_format:
+                    pcm = {"type": "audio/pcm", "rate": OPENAI_REALTIME_SAMPLE_RATE}
+                    audio_input["format"] = pcm
+                    audio_output["format"] = pcm
                 await conn.session.update(
                     session={
                         "type": "realtime",
                         "model": self._model,
                         "instructions": self._instructions,
-                        "audio": {
-                            "input": {"turn_detection": {"type": "server_vad"}},
-                            "output": {"voice": self._voice},
-                        },
+                        "audio": {"input": audio_input, "output": audio_output},
                     }
                 )
                 with self._state_lock:

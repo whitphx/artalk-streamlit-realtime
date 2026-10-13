@@ -532,6 +532,7 @@ def main() -> None:
         realtime_voice = DEFAULT_REALTIME_VOICE
         realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
         realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+        realtime_declare_audio_format = False
         backend = BACKEND_OPENAI
         live_model = DEFAULT_LIVE_MODEL
         live_voice = DEFAULT_LIVE_VOICE
@@ -626,6 +627,7 @@ def main() -> None:
             else:
                 endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
                 realtime_ws_base_url = endpoint.base_url
+                realtime_declare_audio_format = endpoint.declares_audio_format
                 secret_name = endpoint.secret
                 endpoint_model = endpoint.model
                 endpoint_voices = endpoint.voices
@@ -977,6 +979,7 @@ def main() -> None:
             realtime_voice,
             realtime_instructions,
             realtime_ws_base_url,
+            realtime_declare_audio_format,
             live_model,
             live_voice,
             live_instructions,
@@ -1019,6 +1022,7 @@ def main() -> None:
                     voice=realtime_voice,
                     instructions=realtime_instructions,
                     websocket_base_url=realtime_ws_base_url,
+                    declare_audio_format=realtime_declare_audio_format,
                     event_log=event_log,
                 )
             st.session_state[BRIDGE_KEY] = bridge
