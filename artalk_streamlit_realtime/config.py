@@ -474,8 +474,9 @@ def parse_args() -> argparse.Namespace:
             "that registered it, or with --login only to the user who "
             "registered it. Each owner gets a subdirectory of "
             "--user-avatar-dir; avatars stored directly in it stay hidden. A "
-            "session's avatars are deleted once Streamlit can no longer "
-            "resume the session."
+            "session's avatars are deleted on the first page run after "
+            "Streamlit can no longer resume the session; those of sessions "
+            "from before a restart stay on disk."
         ),
     )
     parser.add_argument(

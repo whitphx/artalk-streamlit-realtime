@@ -37,6 +37,7 @@ from artalk_streamlit_realtime.avatar_registry import (
     UserAvatarRegistry,
     owner_dir,
     prune_session_owners,
+    session_owner_dir,
     slugify_avatar_id,
 )
 from artalk_streamlit_realtime.config import (
@@ -360,13 +361,11 @@ def main() -> None:
     if args.isolate_user_avatars:
         live = live_session_ids()
         if live is not None:
-            prune_session_owners(args.user_avatar_dir, live)
+            prune_session_owners(live)
         if login_id is not None:
             avatar_root = owner_dir(args.user_avatar_dir, "user", login_id)
         else:
-            avatar_root = owner_dir(
-                args.user_avatar_dir, "session", current_session_id()
-            )
+            avatar_root = session_owner_dir(args.user_avatar_dir, current_session_id())
     user_registry = UserAvatarRegistry(
         avatar_root,
         track_python=args.gagavatar_track_python,

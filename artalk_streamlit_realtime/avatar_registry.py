@@ -12,6 +12,7 @@ import hashlib
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -40,16 +41,35 @@ def owner_dir(root: Path | str, kind: str, owner_id: str) -> Path:
     return Path(root) / f"{kind}-{digest}"
 
 
-def prune_session_owners(root: Path | str, live_session_ids: Iterable[str]) -> None:
-    """Delete the avatars of browser sessions Streamlit can no longer resume.
+_session_dirs: dict[str, Path] = {}
+_session_dirs_lock = threading.Lock()
+
+
+def session_owner_dir(root: Path | str, session_id: str) -> Path:
+    """``owner_dir`` for a browser session, remembered so that
+    ``prune_session_owners`` can delete it once the session is gone."""
+    path = owner_dir(root, "session", session_id)
+    with _session_dirs_lock:
+        _session_dirs[session_id] = path
+    return path
+
+
+def prune_session_owners(live_session_ids: Iterable[str]) -> None:
+    """Delete the avatars of this process's browser sessions that Streamlit
+    can no longer resume.
 
     A reload starts a new session, so nothing can select these again, and
-    they hold faces their uploader may not expect the server to keep.
+    they hold faces their uploader may not expect the server to keep. Only
+    directories handed out by ``session_owner_dir`` in this process are
+    candidates, not every ``session-*`` entry under the root: another
+    process sharing the root has live sessions this one cannot see.
     """
-    live = {owner_dir(root, "session", sid).name for sid in live_session_ids}
-    for path in Path(root).glob("session-*"):
-        if path.name not in live:
-            shutil.rmtree(path, ignore_errors=True)
+    live = set(live_session_ids)
+    with _session_dirs_lock:
+        gone = [sid for sid in _session_dirs if sid not in live]
+        paths = [_session_dirs.pop(sid) for sid in gone]
+    for path in paths:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class UserAvatarRegistry:
