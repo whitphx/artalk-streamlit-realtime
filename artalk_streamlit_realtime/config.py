@@ -455,12 +455,24 @@ def parse_args() -> argparse.Namespace:
         help="Directory holding user-registered GAGAvatar avatars.",
     )
     parser.add_argument(
+        "--login",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_LOGIN", False),
+        help=(
+            "Require visitors to log in through Streamlit's OpenID Connect "
+            "support before anything loads. The provider comes from the "
+            "[auth] section of .streamlit/secrets.toml, which `artalk-demo "
+            "up` writes on a Space with HF OAuth enabled. Needs Authlib."
+        ),
+    )
+    parser.add_argument(
         "--isolate-user-avatars",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_ISOLATE_USER_AVATARS", False),
         help=(
             "Show and use a registered avatar only in the browser session "
-            "that registered it. Each owner gets a subdirectory of "
+            "that registered it, or with --login only to the user who "
+            "registered it. Each owner gets a subdirectory of "
             "--user-avatar-dir; avatars stored directly in it stay hidden. A "
             "session's avatars are deleted once Streamlit can no longer "
             "resume the session."

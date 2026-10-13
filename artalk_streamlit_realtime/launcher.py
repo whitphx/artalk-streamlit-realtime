@@ -18,6 +18,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from .config import _env_flag
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -288,6 +290,11 @@ def up(args: argparse.Namespace, app_args: list[str]) -> int:
         return 0
 
     os.environ.update(env)
+    if _env_flag("ARTALK_LOGIN", False):
+        from .login import write_hf_oauth_secrets
+
+        if write_hf_oauth_secrets(REPO_ROOT / ".streamlit" / "secrets.toml"):
+            print("login: configured the Space's HF OAuth client for st.login")
     services = _start_services(profile)
     if services:
         # exec would orphan the services; supervise the app instead.

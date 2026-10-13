@@ -81,6 +81,7 @@ from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
+from artalk_streamlit_realtime.login import require_login
 from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
@@ -315,6 +316,7 @@ def main() -> None:
         layout="wide",
     )
     st.title("ARTalk Realtime")
+    login_id = require_login() if args.login else None
     chunk_caption = st.empty()
 
     try:
@@ -359,7 +361,12 @@ def main() -> None:
         live = live_session_ids()
         if live is not None:
             prune_session_owners(args.user_avatar_dir, live)
-        avatar_root = owner_dir(args.user_avatar_dir, "session", current_session_id())
+        if login_id is not None:
+            avatar_root = owner_dir(args.user_avatar_dir, "user", login_id)
+        else:
+            avatar_root = owner_dir(
+                args.user_avatar_dir, "session", current_session_id()
+            )
     user_registry = UserAvatarRegistry(
         avatar_root,
         track_python=args.gagavatar_track_python,
