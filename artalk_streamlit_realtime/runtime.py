@@ -205,5 +205,10 @@ def load_gagavatar(
             compile_mode=compile_mode,
         )
     )
+    # torch sets up its CUDA linear algebra on first use, and two threads
+    # doing that at once fail with "lazy wrapper should be called at most
+    # once". Two sessions' first photoreal frames invert pose matrices at
+    # the same moment, so do the first inversion here, before any session.
+    torch.linalg.inv(torch.eye(3, device=runtime.device))
     return runtime
 
