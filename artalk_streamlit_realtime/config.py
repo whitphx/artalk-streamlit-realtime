@@ -476,6 +476,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--session-time-limit",
+        default=float(os.environ.get("ARTALK_SESSION_TIME_LIMIT", "0")),
+        type=float,
+        help=(
+            "Seconds a media session may run, counted from START (0: no "
+            "limit). When it runs out, the session is stopped, its GPU slot "
+            "is freed, and the page offers to start a new one. Counting from "
+            "page load would spend the allowance while the visitor is still "
+            "choosing an avatar or entering a key."
+        ),
+    )
+    parser.add_argument(
         "--default-mode",
         default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
         choices=["loopback", "interactive"],

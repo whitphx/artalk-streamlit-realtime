@@ -39,13 +39,17 @@ def _active_session_ids() -> set[str] | None:
 
 class PipelineSlots:
     """Admits at most `limit` sessions (0: unlimited) and stops what a vanished
-    session left behind. Attached objects are stopped through ``stop()``."""
+    session, or one past its time limit, left behind. Attached objects are
+    stopped through ``stop()``."""
 
     def __init__(self) -> None:
         self.limit = 0
         self._lock = threading.Lock()
         self._holders: dict[str, dict[str, object]] = {}
         self._missing_since: dict[str, float] = {}
+        self._deadlines: dict[str, float] = {}
+        self._expired: set[str] = set()
+        self._wake = threading.Event()
         self._reaper: threading.Thread | None = None
 
     def acquire(self, session_id: str) -> bool:
@@ -80,6 +84,7 @@ class PipelineSlots:
             ]
             for other, _ in evicted:
                 self._missing_since.pop(other, None)
+                self._deadlines.pop(other, None)
             self._holders.setdefault(session_id, {})
             self._start_reaper()
         self._stop(evicted, "taken over by another session")
@@ -100,6 +105,37 @@ class PipelineSlots:
         with self._lock:
             self._holders.pop(session_id, None)
             self._missing_since.pop(session_id, None)
+            self._deadlines.pop(session_id, None)
+
+    def start_clock(self, session_id: str, seconds: float) -> float | None:
+        """Give this session's slot a deadline `seconds` from now, unless it
+        already has one, and return the deadline (``time.monotonic()``).
+
+        The reaper stops the slot's objects once the deadline passes, so the
+        limit holds even when no script run is left to enforce it, such as
+        for a tab in the background. None means the session holds no slot.
+        """
+        with self._lock:
+            if session_id not in self._holders:
+                return None
+            deadline = self._deadlines.setdefault(
+                session_id, time.monotonic() + seconds
+            )
+        self._wake.set()
+        return deadline
+
+    def deadline(self, session_id: str) -> float | None:
+        with self._lock:
+            return self._deadlines.get(session_id)
+
+    def pop_expired(self, session_id: str) -> bool:
+        """Whether the reaper stopped this session for its time limit since
+        the last call."""
+        with self._lock:
+            if session_id in self._expired:
+                self._expired.discard(session_id)
+                return True
+            return False
 
     def _start_reaper(self) -> None:
         """Caller holds the lock."""
@@ -111,7 +147,13 @@ class PipelineSlots:
 
     def _reap_loop(self) -> None:
         while True:
-            time.sleep(REAP_INTERVAL_SECONDS)
+            with self._lock:
+                next_deadline = min(self._deadlines.values(), default=None)
+            timeout = REAP_INTERVAL_SECONDS
+            if next_deadline is not None:
+                timeout = min(timeout, max(next_deadline - time.monotonic(), 0.0))
+            self._wake.wait(timeout)
+            self._wake.clear()
             try:
                 self._reap_once()
             except Exception:
@@ -119,6 +161,22 @@ class PipelineSlots:
 
     def _reap_once(self) -> None:
         self._stop(self._take_gone(DISCONNECT_GRACE_SECONDS), "its browser is gone")
+        self._stop(self._take_expired(), "its time limit ran out")
+
+    def _take_expired(self) -> list[tuple[str, dict[str, object]]]:
+        now = time.monotonic()
+        expired = []
+        with self._lock:
+            for session_id, deadline in list(self._deadlines.items()):
+                if now < deadline:
+                    continue
+                del self._deadlines[session_id]
+                self._missing_since.pop(session_id, None)
+                holder = self._holders.pop(session_id, None)
+                if holder is not None:
+                    expired.append((session_id, holder))
+                    self._expired.add(session_id)
+        return expired
 
     def _take_gone(self, grace_seconds: float) -> list[tuple[str, dict[str, object]]]:
         """Remove and return the holders whose session has been gone for at
@@ -137,14 +195,15 @@ class PipelineSlots:
                 if now - since >= grace_seconds:
                     gone.append((session_id, self._holders.pop(session_id)))
                     self._missing_since.pop(session_id, None)
+                    self._deadlines.pop(session_id, None)
         return gone
 
     def _stop(self, gone: list[tuple[str, dict[str, object]]], reason: str) -> None:
         for session_id, objects in gone:
             logger.info("[slots] stopping session %s: %s", session_id, reason)
-            # The pump feeds the pipeline and the watcher observes it, so both
-            # go before it.
-            for name in ("pump", "watcher", "pipeline"):
+            # The bridge and the pump feed the pipeline and the watcher
+            # observes it, so all three go before it.
+            for name in ("bridge", "pump", "watcher", "pipeline"):
                 obj = objects.get(name)
                 if obj is None:
                     continue

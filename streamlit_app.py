@@ -116,6 +116,7 @@ BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 EVENT_LOG_KEY = "artalk_event_log"
 EVENT_WATCHER_KEY = "artalk_event_watcher"
 EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
+SESSION_EXPIRED_KEY = "artalk_session_expired"
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -843,6 +844,23 @@ def main() -> None:
         st.stop()
 
     session_id = current_session_id()
+    if args.session_time_limit and slots.pop_expired(session_id):
+        st.session_state[SESSION_EXPIRED_KEY] = True
+    if st.session_state.get(SESSION_EXPIRED_KEY):
+        # The reaper already stopped what the slot held; this drops the
+        # session's own references, and leaving the WebRTC component
+        # unrendered closes the browser's connection.
+        stop_bridge()
+        stop_pipeline()
+        st.info(
+            f"This session reached its {args.session_time_limit:g}-second "
+            "limit and was stopped, which frees the GPU for other visitors."
+        )
+        if st.button("Start a new session"):
+            st.session_state.pop(SESSION_EXPIRED_KEY)
+            st.rerun()
+        st.stop()
+
     if not slots.acquire(session_id):
         # Reached here after a takeover too, so drop whatever this session was
         # still running before offering to take the GPU back.
@@ -950,6 +968,10 @@ def main() -> None:
         return bridge
 
     bridge = get_bridge() if mode == "Interactive" else None
+    if args.session_time_limit:
+        # The time limit is enforced off the script thread, which can reach
+        # the bridge only through the slot.
+        slots.attach(session_id, "bridge", bridge)
     if bridge is not None and not bridge.is_running:
         # PersonaPlex withholds its handshake until the system prompts have
         # been stepped through the model, which is far slower than a hosted API.
@@ -1000,6 +1022,8 @@ def main() -> None:
             return
         if mode == "Interactive" and ctx.state.playing and bridge is not None:
             bridge.start()
+        if args.session_time_limit and ctx.state.playing:
+            slots.start_clock(session_id, args.session_time_limit)
         if not ctx.state.playing and not ctx.state.signalling:
             if bridge is not None:
                 bridge.stop()
@@ -1057,9 +1081,25 @@ def main() -> None:
 
     avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
 
+    @st.fragment(run_every="1s")
+    def render_time_limit_fragment() -> None:
+        if slots.pop_expired(session_id):
+            st.session_state[SESSION_EXPIRED_KEY] = True
+            st.rerun(scope="app")
+        deadline = slots.deadline(session_id)
+        if deadline is None:
+            st.caption(
+                f"Sessions are limited to {args.session_time_limit:g} s from START."
+            )
+        else:
+            remaining = max(deadline - time.monotonic(), 0.0)
+            st.caption(f"Time left in this session: {remaining:.0f} s")
+
     with avatar_col:
         st.subheader("Avatar")
         render_webrtc_component()
+        if args.session_time_limit:
+            render_time_limit_fragment()
         if bridge is not None:
             render_interactive_status()
 
