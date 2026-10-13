@@ -210,8 +210,8 @@ class PipelineSlots:
     def _stop(self, gone: list[tuple[str, dict[str, object]]], reason: str) -> None:
         for session_id, objects in gone:
             logger.info("[slots] stopping session %s: %s", session_id, reason)
-            # The bridge and the pump feed the pipeline and the watcher and
-            # the recorder observe it, so all four go before it.
+            # The bridge and the pump feed the pipeline, and the watcher and
+            # the recorder observe it, so they go before it.
             for name in ("recorder", "bridge", "pump", "watcher", "pipeline"):
                 obj = objects.get(name)
                 if obj is None:

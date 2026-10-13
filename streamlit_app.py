@@ -1177,8 +1177,8 @@ def main() -> None:
             render_time_limit_fragment()
         if recorder is not None:
             recorder.pipeline = pipeline
-            # Through the slot, the server's own stops (time limit,
-            # take-over, browser gone) close the session's record too.
+            # The slot stops the recorder whenever the server stops the
+            # session itself, which closes its record.
             slots.attach(session_id, "recorder", recorder)
             ctx = st.session_state.get(streamer_key)
             if ctx is not None and ctx.state.playing:

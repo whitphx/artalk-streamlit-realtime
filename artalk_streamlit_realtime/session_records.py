@@ -1,10 +1,4 @@
-"""Optional session logging and a feedback widget, both off by default.
-
-Nothing is written until the visitor accepts a notice whose text the operator
-supplies (``--consent-notice``). Records hold session settings, durations,
-pipeline latency counters and ratings. They never hold audio, video,
-transcripts, API keys, uploaded photos or names of registered avatars.
-"""
+"""Optional session logging and a feedback widget."""
 
 from __future__ import annotations
 
@@ -20,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 import streamlit as st
 
@@ -37,13 +31,6 @@ EndReason = Literal["stopped", "disconnected", "server"]
 
 @dataclass(frozen=True)
 class RecordBase:
-    """Fields every record carries.
-
-    ``subject_id`` is the login id (issuer|sub) with ``--login``, otherwise a
-    random id made for the browser session, which is then the same as
-    ``browser_session``. A reload starts a new browser session.
-    """
-
     record: str
     subject_kind: SubjectKind
     subject_id: str
@@ -54,7 +41,6 @@ class RecordBase:
 
 @dataclass(frozen=True)
 class ConsentRecord(RecordBase):
-    # Identifies which version of the operator's notice was accepted.
     notice_sha256: str
 
 
@@ -90,7 +76,7 @@ class FeedbackRecord(RecordBase):
 
 
 class RecordStore(Protocol):
-    """Where records go. ``JsonlRecordStore`` is the only implementation.
+    """Where records go.
 
     Another destination, such as a remote database or bucket, implements
     ``append`` and is chosen in ``open_record_store``. ``append`` is called
@@ -103,8 +89,6 @@ class RecordStore(Protocol):
 
 
 class JsonlRecordStore:
-    """One JSON object per line, in one file per UTC day."""
-
     def __init__(self, directory: str | os.PathLike) -> None:
         self.directory = Path(directory)
         self._lock = threading.Lock()
@@ -117,7 +101,8 @@ class JsonlRecordStore:
         with self._lock:
             self.directory.mkdir(parents=True, exist_ok=True)
             # One write per line on an O_APPEND descriptor, so lines from
-            # several server processes sharing the directory do not interleave.
+            # several processes on one host do not interleave. NFS gives no
+            # such guarantee across hosts.
             fd = os.open(
                 self.path_for(datetime.now(timezone.utc)),
                 os.O_WRONLY | os.O_APPEND | os.O_CREAT,
@@ -140,8 +125,6 @@ class ConsentNotice:
 
 
 def load_consent_notice(path: str | None) -> ConsentNotice | None:
-    """The operator's notice, or None (with a warning, once per process) when
-    it is not configured or cannot be read."""
     if not path:
         _warn_once(
             "session logging / feedback is enabled but --consent-notice is not "
@@ -203,10 +186,13 @@ def pipeline_summary(snapshot: dict) -> dict[str, float | int | None]:
     return summary
 
 
-class SessionRecorder:
-    """Collects one browser session's records once its visitor has accepted
-    the notice; until then, and after a decline, every method is a no-op."""
+class _OpenMediaSession(NamedTuple):
+    media_session: str
+    started: float
+    recorded: bool
 
+
+class SessionRecorder:
     def __init__(
         self,
         store: RecordStore,
@@ -228,8 +214,7 @@ class SessionRecorder:
         self.last_media_session: str | None = None
         self.pipeline = None
         self._lock = threading.Lock()
-        # (media session id, start time, whether its start was recorded)
-        self._open: tuple[str, float, bool] | None = None
+        self._open: _OpenMediaSession | None = None
 
     @property
     def collecting(self) -> bool:
@@ -270,7 +255,6 @@ class SessionRecorder:
         style: str,
         session_time_limit_s: float,
     ) -> None:
-        """Open a media session record unless one is open already."""
         with self._lock:
             if self._open is not None:
                 return
@@ -278,7 +262,7 @@ class SessionRecorder:
             # A session started before the visitor accepted stays unrecorded
             # to its end, so no end record lacks its start.
             recorded = self.collecting and self.log_sessions
-            self._open = (media_session, time.monotonic(), recorded)
+            self._open = _OpenMediaSession(media_session, time.monotonic(), recorded)
             self.media_sessions_started += 1
             self.last_media_session = media_session if recorded else None
         if recorded:
@@ -322,8 +306,7 @@ class SessionRecorder:
         )
 
     def stop(self) -> None:
-        """Called by the session slot when the server stops the session (time
-        limit, take-over, browser gone)."""
+        """Called by the session slot when the server stops the session."""
         self.end_media("server")
 
     def submit_feedback(self, rating: int, comment: str) -> None:
