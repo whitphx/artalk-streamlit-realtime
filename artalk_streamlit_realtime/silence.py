@@ -51,9 +51,15 @@ class PipelineSilencePump:
     rendering (see ``mark_input``).
     """
 
-    def __init__(self, pipeline: ARTalkPipeline, idle_motion: bool = False) -> None:
+    def __init__(
+        self,
+        pipeline: ARTalkPipeline,
+        idle_motion: bool = False,
+        continuous_input: bool = True,
+    ) -> None:
         self._pipeline = pipeline
         self._idle_motion = idle_motion
+        self._continuous_input = continuous_input
         self._flush_budget_samples = int(
             pipeline.metrics_snapshot()["counters"].get(
                 "streamer_chunk_samples",
@@ -109,6 +115,16 @@ class PipelineSilencePump:
                 return
             self._pumped_since_input_samples = self._flush_budget_samples
             self._last_pump_s = time.perf_counter()
+            # Treated as idle output so the idle pump tops it up rather than
+            # waiting for it to play out. One chunk can publish less audio
+            # than the output prebuffer, as the 1 s model's first chunk does.
+            # Playback then never starts on it, so it never plays out and the
+            # face stays frozen until the first reply.
+            # A continuous input stream is left out: its first frames arrive
+            # as playback starts, and dropping the primed output then would
+            # leave playback running on an empty buffer, without the
+            # prebuffer cushion that realtime-paced input needs.
+            self._idle_output_queued = self._idle_motion and not self._continuous_input
         with self._pipeline.metrics_context():
             current_pipeline_metrics().inc("silence_pump_priming_chunks")
         self._pipeline.push_silence(self._flush_budget_samples / ARTALK_SAMPLE_RATE)
