@@ -360,6 +360,30 @@ session is its own render loop on the GPU. A slot is freed shortly after its
 browser disconnects; a visitor refused while the holder is still connected can
 stop that session and take the GPU over from the notice.
 
+## Sharing a server between visitors
+
+Three options, all off by default, make the app easier to share. Each is a flag with a matching `ARTALK_*` variable (see `--help`), so on a Space they are set as Space variables.
+
+**Session time limit** (`--session-time-limit`, seconds). The clock starts when the media connection starts playing after START, not at page load, so time spent choosing an avatar or entering a key is not counted. When it runs out, the server stops the session's pipeline and conversation backend and frees its GPU slot, even for a tab left in the background. The page then says why and offers a new session; with `--max-sessions`, a visitor who was waiting gets the slot first by pressing Retry.
+
+**Avatar isolation** (`--isolate-user-avatars`). A registered avatar is listed and usable only in the browser session that registered it, or, with login on, by the user who registered it. Session avatars are deleted once Streamlit can no longer resume the session, since a reload starts a new one. Avatars stored directly in `--user-avatar-dir` (registered before isolation was turned on) stay hidden while it is on. On the Space this matters only once registration is offered there.
+
+**Login** (`--login`). Visitors log in through Streamlit's OpenID Connect support (`st.login`) before anything loads. Turning it on for the Space needs:
+
+- Authlib in the environment (Streamlit's `auth` extra), which `pixi.toml` does not carry yet.
+- `hf_oauth: true` in the front matter of this README, which creates an OAuth app for the Space and hands its client to the container.
+- The variable `ARTALK_LOGIN=1`. At start, `artalk-demo up` writes the `[auth]` section Streamlit reads from that client. The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
+- Opening the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
+
+On a lab server, put an `[auth]` section for any OIDC provider in `.streamlit/secrets.toml` ([Streamlit's guide](https://docs.streamlit.io/develop/concepts/connections/authentication)), or leave login off.
+
+Still shared between sessions in one process:
+
+- The loaded models. Each session builds its own pipeline and motion streamer on top of them, and its own view of the photoreal renderer, so selections and per-avatar caches do not leak between sessions.
+- **Save diagnostics snapshot** writes the session's event log and its last video frame to `diagnostics_snapshots/` on the server, and any visitor can press it. Nothing in the app serves those files back.
+- The GC pause panel shows process-wide counters.
+- An API key set as a server secret (`OPENAI_API_KEY`) is used by every visitor. A key typed into the sidebar stays in that browser session.
+
 ## Licenses
 
 This application layer is the only part of the stack that this repository
