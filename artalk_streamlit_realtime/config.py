@@ -160,6 +160,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
     )
     parser.add_argument(
+        "--torch-threads",
+        default=int(os.environ.get("ARTALK_TORCH_THREADS", "0")),
+        type=int,
+        help=(
+            "Intra-op CPU threads for torch (0: torch's default, one per "
+            "visible core). Each session's worker runs small CPU ops whose "
+            "thread pools spin across every core, so several sessions in one "
+            "process can saturate the host for no extra throughput."
+        ),
+    )
+    parser.add_argument(
         "--render-res",
         default=int(os.environ.get("ARTALK_RENDER_RES", "512")),
         type=int,

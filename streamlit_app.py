@@ -19,6 +19,7 @@ from pathlib import Path
 
 import av
 import streamlit as st
+import torch
 from artalk.assets import ARTalkAssets
 from artalk.realtime_pipeline import ARTalkPipeline
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -290,6 +291,8 @@ def main() -> None:
             "[loop-watchdog] not armed", exc_info=True
         )
     args = parse_args()
+    if args.torch_threads:
+        torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
