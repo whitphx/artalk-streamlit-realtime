@@ -1050,8 +1050,6 @@ def main() -> None:
             return
         if mode == "Interactive" and ctx.state.playing and bridge is not None:
             bridge.start()
-        if args.session_time_limit and ctx.state.playing:
-            slots.start_clock(session_id, args.session_time_limit)
         if not ctx.state.playing and not ctx.state.signalling:
             if bridge is not None:
                 bridge.stop()
@@ -1134,8 +1132,9 @@ def main() -> None:
         render_webrtc_component()
         if args.session_time_limit:
             ctx = st.session_state.get(streamer_key)
-            # A new session started from the notice inherits a connection
-            # that is still playing, so no START arrives to start its clock.
+            # Checked on every run rather than when START changes the state:
+            # a new session started from the notice inherits a connection
+            # that is still playing, so no state change starts its clock.
             if ctx is not None and ctx.state.playing:
                 slots.start_clock(session_id, args.session_time_limit)
             render_time_limit_fragment()
