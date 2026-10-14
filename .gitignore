@@ -20,3 +20,5 @@ comparisons/
 vendor/
 .envs/
 session_data/
+s2s-demo.local.env
+s2s-demo-*.log

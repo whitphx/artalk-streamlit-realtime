@@ -324,6 +324,34 @@ and it splits the voice frontend from a backend that reasons and calls tools.
 That backend is off by default; the sidebar can hand it to a Responses model
 with web search, billed on top of the session's per-second charge.
 
+## Talking to an open speech-to-speech stack
+
+`audio_demo.py` runs the same conversation backends without the avatar, so a backend can be judged by ear. `scripts/s2s_demo.sbatch` starts an open cascaded stack on one Slurm GPU and opens `audio_demo.py` on it with the **Local speech-to-speech** endpoint selected: [vLLM](https://github.com/vllm-project/vllm) serves the language model, and [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) does VAD, turn detection, ASR and TTS around it and speaks the OpenAI Realtime protocol. OpenAI Realtime stays one click away under **Endpoint** for an A/B, with the key read from `.streamlit/secrets.toml` as above.
+
+Each tool keeps its own environment. Point the script at them, for example in a git-ignored `s2s-demo.local.env` at the repo root, which the script sources:
+
+```bash
+# s2s-demo.local.env (example paths)
+export S2S_DIR=/path/to/speech-to-speech      # checkout with its uv venv in .venv
+export VLLM_PY=/path/to/vllm-env/bin/python
+export HF_HOME=/path/to/huggingface-cache     # if the batch shell does not set it
+export ST_REMOTE_ARGS="--ngrok-binary /path/to/ngrok"  # if ngrok is not on the node's PATH
+```
+
+Then submit from the repo root:
+
+```bash
+sbatch scripts/s2s_demo.sbatch                # English
+S2S_LANG=ja sbatch scripts/s2s_demo.sbatch    # Japanese ASR and voice
+S2S_HOLD_MS=300 sbatch scripts/s2s_demo.sbatch
+```
+
+The browser URL appears in `s2s-demo-<jobid>.log` once everything is up; the component logs go to `.cache/s2s-demo/<jobid>/`. `scancel` the job when done. The GPU must be Ampere or newer for vLLM and the GGML TTS.
+
+`S2S_HOLD_MS` sets speech-to-speech's `--speculative_reopen_ms`, the grace it waits after a turn its turn detector calls complete before replying. Lowering it from the default 800 ms shortens the reply onset in English by about the same amount, at the cost of replying into pauses mid-sentence more often. `S2S_LLM_MODEL` picks another chat model for vLLM (default `Qwen/Qwen3.5-4B`), and `S2S_EXTRA_ARGS` passes further `speech-to-speech serve` flags.
+
+Upstream speech-to-speech works as is. Two small patches to it improve the experience: splitting streamed replies after full-width sentence terminators, so that Japanese TTS starts sentence by sentence instead of after the whole reply, and draining the transformers streamer without waiting out its 1 s timeout at the end of each reply, which matters only when the language model runs in process instead of on vLLM.
+
 ## Hugging Face Spaces
 
 The repository is also a Docker Space: the YAML front matter at the top of this
