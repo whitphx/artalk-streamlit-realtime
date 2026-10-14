@@ -2,7 +2,7 @@
 
 Written 2026-08-31. Goal: reproduce this app and its full dependency stack on a new CUDA machine in one move, launch it with a single command that applies the best known settings, and ultimately run the whole demo offline on a GPU laptop with local speech models replacing the OpenAI Realtime API.
 
-Hardware market data below was researched 2026-08-31 (sources linked inline). Performance numbers come from `benchmarks/`, `docs/cheaper-gpu-plan.md`, `docs/meeting-notes-20260819.md`, and the PersonaPlex probe measurements (`~/src/personaplex-probe`, A100, 2026-08-17).
+Hardware market data below was researched 2026-08-31 (sources linked inline). Performance numbers come from `benchmarks/`, `docs/cheaper-gpu-plan.md`, `docs/status-20260819.md`, and the PersonaPlex probe measurements (`~/src/personaplex-probe`, A100, 2026-08-17).
 
 ## 1. Target state
 

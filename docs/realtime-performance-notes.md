@@ -283,7 +283,7 @@ in whichever stage forces the next sync (typically `avatar_gpu_to_cpu_batch`).
 Side observation while reproducing GAGAvatar headless: a mis-prepared
 rasterizer batch made `diff_gaussian_rasterization` request an absurd
 allocation (131,067 GiB "CUDA out of memory"). If a huge nonsensical OOM like
-this appears (as in the 2026-07-02 meeting's A100 attempt), suspect corrupted
+this appears (as in the 2026-07-02 A100 attempt), suspect corrupted
 rasterizer inputs (avatar/camera setup), not actual memory pressure.
 
 ## 2026-07-13: Silence pump flush budget for turn latency
@@ -526,7 +526,7 @@ regressions.
 ## 2026-07-18: The 131,000-GiB rasterizer "OOM" solved — GPU-arch mismatch
 
 The absurd `diff_gaussian_rasterization` allocation failures (seen headless
-here, and in the 2026-07-02 meeting's A100 attempt) were a GPU-architecture
+here, and in the 2026-07-02 A100 attempt) were a GPU-architecture
 mismatch made invisible by upstream error handling. The installed
 `diff_gaussian_rasterization_32d` binary contained SASS and PTX for
 **sm_75 only** — the home directory is NFS-shared across GPU hosts, and the

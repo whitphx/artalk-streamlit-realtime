@@ -119,7 +119,7 @@ def _select_gpu(gpus: list[Gpu], requested: int | None) -> Gpu | None:
         if not matches:
             raise LaunchConfigError(f"--gpu {requested} not found")
         return matches[0]
-    # A shared GPU cost a 2.8x slowdown once (docs/meeting-notes-20260819.md);
+    # A shared GPU cost a 2.8x slowdown once (docs/status-20260819.md);
     # prefer a fully idle card.
     idle = [g for g in gpus if not g.compute_pids]
     return idle[0] if idle else min(gpus, key=lambda g: len(g.compute_pids))
