@@ -81,8 +81,14 @@ def main() -> None:
     st.caption("Audio only, so latency is the model and the network, not the avatar.")
 
     with st.sidebar:
+        backends = [BACKEND_OPENAI, BACKEND_OPENAI_LIVE, BACKEND_PERSONAPLEX]
+        default_backend = os.environ.get("ARTALK_AUDIO_DEMO_BACKEND", "")
+        if default_backend and default_backend not in backends:
+            st.warning(f"Unknown backend {default_backend!r}.")
         backend = st.radio(
-            "Backend", [BACKEND_OPENAI, BACKEND_OPENAI_LIVE, BACKEND_PERSONAPLEX]
+            "Backend",
+            backends,
+            index=backends.index(default_backend) if default_backend in backends else 0,
         )
         prebuffer = st.slider(
             "Output prebuffer (s)",

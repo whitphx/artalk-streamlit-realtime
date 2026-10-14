@@ -9,7 +9,7 @@ from typing import NamedTuple
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 # Mimi's rate, which PersonaPlex inherits.
 PERSONAPLEX_SAMPLE_RATE = 24000
-DEFAULT_PERSONAPLEX_URL = "ws://localhost:8998"
+DEFAULT_PERSONAPLEX_URL = os.environ.get("ARTALK_PERSONAPLEX_URL", "ws://localhost:8998")
 DEFAULT_PERSONAPLEX_VOICE = "NATF2.pt"
 # Pre-packaged voice embeddings: natural (NAT) and more varied (VAR).
 PERSONAPLEX_VOICES = [

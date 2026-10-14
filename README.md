@@ -348,6 +348,19 @@ S2S_HOLD_MS=300 sbatch scripts/s2s_demo.sbatch
 
 The browser URL appears in `s2s-demo-<jobid>.log` once everything is up; the component logs go to `.cache/s2s-demo/<jobid>/`. `scancel` the job when done. The GPU must be Ampere or newer for vLLM and the GGML TTS.
 
+`DEMO_BACKEND=personaplex` serves [NVIDIA PersonaPlex](https://github.com/NVIDIA/personaplex) instead, a full-duplex model with no separate ASR, LLM or TTS, and opens the page on the **PersonaPlex** backend. Install PersonaPlex in its own environment per its README (the weights are gated on the Hub, so accept the license and log in, or have them in `HF_HOME` already) and point the script at its python:
+
+```bash
+# s2s-demo.local.env
+export PERSONAPLEX_PYTHON=/path/to/personaplex-env/bin/python
+```
+
+```bash
+DEMO_BACKEND=personaplex sbatch scripts/s2s_demo.sbatch
+```
+
+PersonaPlex speaks English only and takes its persona and voice from the sidebar. `PERSONAPLEX_EXTRA_ARGS` passes further `moshi.server` flags.
+
 `S2S_HOLD_MS` sets speech-to-speech's `--speculative_reopen_ms`, the grace it waits after a turn its turn detector calls complete before replying. Lowering it from the default 800 ms shortens the reply onset in English by about the same amount, at the cost of replying into pauses mid-sentence more often. `S2S_LLM_MODEL` picks another chat model for vLLM (default `Qwen/Qwen3.5-4B`), and `S2S_EXTRA_ARGS` passes further `speech-to-speech serve` flags.
 
 Upstream speech-to-speech works as is. Two small patches to it improve the experience: splitting streamed replies after full-width sentence terminators, so that Japanese TTS starts sentence by sentence instead of after the whole reply, and draining the transformers streamer without waiting out its 1 s timeout at the end of each reply, which matters only when the language model runs in process instead of on vLLM.
