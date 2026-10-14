@@ -103,13 +103,18 @@ def main() -> None:
 
         if backend == BACKEND_OPENAI:
             names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
-            chosen = st.selectbox(
-                "Endpoint",
-                names,
-                index=names.index(CUSTOM_ENDPOINT_LABEL)
-                if DEFAULT_REALTIME_WEBSOCKET_BASE_URL
-                else 0,
-            )
+            default_endpoint = os.environ.get("ARTALK_AUDIO_DEMO_ENDPOINT", "")
+            if default_endpoint in names:
+                endpoint_index = names.index(default_endpoint)
+            else:
+                if default_endpoint:
+                    st.warning(f"Unknown endpoint {default_endpoint!r}.")
+                endpoint_index = (
+                    names.index(CUSTOM_ENDPOINT_LABEL)
+                    if DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+                    else 0
+                )
+            chosen = st.selectbox("Endpoint", names, index=endpoint_index)
             if chosen == CUSTOM_ENDPOINT_LABEL:
                 ws_base_url = st.text_input(
                     "WebSocket base URL",
@@ -134,7 +139,10 @@ def main() -> None:
                 "Voice", REALTIME_VOICES, index=REALTIME_VOICES.index(DEFAULT_REALTIME_VOICE)
             )
             instructions = st.text_area(
-                "Instructions", value=DEFAULT_REALTIME_INSTRUCTIONS, height=120
+                "Instructions",
+                value=os.environ.get("ARTALK_AUDIO_DEMO_INSTRUCTIONS")
+                or DEFAULT_REALTIME_INSTRUCTIONS,
+                height=120,
             )
         elif backend == BACKEND_OPENAI_LIVE:
             api_key = get_secret("OPENAI_API_KEY")

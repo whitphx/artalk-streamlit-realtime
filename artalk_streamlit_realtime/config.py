@@ -123,7 +123,7 @@ REALTIME_ENDPOINT_PRESETS = {
     # huggingface/speech-to-speech defaults to port 8765, ignores the model
     # query param, and takes its voice from its own TTS configuration.
     "Local speech-to-speech": RealtimeEndpoint(
-        "ws://127.0.0.1:8765/v1",
+        os.environ.get("ARTALK_S2S_URL", "ws://127.0.0.1:8765/v1"),
         "",
         DEFAULT_REALTIME_MODEL,
         (),
