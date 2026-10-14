@@ -863,6 +863,16 @@ def main() -> None:
         st.stop()
 
     session_id = current_session_id()
+
+    def render_expired_notice(key: str) -> None:
+        st.info(
+            f"This session reached its {args.session_time_limit:g}-second "
+            "limit and was stopped, which frees the GPU for other visitors."
+        )
+        if st.button("Start a new session", key=key):
+            st.session_state.pop(SESSION_EXPIRED_KEY, None)
+            st.rerun(scope="app")
+
     if args.session_time_limit and slots.pop_expired(session_id):
         st.session_state[SESSION_EXPIRED_KEY] = True
     if st.session_state.get(SESSION_EXPIRED_KEY):
@@ -871,13 +881,7 @@ def main() -> None:
         # unrendered closes the browser's connection.
         stop_bridge()
         stop_pipeline()
-        st.info(
-            f"This session reached its {args.session_time_limit:g}-second "
-            "limit and was stopped, which frees the GPU for other visitors."
-        )
-        if st.button("Start a new session"):
-            st.session_state.pop(SESSION_EXPIRED_KEY)
-            st.rerun()
+        render_expired_notice("restart_after_limit")
         st.stop()
 
     if not slots.acquire(session_id):
@@ -1005,6 +1009,11 @@ def main() -> None:
             st.warning(f"{backend} is still connecting. Wait a moment before START.")
 
     def on_loopback_audio_frame(frame: av.AudioFrame) -> None:
+        # A pipeline stopped off the script thread (time limit, take-over)
+        # keeps receiving the microphone until the page reruns, and its
+        # input queue has no bound and no reader any more.
+        if pipeline.is_stopped:
+            return
         silence_pump.mark_input()
         pipeline.push_audio_frame(frame)
 
@@ -1104,7 +1113,13 @@ def main() -> None:
     def render_time_limit_fragment() -> None:
         if slots.pop_expired(session_id):
             st.session_state[SESSION_EXPIRED_KEY] = True
-            st.rerun(scope="app")
+        if st.session_state.get(SESSION_EXPIRED_KEY):
+            # Not a full rerun to the notice above: a run_every fragment that
+            # reruns the app into a different layout races the page's other
+            # fragments, and the browser can fail to render the result
+            # ("'setIn' cannot be called on an ElementNode").
+            render_expired_notice("restart_after_limit_inline")
+            return
         deadline = slots.deadline(session_id)
         if deadline is None:
             st.caption(
@@ -1118,6 +1133,11 @@ def main() -> None:
         st.subheader("Avatar")
         render_webrtc_component()
         if args.session_time_limit:
+            ctx = st.session_state.get(streamer_key)
+            # A new session started from the notice inherits a connection
+            # that is still playing, so no START arrives to start its clock.
+            if ctx is not None and ctx.state.playing:
+                slots.start_clock(session_id, args.session_time_limit)
             render_time_limit_fragment()
         if bridge is not None:
             render_interactive_status()
