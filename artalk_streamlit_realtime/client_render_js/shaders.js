@@ -8,12 +8,16 @@
 // references:
 //  - the portable 4-bit, 8-pass radix sort with a separate block-sum scan
 //    follows the structure of PlayCanvas's `ComputeRadixSortMultipass`
-//    (MIT, https://github.com/playcanvas/engine/blob/main/src/scene/graphics/radix-sort/compute-radix-sort-multipass.js),
+//    (MIT, (c) PlayCanvas Ltd.; host side:
+//    https://github.com/playcanvas/engine/blob/342ec1a04585928918d60fea1af900fbfec3cb7a/src/scene/graphics/radix-sort/compute-radix-sort-multipass.js,
+//    WGSL kernels:
+//    https://github.com/playcanvas/engine/tree/342ec1a04585928918d60fea1af900fbfec3cb7a/src/scene/shader-lib/wgsl/chunks/radix-sort),
 //    which in turn credits kishimisu's WebGPU-Radix-Sort; the local ranking
 //    here uses packed 16-bit per-digit counters instead of its bitmasks.
 //  - the per-splat Mahalanobis threshold ln(255 * opacity) and the
 //    tile-vs-ellipse intersection test are patterned after Brush
-//    (Apache-2.0, https://github.com/ArthurBrussee/brush/blob/main/crates/brush-render/src/kernels/helpers.rs,
+//    (Apache-2.0, by Arthur Brussee,
+//    https://github.com/ArthurBrussee/brush/blob/1388f74c6fe0236f68ee4915564bf00e9d2e3747/crates/brush-render/src/kernels/helpers.rs,
 //    `compute_bbox_extent` and `will_primitive_contribute`, itself after
 //    StopThePop); the edge-minimum test below is a from-scratch 4-edge version.
 // Compositing conventions that the CUDA reference also documents in its
