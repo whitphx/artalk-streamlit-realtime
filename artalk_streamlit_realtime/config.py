@@ -458,6 +458,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--client-render",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_CLIENT_RENDER", False),
+        help=(
+            "Render the avatar in the browser with WebGPU instead of on the "
+            "server. The server sends each frame's head vertices and camera "
+            "over a WebRTC data channel and no longer runs GAGAvatar's "
+            "network. Offers only the avatars that have a bundle in "
+            "--client-render-dir, and needs a streamlit-webrtc build with "
+            "data channels."
+        ),
+    )
+    parser.add_argument(
+        "--client-render-dir",
+        default=os.environ.get("ARTALK_CLIENT_RENDER_DIR"),
+        type=str,
+        help=(
+            "Directory the browser loads the client renderer's avatar "
+            "bundles, networks and ONNX Runtime files from."
+        ),
+    )
+    parser.add_argument(
         "--user-avatar-dir",
         default=os.environ.get("ARTALK_USER_AVATAR_DIR", "user_avatars"),
         type=str,
