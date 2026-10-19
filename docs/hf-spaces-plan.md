@@ -26,14 +26,14 @@ Goal: a public Space running this app on a Hub GPU, with the ARTalk 1 s model pu
 | Sleep time | 15 to 30 min idle, plus pause when not demoing | billing is per minute while Running, regardless of use |
 | Visibility | private, revisited after FLAME permission | see decisions below |
 | Motion models | original ARTalk at launch; sidebar selector built now, ARTalk 1 s added once the author clears it | one Space, one URL, A/B in place later |
-| Appearance | mesh + built-in GAGAvatar avatars; **Register avatar** hidden | tracking needs the second, conflicting env |
+| Appearance | mesh + built-in GAGAvatar avatars; **Register avatar** on CPU | the image carries the tracker's own CPU-only env and its weights except FLAME, which it reads from the app's start-time copy |
 | Conversation | Loopback by default; Interactive with a visitor-supplied key | no owner key on a public URL |
 | TURN | Cloudflare Realtime TURN with the user's own TURN key (`CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_KEY_API_TOKEN` secrets) | the FastRTC credential domains (`fastrtc.org`, `gradio-turn.com`) no longer resolve as of 2026-09-14, so the free HF partnership path is gone; Twilio is the alternative |
 | FLAME | fetched at container start from a **private** Hub repo with the `HF_TOKEN` secret, never in the image or the Space repo | keeps the file off every public surface while the compliance question is settled |
 | Public weights | baked into the image at build via the manifest downloaders | cold start after sleep is then container start + weight load, not a 4.5 GB download |
-| Persistent storage | none in phase 1 | nothing to persist without avatar registration |
+| Persistent storage | none in phase 1 | registered avatars are scoped to their visitor (`ARTALK_ISOLATE_USER_AVATARS`) and live in the container, so a restart removes them and a signed-in visitor registers again |
 
-Estimated image: ~8 GB pixi env + ~3 GB weights at launch (ARTalk 2.0, GAGAvatar 0.75, tracked 0.17, styles 0.02), rising by ~1.5 GB when the 1 s model and its wav2vec encoder are added. Well inside the 50 GB ephemeral disk; L4 has 400 GB.
+Estimated image: ~8 GB pixi env + ~3 GB weights at launch (ARTalk 2.0, GAGAvatar 0.75, tracked 0.17, styles 0.02), rising by ~1.5 GB when the 1 s model and its wav2vec encoder are added, and by ~3.2 GB for avatar registration (measured 2026-10-19 outside docker: tracker env 1.7 GB, tracker weights 1.1 GB, face detector and matting backbone 0.36 GB, its Python 0.1 GB). The CPU-only torch keeps the tracker env about 2.7 GB of compressed wheels smaller than the CUDA one. Well inside the 50 GB ephemeral disk; L4 has 400 GB.
 
 ## Decisions (settled 2026-09-14)
 
@@ -90,7 +90,6 @@ Status 2026-09-14: 1, 3, 4, 5 and 7 landed and were checked in a headless browse
 
 ### Later
 
-- Avatar registration (needs the tracker env in the image, about a minute of CPU per image, and persistent storage for `user_avatars/`).
 - PersonaPlex as a local backend (needs a second GPU-class worth of VRAM at 8-bit; see `docs/portability-plan.md`).
 - Replicas if demand ever exceeds one session at a time; each replica bills separately.
 

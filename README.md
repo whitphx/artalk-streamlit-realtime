@@ -394,8 +394,9 @@ The `spaces` profile starts in Loopback mode; Interactive mode asks each visitor
 for their own OpenAI key, kept in their browser session. A private Space can
 instead carry the owner's key as the secret `OPENAI_API_KEY` and start in
 Interactive mode with the variable `ARTALK_DEFAULT_MODE=interactive`; Space
-variables override the profile's defaults. Avatar registration is hidden
-because the tracker environment is not part of the image.
+variables override the profile's defaults.
+
+The image carries the tracker environment, so **Register avatar** is offered on the Space too. It tracks on CPU only: the image's tracker environment is built without CUDA, leaving the GPU to the live session. The tracker reads the same `FLAME_with_eye.pt` the app fetches at start. Registered avatars live in the container's `user_avatars/`, so a restart or rebuild of the Space removes them.
 
 The profile also allows one session at a time (`--max-sessions`), since each
 session is its own render loop on the GPU. A slot is freed shortly after its

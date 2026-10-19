@@ -21,7 +21,7 @@ WORKDIR /home/user/app
 # editable install of this package only records paths, so empty placeholders
 # stand in for its modules until the final COPY.
 COPY --chown=1000:1000 pixi.toml pixi.lock pyproject.toml ./
-COPY --chown=1000:1000 wheels ./wheels
+COPY --chown=1000:1000 wheels/*.whl ./wheels/
 COPY --chown=1000:1000 scripts/bootstrap.sh ./scripts/
 RUN touch streamlit_app.py && mkdir artalk_streamlit_realtime \
  && touch artalk_streamlit_realtime/__init__.py
@@ -40,6 +40,17 @@ RUN if [ "$BAKE_ASSETS" = 1 ]; then \
       HF_HOME=/home/user/app/.cache/huggingface pixi run python -c \
         "from transformers import Wav2Vec2Model; Wav2Vec2Model.from_pretrained('facebook/wav2vec2-xls-r-300m')"; \
     fi
+
+# Avatar registration runs GAGAvatar_track in an environment of its own. It
+# tracks on CPU, which leaves the GPU to the live session and needs neither a
+# CUDA toolkit to build nor CUDA wheels in the image. Its Hub downloads go to
+# the HF_HOME the launcher sets, where the tracker looks for them at run time.
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
+COPY --chown=1000:1000 envs/track-requirements.txt ./envs/
+COPY --chown=1000:1000 wheels/track-cpu ./wheels/track-cpu
+COPY --chown=1000:1000 scripts/provision_track_env.sh scripts/fetch_track_resources.sh ./scripts/
+RUN UV_NO_CACHE=1 scripts/provision_track_env.sh --cpu \
+ && HF_HOME=/home/user/app/.cache/huggingface scripts/fetch_track_resources.sh
 
 COPY --chown=1000:1000 . .
 
