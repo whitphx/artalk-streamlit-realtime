@@ -15,7 +15,6 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "commit or stash your changes first; only the committed tree is deployed" >&2
   exit 1
 fi
-git remote get-url space >/dev/null 2>&1 || git remote add space "$SPACE_URL"
 
 head=$(git rev-parse HEAD)
 parent_args=()
@@ -25,4 +24,4 @@ fi
 commit=$(git commit-tree "$head^{tree}" "${parent_args[@]}" \
   -m "Deploy $(git log -1 --format='%h %s' "$head")")
 git update-ref "refs/heads/$BRANCH" "$commit"
-git push --force space "$BRANCH:main"
+git push --force "$SPACE_URL" "$BRANCH:main"
