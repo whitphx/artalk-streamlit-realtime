@@ -293,7 +293,9 @@ def up(args: argparse.Namespace, app_args: list[str]) -> int:
     if _env_flag("ARTALK_LOGIN", False):
         from .login import write_hf_oauth_secrets
 
-        if write_hf_oauth_secrets(REPO_ROOT / ".streamlit" / "secrets.toml"):
+        # Streamlit also reads secrets from the home directory, and on the
+        # Space only the home directory is writable, not the app tree.
+        if write_hf_oauth_secrets(Path.home() / ".streamlit" / "secrets.toml"):
             print("login: configured the Space's HF OAuth client for st.login")
     app_config = parse_args(app_args)
     if app_config.feedback or app_config.session_logging:
