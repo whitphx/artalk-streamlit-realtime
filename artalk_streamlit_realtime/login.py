@@ -72,6 +72,11 @@ def hf_oauth_auth_section(env: Mapping[str, str]) -> str | None:
     # granted unless its metadata lists it; ask for what it was granted.
     scope = env.get("OAUTH_SCOPES") or "openid profile"
     lines += ["", "[auth.client_kwargs]", f"scope = {json.dumps(scope)}"]
+    # Streamlit defaults to prompt="select_account", which HF rejects
+    # (it accepts consent, login and none), sending the visitor back
+    # logged out. TOML cannot leave the key unset, and "none" fails for
+    # anyone who has not approved the app yet.
+    lines.append('prompt = "consent"')
     return "\n".join(lines) + "\n"
 
 
