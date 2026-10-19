@@ -8,6 +8,10 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 ENV_DIR="${TRACK_ENV_DIR:-$REPO_ROOT/.envs/track}"
 ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-6.0;7.5;8.0+PTX}"
+# The PyTorch index also serves common packages such as certifi, at older
+# versions, and by default uv takes each package from the first index that
+# has it at all, so most of the pins would not resolve.
+export UV_INDEX_STRATEGY=unsafe-best-match
 
 uv venv --python 3.12 "$ENV_DIR"
 uv pip install --python "$ENV_DIR/bin/python" -r envs/track-requirements.txt
@@ -22,7 +26,7 @@ else
   echo "building pytorch3d 0.7.9 from source (fat: $ARCH_LIST); this takes a while"
   FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="$ARCH_LIST" \
     uv pip install --python "$ENV_DIR/bin/python" --no-build-isolation \
-    "git+https://github.com/facebookresearch/pytorch3d.git@V0.7.9"
+    "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.9"
 fi
 
 cat <<EOF
