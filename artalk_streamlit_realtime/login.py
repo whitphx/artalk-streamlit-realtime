@@ -86,5 +86,8 @@ def write_hf_oauth_secrets(path: Path, env: Mapping[str, str] = os.environ) -> b
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     separator = "\n" if existing and not existing.endswith("\n") else ""
+    # The section carries the OAuth client secret and the cookie key.
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
     path.write_text(existing + separator + section)
     return True
