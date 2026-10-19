@@ -143,7 +143,7 @@ export function start({ channels, root, pc, data }) {
   let config = data, renderer = null, pending = null, busy = false, raf = 0, stopped = false;
   const queue = [], offsets = [];
   let offsetMs = null, jitterBufferMs = 0, playoutMs = 0, drawLeadMs = 0, prevStats = null;
-  const counts = { received: 0, bytes: 0, malformed: 0, outOfOrder: 0, drawn: 0, animationFrames: 0, skippedLate: 0, skippedOtherAvatar: 0, queueOverflow: 0 };
+  const counts = { received: 0, bytes: 0, malformed: 0, outOfOrder: 0, drawn: 0, animationFrames: 0, skippedLate: 0, skippedOtherAvatar: 0, skippedHidden: 0, queueOverflow: 0 };
   const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [] };
   const startedPerf = performance.now(), startedWall = Date.now();
   let lastIndex = -1, audioProbe = null, audioProbeError = null;
@@ -208,6 +208,8 @@ export function start({ channels, root, pc, data }) {
     push(series.arrival, [arrival, h.index, h.sentWallMs, Date.now()]);
     push(series.audioServer, [h.audioFrameMs + 10, h.rms]);
     push(series.mouthMedia, [h.mediaMs, h.jaw]);
+    // Chrome pauses animation frames in a hidden tab, so a queued frame could only come back late.
+    if (document.hidden) { counts.skippedHidden++; return; }
     let i = queue.length;
     while (i > 0 && queue[i - 1].mediaMs > h.mediaMs) i--;
     queue.splice(i, 0, h);
@@ -323,6 +325,13 @@ export function start({ channels, root, pc, data }) {
   });
   window.artalkClientRender = { results };
 
+  const onVisibility = () => {
+    if (!document.hidden) return;
+    counts.skippedHidden += queue.length;
+    queue.length = 0;
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
   load(config);
   raf = requestAnimationFrame(tick);
 
@@ -336,6 +345,7 @@ export function start({ channels, root, pc, data }) {
       stopped = true;
       cancelAnimationFrame(raf);
       clearInterval(statsTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
       Promise.resolve(audioProbe).then((ctx) => ctx?.close());
       if (renderer?.destroy) renderer.destroy();
     },
