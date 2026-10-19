@@ -6,6 +6,7 @@ colorTo: gray
 sdk: docker
 app_port: 7860
 pinned: false
+hf_oauth: true
 models:
   - xg-chu/ARTalk
   - xg-chu/GAGAvatar
@@ -409,12 +410,11 @@ Three options, all off by default, make the app easier to share. Each is a flag 
 
 **Avatar isolation** (`--isolate-user-avatars`). A registered avatar is listed and usable only in the browser session that registered it, or, with login on, by the user who registered it. A reload starts a new session, so a session's avatars are deleted on the first page run, by any visitor, after Streamlit can no longer resume that session. On an idle server they stay on disk until then, and the avatars of sessions from before a restart stay on disk for good. Avatars stored directly in `--user-avatar-dir` (registered before isolation was turned on) stay hidden while it is on.
 
-**Login** (`--login`). Visitors log in through Streamlit's OpenID Connect support (`st.login`) before anything loads. Turning it on for the Space needs:
+**Login** (`--login`). Visitors log in through Streamlit's OpenID Connect support (`st.login`) before anything loads. On a Space:
 
-- Authlib in the environment (Streamlit's `auth` extra), which `pixi.toml` does not carry yet.
-- `hf_oauth: true` in the front matter of this README, which creates an OAuth app for the Space and hands its client to the container.
-- The variable `ARTALK_LOGIN=1`. At start, `artalk-demo up` writes the `[auth]` section Streamlit reads from that client. The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
-- Opening the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
+- `hf_oauth: true` in the front matter of this README creates an OAuth app for the Space and hands its client to the container. At start, `artalk-demo up` writes the `[auth]` section Streamlit reads from that client.
+- The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
+- Open the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
 
 On a lab server, put an `[auth]` section for any OIDC provider in `.streamlit/secrets.toml` ([Streamlit's guide](https://docs.streamlit.io/develop/concepts/connections/authentication)), or leave login off.
 
