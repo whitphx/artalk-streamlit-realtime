@@ -8,8 +8,10 @@ FROM ghcr.io/prefix-dev/pixi:0.78.0
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Spaces run the container as uid 1000, which the base image already has
-# (Ubuntu's default user), so only a home directory is added.
-RUN mkdir -p /home/user && chown 1000:1000 /home/user
+# (Ubuntu's default user), so only its directories are added. Ownership is
+# given by number throughout: that user is named ubuntu, and the image has no
+# user named after the home directory.
+RUN mkdir -p /home/user/app && chown -R 1000:1000 /home/user
 USER 1000
 ENV HOME=/home/user
 WORKDIR /home/user/app
@@ -18,9 +20,9 @@ WORKDIR /home/user/app
 # alone, so they sit in layers that application edits do not invalidate. The
 # editable install of this package only records paths, so empty placeholders
 # stand in for its modules until the final COPY.
-COPY --chown=user pixi.toml pixi.lock pyproject.toml ./
-COPY --chown=user wheels ./wheels
-COPY --chown=user scripts/bootstrap.sh ./scripts/
+COPY --chown=1000:1000 pixi.toml pixi.lock pyproject.toml ./
+COPY --chown=1000:1000 wheels ./wheels
+COPY --chown=1000:1000 scripts/bootstrap.sh ./scripts/
 RUN touch streamlit_app.py && mkdir artalk_streamlit_realtime \
  && touch artalk_streamlit_realtime/__init__.py
 # The gagavatar package's submodule is declared with an ssh URL, which the
@@ -39,7 +41,7 @@ RUN if [ "$BAKE_ASSETS" = 1 ]; then \
         "from transformers import Wav2Vec2Model; Wav2Vec2Model.from_pretrained('facebook/wav2vec2-xls-r-300m')"; \
     fi
 
-COPY --chown=user . .
+COPY --chown=1000:1000 . .
 
 EXPOSE 7860 8501
 CMD ["scripts/spaces_start.sh"]
