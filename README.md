@@ -448,6 +448,10 @@ licenses. What it runs on carries its own terms:
   build of [graphdeco-inria/diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)):
   the Inria/MPII Gaussian-Splatting license, which permits research and
   evaluation use only. The license text ships inside the wheel's `dist-info`.
+- PyTorch3D (`wheels/track-cpu/pytorch3d-*.whl`, a CPU build of
+  [facebookresearch/pytorch3d v0.7.9](https://github.com/facebookresearch/pytorch3d/tree/v0.7.9)
+  for avatar registration in the Space image): BSD 3-Clause. The license text
+  ships inside the wheel's `dist-info`.
 - FLAME (`FLAME_with_eye.pt`): the [FLAME model license](https://flame.is.tue.mpg.de/modellicense.html),
   non-commercial scientific research only, no redistribution. This is why the
   file is never downloaded automatically and never enters the Docker image.
