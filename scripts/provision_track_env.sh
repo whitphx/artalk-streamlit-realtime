@@ -35,6 +35,13 @@ if [[ "$CPU" == 1 ]]; then
       envs/track-requirements.txt >"$ENV_DIR/requirements-cpu.txt"
   uv pip install --python "$ENV_DIR/bin/python" -r "$ENV_DIR/requirements-cpu.txt"
   uv pip install --python "$ENV_DIR/bin/python" wheels/track-cpu/pytorch3d-*.whl
+  # face_alignment depends on opencv-python, whose cv2 links X11 and OpenGL
+  # libraries that the image does not have. The headless build of the same
+  # version provides the same cv2 without them, so it replaces the package
+  # after the fact; asking for it up front would install both.
+  OPENCV_VERSION=$(sed -n 's/^opencv-python==//p' envs/track-requirements.txt)
+  uv pip uninstall --python "$ENV_DIR/bin/python" opencv-python
+  uv pip install --python "$ENV_DIR/bin/python" "opencv-python-headless==$OPENCV_VERSION"
 else
   uv pip install --python "$ENV_DIR/bin/python" -r envs/track-requirements.txt
 
