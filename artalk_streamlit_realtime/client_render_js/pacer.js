@@ -30,9 +30,6 @@ export function createPacer(counts, { slots = RING_SLOTS, periodMs = 40, maxQueu
   const releaseSlot = (slot) => { if (slot !== shownSlot) free.push(slot); };
 
   return {
-    get queued() { return queue.length; },
-    get ready() { return ring.length; },
-
     add(h) {
       if (h.mediaMs <= lastShownMedia) { counts.skippedLate++; return; }
       insertByMedia(queue, h, (x) => x.mediaMs);
