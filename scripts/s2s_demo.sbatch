@@ -186,7 +186,11 @@ for _ in $(seq 1 180); do
   kill -0 "$APP_PID" 2>/dev/null || break
   sleep 1
 done
-if [ -z "$URL" ]; then
+# The tunnel prints its URL before it registers it, and an ngrok static domain
+# that another session already serves is refused only then, which takes the
+# app down with it.
+sleep 5
+if [ -z "$URL" ] || ! kill -0 "$APP_PID" 2>/dev/null; then
   echo "the app or its tunnel did not come up:" >&2
   tail -40 "$LOG_DIR/app.log" >&2
   exit 1
