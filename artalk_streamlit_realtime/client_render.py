@@ -56,9 +56,17 @@ from artalk.realtime_pipeline import (
 )
 
 CHANNEL_LABEL = "motion"
-# A frame that cannot leave within about two frame periods is stale by the
-# time it would arrive, so the next one replaces it.
-MAX_BUFFERED_BYTES = 64 * 1024
+# A frame spans about 25 packets, so with no retransmissions one lost packet
+# loses the whole frame. A retransmission is worth it while the frame can
+# still arrive before the browser shows it, and frames arrive a few hundred
+# ms early; a limit on retransmission count would not bound that time.
+# aiortc's lifetime starts when the frame enters SCTP, and its retransmission
+# timer waits at least 1 s, so only fast retransmissions ever happen and an
+# expired frame is abandoned rather than resent.
+CHANNEL_OPTIONS = {"ordered": False, "maxPacketLifeTime": 120}
+# Room for about five frames: after a short stall the backlog still arrives
+# before it is due, while a frame behind more than that would not.
+MAX_BUFFERED_BYTES = 160 * 1024
 # 2^-17 units per step covers +-0.25 units, several times the largest offset
 # seen in recorded conversations, at about 1/400 px of a 512 px frame.
 QUANT_STEP = 2.0**-17

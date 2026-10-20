@@ -42,6 +42,7 @@ from artalk_streamlit_realtime.avatar_registry import (
 )
 from artalk_streamlit_realtime.client_render import (
     CHANNEL_LABEL,
+    CHANNEL_OPTIONS,
     FRONTEND_SCRIPT,
     NETWORKS,
     ORT_CDN_URL,
@@ -1353,7 +1354,7 @@ def main() -> None:
     client_render_kwargs = {}
     if client_assets is not None:
         client_render_kwargs = {
-            "data_channels": {CHANNEL_LABEL: {"ordered": False, "maxRetransmits": 0}},
+            "data_channels": {CHANNEL_LABEL: CHANNEL_OPTIONS},
             "frontend_script": FRONTEND_SCRIPT,
             "frontend_data": {
                 "dirs": client_dirs,
