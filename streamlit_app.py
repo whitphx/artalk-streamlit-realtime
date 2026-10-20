@@ -136,6 +136,7 @@ EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 SESSION_ENDED_KEY = "artalk_session_ended"
 QUEUED_KEY = "artalk_queued"
 SESSION_RECORDER_KEY = "artalk_session_recorder"
+SESSION_END_WARNING_SECONDS = 10
 PAGE_TITLE = "ARTalk Realtime"
 
 # Browsers start an AudioContext suspended and show the notification prompt
@@ -1292,7 +1293,10 @@ def main() -> None:
         start_by = slots.start_by(session_id)
         if deadline is not None:
             remaining = max(deadline - now, 0.0)
-            st.caption(f"Time left in this session: {remaining:.0f} s")
+            if remaining <= SESSION_END_WARNING_SECONDS:
+                st.warning(f"This session ends in {remaining:.0f} s.")
+            else:
+                st.caption(f"Time left in this session: {remaining:.0f} s")
             return
         if st.session_state.get(QUEUED_KEY):
             message = "It is your turn. Press **START** under the video to begin."
