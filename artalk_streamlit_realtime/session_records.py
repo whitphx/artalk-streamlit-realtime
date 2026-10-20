@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -24,6 +25,10 @@ SCHEMA_VERSION = 1
 COMMENT_MAX_CHARS = 500
 # st.feedback("faces") returns the index of the face, 0 (worst) to 4 (best).
 RATING_SCALE = 5
+
+# The scheduled uploads guide cited on HubRecordStore recommends
+# committing no more often than every 5 minutes.
+HUB_COMMIT_EVERY_MIN = 5
 
 SubjectKind = Literal["user", "anonymous"]
 EndReason = Literal["stopped", "disconnected", "server"]
@@ -114,8 +119,79 @@ class JsonlRecordStore:
                 os.close(fd)
 
 
-def open_record_store(location: str) -> RecordStore:
-    return JsonlRecordStore(location)
+class HubRecordStore(JsonlRecordStore):
+    """Appends to JSON Lines files in a local folder that a
+    ``huggingface_hub.CommitScheduler`` commits to a dataset repo.
+
+    Follows the guide's scheduled uploads recipe:
+    https://huggingface.co/docs/huggingface_hub/v0.36.2/en/guides/upload#scheduled-uploads
+    """
+
+    def __init__(self, directory: str | os.PathLike, repo_id: str, token: str | None) -> None:
+        super().__init__(directory)
+        self.repo_id = repo_id
+        self._token = token
+        # A restart on a fresh disk starts its files from empty; a name of
+        # its own keeps the next commit from replacing the previous
+        # process's file in the repo, and keeps replicas apart.
+        self._process = uuid.uuid4().hex[:12]
+        self._scheduler = None
+        threading.Thread(
+            target=self._start_scheduler, name="session-records-hub", daemon=True
+        ).start()
+
+    def path_for(self, now: datetime) -> Path:
+        return self.directory / f"records-{now:%Y-%m-%d}-{self._process}.jsonl"
+
+    def append(self, record: dict) -> None:
+        scheduler = self._scheduler
+        # The scheduler caps each file at the size it saw while scanning, so
+        # without its lock a commit could end on half a line.
+        with scheduler.lock if scheduler else contextlib.nullcontext():
+            super().append(record)
+
+    def _start_scheduler(self) -> None:
+        from huggingface_hub import CommitScheduler
+
+        # The constructor reaches the Hub to ensure the repo exists; until it
+        # succeeds, records collect in the folder and the first commit
+        # uploads them.
+        while True:
+            try:
+                self._scheduler = CommitScheduler(
+                    repo_id=self.repo_id,
+                    repo_type="dataset",
+                    folder_path=self.directory,
+                    every=HUB_COMMIT_EVERY_MIN,
+                    private=True,
+                    token=self._token,
+                    # Local-store files in the same folder, named per day
+                    # only, would replace other servers' files of that name.
+                    allow_patterns="records-????-??-??-*.jsonl",
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "[session-records] cannot reach dataset repo %s; retrying in "
+                    "%d minutes",
+                    self.repo_id,
+                    HUB_COMMIT_EVERY_MIN,
+                    exc_info=True,
+                )
+                time.sleep(HUB_COMMIT_EVERY_MIN * 60)
+
+
+@functools.cache
+def _hub_record_store(directory: str, repo_id: str) -> HubRecordStore:
+    token = os.environ.get("ARTALK_SESSION_DATA_TOKEN") or None
+    return HubRecordStore(directory, repo_id, token)
+
+
+def open_record_store(directory: str, repo_id: str | None = None) -> RecordStore:
+    if repo_id:
+        # One scheduler per process: each browser session opens a store.
+        return _hub_record_store(directory, repo_id)
+    return JsonlRecordStore(directory)
 
 
 @dataclass(frozen=True)

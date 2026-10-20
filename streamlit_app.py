@@ -291,7 +291,7 @@ def get_session_recorder(args, login_id: str | None) -> SessionRecorder | None:
         if notice is None:
             return None
         recorder = SessionRecorder(
-            open_record_store(args.session_data_dir),
+            open_record_store(args.session_data_dir, args.session_data_repo),
             notice,
             login_id=login_id,
             log_sessions=args.session_logging,

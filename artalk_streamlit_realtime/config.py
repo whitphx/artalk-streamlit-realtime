@@ -560,6 +560,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--session-data-repo",
+        default=os.environ.get("ARTALK_SESSION_DATA_REPO"),
+        type=str,
+        help=(
+            "Private Hugging Face dataset repo that --feedback and "
+            "--session-logging records are committed to every few minutes, "
+            "from per-process files in --session-data-dir. The write token "
+            "comes from ARTALK_SESSION_DATA_TOKEN, otherwise HF_TOKEN."
+        ),
+    )
+    parser.add_argument(
         "--default-mode",
         default=os.environ.get("ARTALK_DEFAULT_MODE", "interactive"),
         choices=["loopback", "interactive"],
