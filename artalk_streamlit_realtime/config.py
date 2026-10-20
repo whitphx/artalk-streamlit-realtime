@@ -521,6 +521,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--start-grace",
+        default=float(os.environ.get("ARTALK_START_GRACE", "30")),
+        type=float,
+        help=(
+            "With --max-sessions, seconds a session holding a slot may go "
+            "without pressing START once someone is queued for it, before "
+            "the slot passes to the queue. Browsers only open the "
+            "microphone on a click, so an admitted visitor must press START "
+            "themselves."
+        ),
+    )
+    parser.add_argument(
         "--feedback",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_FEEDBACK", False),

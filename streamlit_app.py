@@ -73,6 +73,7 @@ from artalk_streamlit_realtime.diagnostics import (
 from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEventLog
 from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
 from artalk_streamlit_realtime.sessions import (
+    ENDED_NOT_STARTED,
     current_session_id,
     live_session_ids,
     slots,
@@ -132,8 +133,90 @@ BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 EVENT_LOG_KEY = "artalk_event_log"
 EVENT_WATCHER_KEY = "artalk_event_watcher"
 EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
-SESSION_EXPIRED_KEY = "artalk_session_expired"
+SESSION_ENDED_KEY = "artalk_session_ended"
+QUEUED_KEY = "artalk_queued"
 SESSION_RECORDER_KEY = "artalk_session_recorder"
+PAGE_TITLE = "ARTalk Realtime"
+
+# Browsers start an AudioContext suspended and show the notification prompt
+# only in response to a click, so the visitor opts in here while waiting; the
+# admission alert then reuses the context the click unlocked.
+TURN_ALERT_OPT_IN = """
+<div>
+  <button id="artalk-turn-alert" type="button"
+    style="padding: 0.4rem 0.8rem; border-radius: 0.5rem; border: 1px solid #ccc;
+           background: transparent; color: inherit; cursor: pointer; font: inherit;">
+    Alert me with a sound when it is my turn
+  </button>
+  <span id="artalk-turn-alert-status" aria-live="polite" style="margin-left: 0.5rem;"></span>
+</div>
+<script>
+(() => {
+  const button = document.getElementById("artalk-turn-alert");
+  const status = document.getElementById("artalk-turn-alert-status");
+  if (!button || button.dataset.bound) return;
+  button.dataset.bound = "1";
+  button.addEventListener("click", async () => {
+    window.artalkTurnAudio = window.artalkTurnAudio || new AudioContext();
+    await window.artalkTurnAudio.resume();
+    if ("Notification" in window && Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+    const notify = "Notification" in window && Notification.permission === "granted";
+    status.textContent = notify
+      ? "You will hear a sound and get a notification."
+      : "You will hear a sound.";
+  });
+})();
+</script>
+"""
+
+TURN_ALERT_SCRIPT = f"""
+<script>
+(() => {{
+  document.title = "Your turn: press START · {PAGE_TITLE}";
+  if (window.artalkTurnAlerted) return;
+  window.artalkTurnAlerted = true;
+  // Without the opt-in click, a context still starts if the visitor has
+  // clicked anywhere on the page before; otherwise it stays suspended and
+  // the alert is silent.
+  const audio = window.artalkTurnAudio || (window.artalkTurnAudio = new AudioContext());
+  audio.resume().then(() => {{
+    for (const [offset, freq] of [[0, 660], [0.18, 880]]) {{
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      const t = audio.currentTime + offset;
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(t);
+      osc.stop(t + 0.16);
+    }}
+  }});
+  if ("Notification" in window && Notification.permission === "granted") {{
+    new Notification("{PAGE_TITLE}", {{ body: "It is your turn. Press START to begin." }});
+  }}
+}})();
+</script>
+"""
+
+
+def queue_title_script(position: int) -> str:
+    # The tick changes the HTML every second: Streamlit reruns a script only
+    # when its element changes, and a full rerun resets the title to the
+    # page config's.
+    return (
+        f"<script>window.artalkQueueTick = {time.time():.0f};"
+        "window.artalkTurnAlerted = false;"
+        f'document.title = "#{position} in queue · {PAGE_TITLE}";</script>'
+    )
+
+
+def format_wait(seconds: float) -> str:
+    minutes, seconds = divmod(round(seconds), 60)
+    return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -333,6 +416,7 @@ def main() -> None:
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
+    slots.start_grace = args.start_grace
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
     asset_dir = artalk_assets.root
@@ -341,11 +425,11 @@ def main() -> None:
     flame_model_path = gagavatar_assets.flame_model_path
 
     st.set_page_config(
-        page_title="ARTalk Realtime",
+        page_title=PAGE_TITLE,
         page_icon=":speech_balloon:",
         layout="wide",
     )
-    st.title("ARTalk Realtime")
+    st.title(PAGE_TITLE)
     login_id = require_login() if args.login else None
     recorder = None
     if args.feedback or args.session_logging:
@@ -899,41 +983,84 @@ def main() -> None:
 
     session_id = current_session_id()
 
-    def render_expired_notice(key: str) -> None:
-        st.info(
-            f"This session reached its {args.session_time_limit:g}-second "
-            "limit and was stopped, which frees the GPU for other visitors."
-        )
-        if st.button("Start a new session", key=key):
-            st.session_state.pop(SESSION_EXPIRED_KEY, None)
+    def render_ended_notice(key: str) -> None:
+        if st.session_state[SESSION_ENDED_KEY] == ENDED_NOT_STARTED:
+            st.info(
+                f"START was not pressed within {args.start_grace:g} s while "
+                "another visitor was waiting, so the GPU went to them."
+            )
+            label = "Join the queue again"
+        else:
+            st.info(
+                f"This session reached its {args.session_time_limit:g}-second "
+                "limit and was stopped, which frees the GPU for other visitors."
+            )
+            label = "Start a new session"
+        if st.button(label, key=key):
+            st.session_state.pop(SESSION_ENDED_KEY, None)
             st.rerun(scope="app")
 
-    if args.session_time_limit and slots.pop_expired(session_id):
-        st.session_state[SESSION_EXPIRED_KEY] = True
-    if st.session_state.get(SESSION_EXPIRED_KEY):
+    ended = slots.pop_ended(session_id)
+    if ended is not None:
+        st.session_state[SESSION_ENDED_KEY] = ended
+    if SESSION_ENDED_KEY in st.session_state:
         # The reaper already stopped what the slot held; this drops the
         # session's own references, and leaving the WebRTC component
         # unrendered closes the browser's connection.
         stop_bridge()
         stop_pipeline()
-        render_expired_notice("restart_after_limit")
+        st.session_state.pop(QUEUED_KEY, None)
+        render_ended_notice("restart_after_end")
         if recorder is not None:
             render_feedback_form(recorder)
         st.stop()
 
     if not slots.acquire(session_id):
         # Reached here after a takeover too, so drop whatever this session was
-        # still running before offering to take the GPU back.
+        # still running.
         stop_pipeline()
-        st.warning("Another visitor is using the GPU right now. Try again in a moment.")
-        st.button("Retry")
-        if st.button("Take the GPU over"):
-            slots.take_over(session_id)
-            st.rerun()
+        st.session_state[QUEUED_KEY] = True
+
+        @st.fragment(run_every="1s")
+        def render_queue_status() -> None:
+            ended = slots.pop_ended(session_id)
+            if ended is not None:
+                st.session_state[SESSION_ENDED_KEY] = ended
+                st.rerun(scope="app")
+            if slots.acquire(session_id):
+                st.rerun(scope="app")
+            position = slots.queue_position(session_id)
+            if position is None:
+                # Admitted since the acquire above.
+                st.rerun(scope="app")
+            st.warning(
+                "Every GPU session is in use. "
+                f"You are number {position} in the queue."
+            )
+            wait = slots.estimated_wait(session_id, args.session_time_limit)
+            if wait is None:
+                st.caption("Estimated wait: unknown, since sessions have no time limit.")
+            else:
+                st.caption(f"Estimated wait: about {format_wait(wait)}.")
+            st.html(queue_title_script(position), unsafe_allow_javascript=True)
+
+        render_queue_status()
         st.caption(
-            "Taking over ends the other session, for when it is stuck rather "
-            "than in use."
+            "Keep this tab open: the app appears here by itself when it is "
+            f"your turn, and you then have {args.start_grace:g} s to press "
+            "START. Leaving or reloading the page gives up your place."
         )
+        # Outside the fragment, which would replace the button every second
+        # and lose clicks.
+        st.html(TURN_ALERT_OPT_IN, unsafe_allow_javascript=True)
+        if not args.session_time_limit:
+            if st.button("Take the GPU over"):
+                slots.take_over(session_id)
+                st.rerun()
+            st.caption(
+                "Taking over ends the session in use, for when it is stuck "
+                "rather than in use. Without a time limit nothing else frees it."
+            )
         st.stop()
 
     try:
@@ -1149,36 +1276,61 @@ def main() -> None:
     avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
 
     @st.fragment(run_every="1s")
-    def render_time_limit_fragment() -> None:
-        if slots.pop_expired(session_id):
-            st.session_state[SESSION_EXPIRED_KEY] = True
-        if st.session_state.get(SESSION_EXPIRED_KEY):
+    def render_session_status_fragment() -> None:
+        ended = slots.pop_ended(session_id)
+        if ended is not None:
+            st.session_state[SESSION_ENDED_KEY] = ended
+        if SESSION_ENDED_KEY in st.session_state:
             # Not a full rerun to the notice above: a run_every fragment that
             # reruns the app into a different layout races the page's other
             # fragments, and the browser can fail to render the result
             # ("'setIn' cannot be called on an ElementNode").
-            render_expired_notice("restart_after_limit_inline")
+            render_ended_notice("restart_after_end_inline")
             return
+        now = time.monotonic()
         deadline = slots.deadline(session_id)
-        if deadline is None:
+        start_by = slots.start_by(session_id)
+        if deadline is not None:
+            remaining = max(deadline - now, 0.0)
+            st.caption(f"Time left in this session: {remaining:.0f} s")
+            return
+        if st.session_state.get(QUEUED_KEY):
+            message = "It is your turn. Press **START** under the video to begin."
+        else:
+            message = "Another visitor is waiting for the GPU."
+        if start_by is not None:
+            st.success(
+                f"{message} The GPU goes to the next visitor in "
+                f"{max(start_by - now, 0.0):.0f} s unless you press START."
+            )
+        elif st.session_state.get(QUEUED_KEY):
+            st.success(message)
+        if st.session_state.get(QUEUED_KEY):
+            st.html(TURN_ALERT_SCRIPT, unsafe_allow_javascript=True)
+        if args.session_time_limit:
             st.caption(
                 f"Sessions are limited to {args.session_time_limit:g} s from START."
             )
-        else:
-            remaining = max(deadline - time.monotonic(), 0.0)
-            st.caption(f"Time left in this session: {remaining:.0f} s")
 
     with avatar_col:
         st.subheader("Avatar")
+        # Whatever the status shows goes inside this container: an element
+        # that appears or vanishes ahead of the WebRTC component between runs
+        # makes the browser remount it, which drops the media connection.
+        status_box = st.container()
         render_webrtc_component()
-        if args.session_time_limit:
-            ctx = st.session_state.get(streamer_key)
-            # Checked on every run rather than when START changes the state:
-            # a new session started from the notice inherits a connection
-            # that is still playing, so no state change starts its clock.
-            if ctx is not None and ctx.state.playing:
-                slots.start_clock(session_id, args.session_time_limit)
-            render_time_limit_fragment()
+        ctx = st.session_state.get(streamer_key)
+        if ctx is not None and (ctx.state.playing or ctx.state.signalling):
+            slots.mark_started(session_id)
+            st.session_state.pop(QUEUED_KEY, None)
+        # Checked on every run rather than when START changes the state:
+        # a new session started from the notice inherits a connection
+        # that is still playing, so no state change starts its clock.
+        if args.session_time_limit and ctx is not None and ctx.state.playing:
+            slots.start_clock(session_id, args.session_time_limit)
+        if args.session_time_limit or args.max_sessions:
+            with status_box:
+                render_session_status_fragment()
         if recorder is not None:
             recorder.pipeline = pipeline
             # The slot stops the recorder whenever the server stops the
