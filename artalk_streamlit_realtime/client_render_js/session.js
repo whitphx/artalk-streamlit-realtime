@@ -69,6 +69,36 @@ function bestLag(mouth, sound) {
   return best;
 }
 
+// Per window of shown frames: how far the face trails the audio the page plays. The audio's own
+// timing comes from matching the RMS the server stamps on each frame (media clock) against the RMS
+// heard on the page, so unlike bestLag it does not depend on how well the jaw follows the voice.
+function faceVsAudio(drawn, audioServer, audioShown, windowMs = 8000) {
+  if (audioServer.length < 50 || audioShown.length < 50) return [];
+  const server = sampler([...audioServer].sort((a, b) => a[0] - b[0]), false);
+  const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[s.length >> 1]; };
+  const out = [];
+  for (let t0 = drawn[0]?.[4]; drawn.length && t0 + windowMs <= drawn.at(-1)[4]; t0 += windowMs) {
+    const shownMinusMedia = median(drawn.filter((d) => d[4] >= t0 && d[4] < t0 + windowMs).map((d) => d[4] - d[8]));
+    const heard = audioShown.filter((a) => a[0] >= t0 && a[0] < t0 + windowMs);
+    let best = null;
+    for (let lag = shownMinusMedia - 400; lag <= shownMinusMedia + 400; lag += 2) {
+      let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+      for (const [t, a] of heard) {
+        const b = server(t - lag);
+        if (!Number.isFinite(b)) continue;
+        n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+      }
+      if (n < 200) continue;
+      const va = saa / n - (sa / n) ** 2, vb = sbb / n - (sb / n) ** 2;
+      if (va <= 0 || vb <= 0) continue;
+      const r = (sab / n - (sa / n) * (sb / n)) / Math.sqrt(va * vb);
+      if (!best || r > best.r) best = { lag, r };
+    }
+    if (best) out.push({ atS: Math.round(t0 / 100) / 10, faceMinusAudioMs: Math.round(shownMinusMedia - best.lag), r: Math.round(best.r * 1000) / 1000 });
+  }
+  return out;
+}
+
 // RMS of the audio the page plays, per 10 ms, stamped with the audio context's frame position.
 const ENVELOPE_WORKLET = `
 class Envelope extends AudioWorkletProcessor {
@@ -266,7 +296,7 @@ export function start({ channels, root, pc, data }) {
     frames[job.slot] = null;
     counts.drawn++;
     const h = job.h, due = dueAt(h);
-    push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end]);
+    push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end, h.mediaMs]);
     push(series.mouthShown, [shown, h.jaw]);
     series.perFrame.push([h.index, h.mediaMs, h.arrival, job.start, job.end, due, shown].map((x) => Math.round(x * 10) / 10));
     if (series.perFrame.length > PER_FRAME_CAP) series.perFrame.shift();
@@ -346,7 +376,7 @@ export function start({ channels, root, pc, data }) {
       shownIntervalsOver60ms: shownGaps.filter((g) => g > 60).length,
       // Positive: the face trails the sound. "shown" is measured on the page (drawn frames against the audio
       // it plays); "intended" is the same estimate on the server's own timeline.
-      sync: { intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError },
+      sync: { intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError, faceVsAudio: faceVsAudio(drawn, series.audioServer, series.audioShown) },
       perFrame: { fields: ['index', 'mediaMs', 'arrival', 'renderStart', 'renderEnd', 'due', 'shown'], rows: series.perFrame },
       log: logLines.slice(-50),
     };
