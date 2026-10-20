@@ -1,6 +1,6 @@
 // Draws one motion message: the avatar's Gaussians splatted at the streamed
 // head vertices into 16 feature channels, then the network on WebGPU through
-// ONNX Runtime Web, then a blit to the canvas.
+// ONNX Runtime Web, then a blit to one of the renderer's canvases.
 //
 // ORT creates its WebGPU device with the first session and keeps it while
 // any session lives. Sessions are cached here and never released, so the
@@ -211,8 +211,8 @@ function bundleFor(avatar, dataBase) {
   return bundles.get(avatar);
 }
 
-// One network and one avatar drawing into one canvas.
-export async function createRenderer({ canvas, network, avatar, dataBase, log }) {
+// One network and one avatar drawing into a set of canvases, one frame each.
+export async function createRenderer({ canvases, network, avatar, dataBase, log }) {
   const sess = await sessionFor(network, dataBase, log);
   const bundle = await bundleFor(avatar, dataBase);
   const fp16 = env.precision === 'fp16';
@@ -220,15 +220,18 @@ export async function createRenderer({ canvas, network, avatar, dataBase, log })
     size: sess.size, channels: CHANNELS, tileTest: 'ellipse', outputF16: fp16,
     pairCapacity: PAIR_CAPACITY[sess.size], timestamps: false, imageBuffer: sess.inBuf,
   });
-  const ctx = canvas.getContext('webgpu');
-  ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+  const contexts = canvases.map((canvas) => {
+    const ctx = canvas.getContext('webgpu');
+    ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+    return ctx;
+  });
   const bg = device.createBindGroup({ layout: presentPipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: sess.outBuf } }] });
   const headRef = bundle.arrays.head_ref.data, n = headRef.length;
   const pos = new Float32Array(n), view = new Float32Array(16);
   return {
     network, avatar, precision: env.precision, graphCapture: sess.capture, networkCheck: sess.check,
-    // Resolves when the frame is queued for display.
-    async draw(message, quantStep) {
+    // Resolves when the frame's work is submitted.
+    async render(message, quantStep, slot) {
       const cam = new Float32Array(message, CAMERA_OFFSET, 12);
       const q = new Int16Array(message, OFFSETS_OFFSET, n);
       for (let i = 0; i < n; i++) pos[i] = headRef[i] + q[i] * quantStep;
@@ -236,7 +239,7 @@ export async function createRenderer({ canvas, network, avatar, dataBase, log })
       device.queue.submit([sp.encode(false)]);
       await sess.run();
       const enc = device.createCommandEncoder();
-      const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+      const pass = enc.beginRenderPass({ colorAttachments: [{ view: contexts[slot].getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
       pass.setPipeline(presentPipeline); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
       device.queue.submit([enc.finish()]);
     },

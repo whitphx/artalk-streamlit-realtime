@@ -1,14 +1,15 @@
 // One WebRTC session of the client-side renderer: receives motion messages
-// (layout in client_render.py), holds each until the audio it belongs to
-// plays, draws it, and measures what happened.
+// (layout in client_render.py), renders each as it arrives, shows it when
+// the audio it belongs to plays, and measures what happened.
 
 import { init, createRenderer, environment } from './renderer.js';
+import { createPacer, slewToward, RING_SLOTS } from './pacer.js';
 
 const PAGE = 'artalk-client-render/1';
 const HEADER_BYTES = 48;
-const MAX_QUEUE = 250;
 const OFFSET_WINDOW_MS = 2000;
 const SAMPLE_CAP = 30000;
+const PER_FRAME_CAP = 1500;
 
 function parseHeader(buf) {
   const v = new DataView(buf);
@@ -113,14 +114,23 @@ export function start({ channels, root, pc, data }) {
   root.replaceChildren();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'font: 12px/1.4 ui-monospace, monospace; color: inherit; padding-top: 6px';
-  // A canvas keeps the first kind of context it gets, so each renderer brings its own.
-  const newCanvas = () => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 512;
-    c.style.cssText = 'display: block; width: 100%; max-width: 512px; aspect-ratio: 1; background: #000';
-    return c;
+  // One canvas per ring slot, stacked; showing a frame only changes which
+  // one is opaque. Copying the slot to a single canvas instead would queue
+  // the copy behind the render the GPU is busy with. A canvas keeps the
+  // first kind of context it gets, so each renderer brings its own set.
+  const newRing = () => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position: relative; width: 100%; max-width: 512px; aspect-ratio: 1; background: #000';
+    const canvases = Array.from({ length: RING_SLOTS }, () => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 512;
+      c.style.cssText = 'position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0';
+      el.append(c);
+      return c;
+    });
+    return { el, canvases };
   };
-  let canvas = newCanvas();
+  let stage = newRing().el, shownCanvas = null;
   const status = document.createElement('div');
   const readout = document.createElement('div');
   const controls = document.createElement('div');
@@ -137,14 +147,19 @@ export function start({ channels, root, pc, data }) {
   json.readOnly = true;
   json.style.cssText = 'width: 100%; height: 6em; display: none';
   controls.append(delayLabel, copyButton);
-  wrap.append(canvas, status, readout, controls, json);
+  wrap.append(stage, status, readout, controls, json);
   root.append(wrap);
 
-  let config = data, renderer = null, pending = null, busy = false, raf = 0, stopped = false;
-  const queue = [], offsets = [];
-  let offsetMs = null, jitterBufferMs = 0, playoutMs = 0, drawLeadMs = 0, prevStats = null;
-  const counts = { received: 0, bytes: 0, malformed: 0, outOfOrder: 0, drawn: 0, animationFrames: 0, skippedLate: 0, skippedOtherAvatar: 0, skippedHidden: 0, queueOverflow: 0 };
-  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [] };
+  let config = data, renderer = null, pending = null, rendering = null, raf = 0, stopped = false;
+  const offsets = [];
+  let offsetMs = null, jitterBufferMs = 0, playoutMs = 0, renderMsAvg = 0, prevStats = null;
+  let holdMsNow = null, holdAt = 0, holdSettled = false;
+  const counts = {
+    received: 0, bytes: 0, malformed: 0, outOfOrder: 0, drawn: 0, animationFrames: 0, skippedLate: 0, skippedOtherAvatar: 0, skippedHidden: 0, queueOverflow: 0,
+    rendered: 0, renderedAhead: 0, presented: 0, skippedOverdue: 0, droppedRingFull: 0, requeuedRingFull: 0,
+  };
+  const pacer = createPacer(counts);
+  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [] };
   const startedPerf = performance.now(), startedWall = Date.now();
   let lastIndex = -1, audioProbe = null, audioProbeError = null;
 
@@ -152,23 +167,26 @@ export function start({ channels, root, pc, data }) {
     const t0 = performance.now();
     status.textContent = `Loading ${cfg.network} for ${cfg.avatar}...`;
     try {
-      const target = newCanvas();
+      const ring = newRing();
       let next;
       if (cfg.network === 'none') {
-        next = { network: 'none', avatar: cfg.avatar, ctx: target.getContext('2d') };
-        next.draw = async (_message, _step, h) => {
-          next.ctx.fillStyle = '#000'; next.ctx.fillRect(0, 0, 512, 512);
-          next.ctx.fillStyle = '#6cf'; next.ctx.fillRect(156, 256, 200, Math.max(2, h.jaw * 1200));
+        const ctxs = ring.canvases.map((c) => c.getContext('2d'));
+        next = { network: 'none', avatar: cfg.avatar };
+        next.render = async (_message, _step, slot, h) => {
+          const ctx = ctxs[slot];
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 512, 512);
+          ctx.fillStyle = '#6cf'; ctx.fillRect(156, 256, 200, Math.max(2, h.jaw * 1200));
         };
         next.done = async () => {};
       } else {
         await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, dataBase, log });
-        next = await createRenderer({ canvas: target, network: cfg.network, avatar: cfg.avatar, dataBase, log });
+        next = await createRenderer({ canvases: ring.canvases, network: cfg.network, avatar: cfg.avatar, dataBase, log });
       }
-      next.canvas = target;
+      next.ring = ring;
       next.generation = cfg.generation;
       next.loadMs = Math.round(performance.now() - t0);
       pending = next;
+      pump();
       const env = environment();
       status.textContent = `${cfg.avatar}, ${cfg.network}${env ? `, ${env.precision}, ${env.adapter}` : ''}${env?.softwareAdapter ? ' (software WebGPU)' : ''}`;
     } catch (e) {
@@ -177,14 +195,13 @@ export function start({ channels, root, pc, data }) {
     }
   }
 
-  // Swapped in between draws, so a frame never straddles two renderers.
+  // Swapped in between renders, so a frame never straddles two renderers.
   function adoptPending() {
     if (!pending) return;
     if (renderer && renderer !== pending && renderer.destroy) renderer.destroy();
     renderer = pending;
     pending = null;
-    canvas.replaceWith(renderer.canvas);
-    canvas = renderer.canvas;
+    pacer.reset();
   }
 
   channel.addEventListener('message', ({ data: buf }) => {
@@ -210,48 +227,75 @@ export function start({ channels, root, pc, data }) {
     push(series.mouthMedia, [h.mediaMs, h.jaw]);
     // Chrome pauses animation frames in a hidden tab, so a queued frame could only come back late.
     if (document.hidden) { counts.skippedHidden++; return; }
-    let i = queue.length;
-    while (i > 0 && queue[i - 1].mediaMs > h.mediaMs) i--;
-    queue.splice(i, 0, h);
-    if (queue.length > MAX_QUEUE) { queue.shift(); counts.queueOverflow++; }
+    pacer.add(h);
+    pump();
   });
 
-  const holdMs = () => jitterBufferMs + playoutMs + (Number(delayInput.value) || 0);
+  const holdTarget = () => jitterBufferMs + playoutMs + (Number(delayInput.value) || 0);
+  const holdMs = () => holdMsNow ?? holdTarget();
+  function updateHold(now) {
+    // The first estimates land directly: the face is not moving yet.
+    holdMsNow = holdSettled ? slewToward(holdMsNow, holdTarget(), now - holdAt) : holdTarget();
+    holdSettled = jitterBufferMs > 0;
+    holdAt = now;
+  }
   const dueAt = (h) => h.mediaMs + offsetMs + holdMs();
 
-  async function drawOne(h) {
-    busy = true;
-    const t0 = performance.now();
+  // At most one render in flight: queuing more on the GPU only delays the
+  // frames due soonest.
+  async function pump() {
+    if (rendering || stopped) return;
+    adoptPending();
+    if (!renderer || offsetMs === null || document.hidden) return;
+    const job = pacer.takeNext(performance.now(), dueAt, renderer.generation);
+    if (!job) return;
+    rendering = job;
+    job.start = performance.now();
     try {
-      await renderer.draw(h.buf, config.quantStep, h);
+      await renderer.render(job.h.buf, config.quantStep, job.slot, job.h);
       await renderer.done();
-      const shown = performance.now();
-      counts.drawn++;
-      drawLeadMs = drawLeadMs * 0.9 + Math.min(60, shown - t0) * 0.1;
-      push(series.drawn, [h.index, h.arrival, dueAt(h), t0, shown, h.sentWallMs, Date.now()]);
-      push(series.mouthShown, [shown, h.jaw]);
+      job.end = performance.now();
+      renderMsAvg = renderMsAvg ? renderMsAvg * 0.9 + (job.end - job.start) * 0.1 : job.end - job.start;
+      if (document.hidden) { counts.skippedHidden++; pacer.cancel(job); } else pacer.finish(job, job.end, dueAt);
     } catch (e) {
-      log(`draw failed: ${e.message}`);
+      log(`render failed: ${e.message}`);
+      pacer.cancel(job);
     } finally {
-      busy = false;
+      rendering = null;
     }
+    pump();
   }
 
-  function tick() {
+  function show(job, shown) {
+    // The previous renderer's last frame stays up until the new one has a frame to show.
+    if (stage !== renderer.ring.el) {
+      stage.replaceWith(renderer.ring.el);
+      stage = renderer.ring.el;
+      shownCanvas = null;
+    }
+    const c = renderer.ring.canvases[job.slot];
+    c.style.opacity = '1';
+    if (shownCanvas && shownCanvas !== c) shownCanvas.style.opacity = '0';
+    shownCanvas = c;
+    counts.drawn++;
+    const h = job.h, due = dueAt(h);
+    push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end]);
+    push(series.mouthShown, [shown, h.jaw]);
+    series.perFrame.push([h.index, h.mediaMs, h.arrival, job.start, job.end, due, shown].map((x) => Math.round(x * 10) / 10));
+    if (series.perFrame.length > PER_FRAME_CAP) series.perFrame.shift();
+  }
+
+  // Shown is the animation frame's timestamp, not the time of the swap:
+  // every style change made in this callback reaches the screen with that frame.
+  function tick(ts) {
     raf = requestAnimationFrame(tick);
     counts.animationFrames++;
-    if (busy) return;
-    adoptPending();
-    if (!renderer || offsetMs === null) return;
-    const now = performance.now();
-    let pick = null;
-    while (queue.length && dueAt(queue[0]) <= now + drawLeadMs) {
-      if (pick) counts.skippedLate++;
-      pick = queue.shift();
+    updateHold(ts);
+    if (renderer && offsetMs !== null && !document.hidden) {
+      const job = pacer.present(ts, dueAt);
+      if (job) show(job, ts);
     }
-    if (!pick) return;
-    if (pick.generation !== renderer.generation) { counts.skippedOtherAvatar++; return; }
-    drawOne(pick);
+    pump();
   }
 
   const statsTimer = setInterval(async () => {
@@ -271,8 +315,9 @@ export function start({ channels, root, pc, data }) {
     }
     prevStats = { audio, playout };
     const s = (performance.now() - startedPerf) / 1000;
-    readout.textContent = `received ${counts.received} (${(counts.bytes * 8 / 1000 / Math.max(s, 1)).toFixed(0)} kbit/s), drawn ${counts.drawn}, ` +
-      `late ${counts.skippedLate}, hold ${holdMs().toFixed(0)} ms (jitter buffer ${jitterBufferMs.toFixed(0)} + playout ${playoutMs.toFixed(0)}), draw ${drawLeadMs.toFixed(0)} ms`;
+    readout.textContent = `received ${counts.received} (${(counts.bytes * 8 / 1000 / Math.max(s, 1)).toFixed(0)} kbit/s), shown ${counts.presented}, ` +
+      `rendered ahead ${counts.renderedAhead}, late ${counts.skippedLate + counts.skippedOverdue}, hold ${holdMs().toFixed(0)} ms ` +
+      `(jitter buffer ${jitterBufferMs.toFixed(0)} + playout ${playoutMs.toFixed(0)}), render ${renderMsAvg.toFixed(0)} ms`;
   }, 500);
 
   function onTrack(track) {
@@ -298,11 +343,13 @@ export function start({ channels, root, pc, data }) {
         kbitPerS: Math.round(counts.bytes * 8 / 1000 / durS), bytesPerMessage: counts.received ? Math.round(counts.bytes / counts.received) : null,
       },
       timingMs: {
-        holdNow: Math.round(holdMs()), jitterBuffer: Math.round(jitterBufferMs), playout: Math.round(playoutMs), extraDelay: Number(delayInput.value) || 0,
+        holdNow: Math.round(holdMs()), holdTarget: Math.round(holdTarget()), jitterBuffer: Math.round(jitterBufferMs), playout: Math.round(playoutMs), extraDelay: Number(delayInput.value) || 0,
         interArrival: summary(arrivals.slice(1).map((a, i) => a[0] - arrivals[i][0])),
         interSend: summary(arrivals.slice(1).map((a, i) => a[2] - arrivals[i][2])),
         arrivalToDrawStart: summary(drawn.map((d) => d[3] - d[1])),
         drawStartToShown: summary(drawn.map((d) => d[4] - d[3])),
+        renderMs: summary(drawn.map((d) => d[7] - d[3])),
+        renderDoneBeforeDue: summary(drawn.map((d) => d[2] - d[7])),
         shownMinusDue: summary(drawn.map((d) => d[4] - d[2])),
         shownInterval: summary(shownGaps),
         // Server send to shown, on the two machines' wall clocks: exact only when they are the same host or synced.
@@ -313,6 +360,7 @@ export function start({ channels, root, pc, data }) {
       // Positive: the face trails the sound. "shown" is measured on the page (drawn frames against the audio
       // it plays); "intended" is the same estimate on the server's own timeline.
       sync: { intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError },
+      perFrame: { fields: ['index', 'mediaMs', 'arrival', 'renderStart', 'renderEnd', 'due', 'shown'], rows: series.perFrame },
       log: logLines.slice(-50),
     };
   }
@@ -327,8 +375,7 @@ export function start({ channels, root, pc, data }) {
 
   const onVisibility = () => {
     if (!document.hidden) return;
-    counts.skippedHidden += queue.length;
-    queue.length = 0;
+    counts.skippedHidden += pacer.clear();
   };
   document.addEventListener('visibilitychange', onVisibility);
 
