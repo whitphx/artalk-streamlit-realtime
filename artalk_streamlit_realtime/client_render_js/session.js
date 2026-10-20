@@ -9,7 +9,7 @@ const PAGE = 'artalk-client-render/1';
 const HEADER_BYTES = 48;
 const OFFSET_WINDOW_MS = 2000;
 const SAMPLE_CAP = 30000;
-const PER_FRAME_CAP = 1500;
+const PER_FRAME_CAP = 750;
 
 function parseHeader(buf) {
   const v = new DataView(buf);
@@ -365,7 +365,8 @@ export function start({ channels, root, pc, data }) {
     };
   }
   copyButton.addEventListener('click', async () => {
-    const text = JSON.stringify(results(), null, 1);
+    // One line per number array, so the per-frame rows stay short enough to paste.
+    const text = JSON.stringify(results(), null, 1).replace(/\[\s+([-\d.,\s]+?)\s+\]/g, (_, xs) => `[${xs.replace(/\s+/g, '')}]`);
     json.style.display = 'block';
     json.value = text;
     try { await navigator.clipboard.writeText(text); copyButton.textContent = 'Copied'; } catch { json.select(); copyButton.textContent = 'Select and copy below'; }
