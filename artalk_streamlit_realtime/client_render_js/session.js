@@ -114,23 +114,17 @@ export function start({ channels, root, pc, data }) {
   root.replaceChildren();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'font: 12px/1.4 ui-monospace, monospace; color: inherit; padding-top: 6px';
-  // One canvas per ring slot, stacked; showing a frame only changes which
-  // one is opaque. Copying the slot to a single canvas instead would queue
-  // the copy behind the render the GPU is busy with. A canvas keeps the
-  // first kind of context it gets, so each renderer brings its own set.
-  const newRing = () => {
-    const el = document.createElement('div');
-    el.style.cssText = 'position: relative; width: 100%; max-width: 512px; aspect-ratio: 1; background: #000';
-    const canvases = Array.from({ length: RING_SLOTS }, () => {
-      const c = document.createElement('canvas');
-      c.width = c.height = 512;
-      c.style.cssText = 'position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0';
-      el.append(c);
-      return c;
-    });
-    return { el, canvases };
-  };
-  let stage = newRing().el, shownCanvas = null;
+  // Rendered frames wait as ImageBitmaps, one per ring slot, and showing one
+  // hands it to this canvas. Stacking a canvas per slot and swapping opacity
+  // would leave it to the browser when a canvas drawn while hidden gets its
+  // new frame on screen. Copying into one WebGPU canvas would queue the copy
+  // behind the render the GPU is busy with.
+  const stage = document.createElement('canvas');
+  stage.width = stage.height = 512;
+  stage.style.cssText = 'display: block; width: 100%; max-width: 512px; aspect-ratio: 1; background: #000';
+  const stageCtx = stage.getContext('bitmaprenderer');
+  const frames = Array(RING_SLOTS).fill(null);
+  const dropFrames = () => frames.forEach((f, i) => { f?.close(); frames[i] = null; });
   const status = document.createElement('div');
   const readout = document.createElement('div');
   const controls = document.createElement('div');
@@ -167,22 +161,20 @@ export function start({ channels, root, pc, data }) {
     const t0 = performance.now();
     status.textContent = `Loading ${cfg.network} for ${cfg.avatar}...`;
     try {
-      const ring = newRing();
       let next;
       if (cfg.network === 'none') {
-        const ctxs = ring.canvases.map((c) => c.getContext('2d'));
+        const canvas = new OffscreenCanvas(512, 512), ctx = canvas.getContext('2d');
         next = { network: 'none', avatar: cfg.avatar };
-        next.render = async (_message, _step, slot, h) => {
-          const ctx = ctxs[slot];
+        next.render = async (_message, _step, h) => {
           ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 512, 512);
           ctx.fillStyle = '#6cf'; ctx.fillRect(156, 256, 200, Math.max(2, h.jaw * 1200));
+          return canvas.transferToImageBitmap();
         };
         next.done = async () => {};
       } else {
         await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, dataBase, log });
-        next = await createRenderer({ canvases: ring.canvases, network: cfg.network, avatar: cfg.avatar, dataBase, log });
+        next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, dataBase, log });
       }
-      next.ring = ring;
       next.generation = cfg.generation;
       next.loadMs = Math.round(performance.now() - t0);
       pending = next;
@@ -202,6 +194,7 @@ export function start({ channels, root, pc, data }) {
     renderer = pending;
     pending = null;
     pacer.reset();
+    dropFrames();
   }
 
   channel.addEventListener('message', ({ data: buf }) => {
@@ -252,7 +245,9 @@ export function start({ channels, root, pc, data }) {
     rendering = job;
     job.start = performance.now();
     try {
-      await renderer.render(job.h.buf, config.quantStep, job.slot, job.h);
+      const frame = await renderer.render(job.h.buf, config.quantStep, job.h);
+      frames[job.slot]?.close();
+      frames[job.slot] = frame;
       await renderer.done();
       job.end = performance.now();
       renderMsAvg = renderMsAvg ? renderMsAvg * 0.9 + (job.end - job.start) * 0.1 : job.end - job.start;
@@ -267,16 +262,8 @@ export function start({ channels, root, pc, data }) {
   }
 
   function show(job, shown) {
-    // The previous renderer's last frame stays up until the new one has a frame to show.
-    if (stage !== renderer.ring.el) {
-      stage.replaceWith(renderer.ring.el);
-      stage = renderer.ring.el;
-      shownCanvas = null;
-    }
-    const c = renderer.ring.canvases[job.slot];
-    c.style.opacity = '1';
-    if (shownCanvas && shownCanvas !== c) shownCanvas.style.opacity = '0';
-    shownCanvas = c;
+    stageCtx.transferFromImageBitmap(frames[job.slot]);
+    frames[job.slot] = null;
     counts.drawn++;
     const h = job.h, due = dueAt(h);
     push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end]);
@@ -396,6 +383,7 @@ export function start({ channels, root, pc, data }) {
       document.removeEventListener('visibilitychange', onVisibility);
       Promise.resolve(audioProbe).then((ctx) => ctx?.close());
       if (renderer?.destroy) renderer.destroy();
+      dropFrames();
     },
   };
 }
