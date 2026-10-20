@@ -172,6 +172,11 @@ case $DEMO_BACKEND in
   personaplex) start_personaplex ;;
 esac
 
+# A compute node sits behind the lab's NAT, so media to a browser elsewhere
+# needs a TURN relay whenever its credentials are available.
+if [ -n "${CLOUDFLARE_TURN_KEY_ID:-}" ]; then
+  export ARTALK_ICE_PROVIDER=${ARTALK_ICE_PROVIDER:-cloudflare}
+fi
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 (cd "$REPO" && exec "$ST_REMOTE_BIN" --host 0.0.0.0 --port "$APP_PORT" \

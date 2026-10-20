@@ -44,6 +44,7 @@ from artalk_streamlit_realtime.config import (
     REALTIME_ENDPOINT_PRESETS,
     REALTIME_VOICES,
 )
+from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
 from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
@@ -277,8 +278,18 @@ def main() -> None:
         key=f"audio_demo_sink_{backend}",
         on_ended=stop_bridge,
     )
+    ice_provider = os.environ.get("ARTALK_ICE_PROVIDER", "stun")
+    try:
+        rtc_configuration = resolve_rtc_configuration(ice_provider)
+    except Exception as exc:
+        st.warning(
+            f"ICE provider {ice_provider!r} failed ({exc}); using STUN "
+            "only, which cannot connect through a proxy or a strict NAT."
+        )
+        rtc_configuration = STUN_ONLY
     webrtc_streamer(
         key=f"audio_demo_{backend}",
+        rtc_configuration=rtc_configuration,
         mode=WebRtcMode.SENDRECV,
         source_audio_track=audio_source_track,
         sink_audio_track=audio_sink_track,
