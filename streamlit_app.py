@@ -1192,7 +1192,9 @@ def main() -> None:
         if recorder is not None:
             recorder.end_media("disconnected")
         stop_bridge()
-        stop_pipeline()
+        # The pipeline stays with the slot: STOP ends this track too, and the
+        # visitor may press START again, while a closed tab is left to the
+        # reaper.
 
     video_source_track = create_video_source_track(
         pipeline.video_source_callback,
@@ -1222,7 +1224,13 @@ def main() -> None:
         if not ctx.state.playing and not ctx.state.signalling:
             if bridge is not None:
                 bridge.stop()
-            stop_pipeline()
+            if recorder is not None:
+                recorder.end_media("stopped")
+            # Kept rather than rebuilt, as for a visitor admitted who has not
+            # pressed START yet: the slot decides when it goes. The flush
+            # keeps a resumed session from playing what was queued at STOP.
+            pipeline.flush_output(discard_in_flight=True)
+            slots.mark_stopped(session_id)
 
     if bridge is not None:
 
@@ -1304,8 +1312,9 @@ def main() -> None:
             message = "Another visitor is waiting for the GPU."
         if start_by is not None:
             st.success(
-                f"{message} The GPU goes to the next visitor in "
-                f"{max(start_by - now, 0.0):.0f} s unless you press START."
+                f"{message} Your slot is held for "
+                f"{max(start_by - now, 0.0):.0f} more seconds unless you "
+                "press START."
             )
         elif st.session_state.get(QUEUED_KEY):
             st.success(message)

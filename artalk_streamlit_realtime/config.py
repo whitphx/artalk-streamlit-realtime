@@ -526,10 +526,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         help=(
             "With --max-sessions, seconds a session holding a slot may go "
-            "without pressing START once someone is queued for it, before "
-            "the slot passes to the queue. Browsers only open the "
-            "microphone on a click, so an admitted visitor must press START "
-            "themselves."
+            "without pressing START, whether it was just admitted or pressed "
+            "STOP, once someone is queued for it, before the slot passes to "
+            "the queue. Browsers only open the microphone on a click, so an "
+            "admitted visitor must press START themselves."
         ),
     )
     parser.add_argument(

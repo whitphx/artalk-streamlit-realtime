@@ -53,8 +53,8 @@ def _active_session_ids() -> set[str] | None:
 class PipelineSlots:
     """Admits at most `limit` sessions (0: unlimited), queues the rest in
     arrival order, and stops what a vanished session, one past its time
-    limit, or one admitted that never started left behind. Attached objects
-    are stopped through ``stop()``."""
+    limit, or one admitted that is not playing while others wait left
+    behind. Attached objects are stopped through ``stop()``."""
 
     def __init__(self) -> None:
         self.limit = 0
@@ -186,6 +186,18 @@ class PipelineSlots:
                 self._started.add(session_id)
                 self._start_by.pop(session_id, None)
 
+    def mark_stopped(self, session_id: str) -> None:
+        """Record that this session pressed STOP. It keeps its slot as an
+        admitted session that has not started does, so its START grace
+        period runs while someone is waiting."""
+        active = _active_session_ids()
+        with self._lock:
+            if session_id not in self._holders:
+                return
+            self._started.discard(session_id)
+            self._arm_start_grace(active)
+        self._wake.set()
+
     def start_clock(self, session_id: str, seconds: float) -> None:
         """Give this session's slot a deadline `seconds` from now, unless it
         already has one.
@@ -207,8 +219,8 @@ class PipelineSlots:
             return self._deadlines.get(session_id)
 
     def start_by(self, session_id: str) -> float | None:
-        """When this session's slot passes to the queue unless its media
-        starts playing; None while nobody is waiting for it."""
+        """When this session's slot passes to the queue unless it presses
+        START; None while nobody is waiting for it."""
         with self._lock:
             return self._start_by.get(session_id)
 
@@ -240,10 +252,11 @@ class PipelineSlots:
         self._arm_start_grace(active)
 
     def _arm_start_grace(self, active: set[str] | None) -> None:
-        """Caller holds the lock. A holder that has not started gets
-        `start_grace` seconds from when someone began waiting for its slot,
-        so a tab left open without pressing START does not stall the queue,
-        while one nobody is waiting for keeps its slot."""
+        """Caller holds the lock. A holder that has not started, or has
+        stopped, gets `start_grace` seconds from when someone began waiting
+        for its slot or from its STOP, whichever is later, so a tab left open
+        without pressing START does not stall the queue, while one nobody is
+        waiting for keeps its slot."""
         if not any(active is None or other in active for other in self._queue):
             self._start_by.clear()
             return
