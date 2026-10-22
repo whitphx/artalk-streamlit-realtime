@@ -513,11 +513,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=float(os.environ.get("ARTALK_SESSION_TIME_LIMIT", "0")),
         type=float,
         help=(
-            "Seconds a media session may run, counted from START (0: no "
-            "limit). When it runs out, the session is stopped, its GPU slot "
-            "is freed, and the page offers to start a new one. Counting from "
-            "page load would spend the allowance while the visitor is still "
-            "choosing an avatar or entering a key."
+            "Seconds a media session may play, counted from START and paused "
+            "while it is stopped (0: no limit). When it runs out, the session "
+            "is stopped, its GPU slot is freed, and the page offers to start "
+            "a new one. Counting from page load would spend the allowance "
+            "while the visitor is still choosing an avatar or entering a key, "
+            "and letting a resume restart it would let STOP extend a session "
+            "without end."
         ),
     )
     parser.add_argument(

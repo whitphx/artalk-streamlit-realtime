@@ -64,6 +64,7 @@ class PipelineSlots:
         self._queue: list[str] = []
         self._missing_since: dict[str, float] = {}
         self._deadlines: dict[str, float] = {}
+        self._time_left: dict[str, float] = {}
         self._start_by: dict[str, float] = {}
         self._started: set[str] = set()
         self._ended: dict[str, str] = {}
@@ -128,7 +129,8 @@ class PipelineSlots:
                     frees.append(self._deadlines[holder] - now)
                 else:
                     start_by = self._start_by.get(holder, now + self.start_grace)
-                    frees.append(start_by - now + session_seconds)
+                    time_left = self._time_left.get(holder, session_seconds)
+                    frees.append(start_by - now + time_left)
             frees.extend([0.0] * max(self.limit - len(self._holders), 0))
         heapq.heapify(frees)
         for _ in range(position - 1):
@@ -189,18 +191,21 @@ class PipelineSlots:
     def mark_stopped(self, session_id: str) -> None:
         """Record that this session pressed STOP. It keeps its slot as an
         admitted session that has not started does, so its START grace
-        period runs while someone is waiting."""
+        period runs while someone is waiting, and its time limit pauses."""
         active = _active_session_ids()
         with self._lock:
             if session_id not in self._holders:
                 return
             self._started.discard(session_id)
+            deadline = self._deadlines.pop(session_id, None)
+            if deadline is not None:
+                self._time_left[session_id] = max(deadline - time.monotonic(), 0.0)
             self._arm_start_grace(active)
         self._wake.set()
 
     def start_clock(self, session_id: str, seconds: float) -> None:
-        """Give this session's slot a deadline `seconds` from now, unless it
-        already has one.
+        """Give this session's slot a deadline `seconds` from now, or the
+        time it had left when it stopped, unless it already has one.
 
         The reaper stops the slot's objects once the deadline passes, so the
         limit holds even when no script run is left to enforce it, such as
@@ -210,13 +215,20 @@ class PipelineSlots:
         with self._lock:
             if session_id not in self._holders:
                 return
-            self._deadlines.setdefault(session_id, time.monotonic() + seconds)
+            if session_id not in self._deadlines:
+                seconds = self._time_left.pop(session_id, seconds)
+                self._deadlines[session_id] = time.monotonic() + seconds
         self._wake.set()
 
     def deadline(self, session_id: str) -> float | None:
         """When this session's time limit runs out (``time.monotonic()``)."""
         with self._lock:
             return self._deadlines.get(session_id)
+
+    def time_left(self, session_id: str) -> float | None:
+        """Seconds of this session's time limit left while it is stopped."""
+        with self._lock:
+            return self._time_left.get(session_id)
 
     def start_by(self, session_id: str) -> float | None:
         """When this session's slot passes to the queue unless it presses
@@ -234,6 +246,7 @@ class PipelineSlots:
         """Caller holds the lock and has removed the holder."""
         self._missing_since.pop(session_id, None)
         self._deadlines.pop(session_id, None)
+        self._time_left.pop(session_id, None)
         self._start_by.pop(session_id, None)
         self._started.discard(session_id)
 

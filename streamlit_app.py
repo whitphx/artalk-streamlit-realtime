@@ -1320,9 +1320,16 @@ def main() -> None:
             st.success(message)
         if st.session_state.get(QUEUED_KEY):
             st.html(TURN_ALERT_SCRIPT, unsafe_allow_javascript=True)
-        if args.session_time_limit:
+        time_left = slots.time_left(session_id)
+        if time_left is not None:
             st.caption(
-                f"Sessions are limited to {args.session_time_limit:g} s from START."
+                f"Time left in this session: {time_left:.0f} s, paused until "
+                "you press START."
+            )
+        elif args.session_time_limit:
+            st.caption(
+                f"Sessions are limited to {args.session_time_limit:g} s of "
+                "playing time."
             )
 
     with avatar_col:
