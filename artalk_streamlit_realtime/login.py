@@ -11,16 +11,40 @@ from __future__ import annotations
 import json
 import os
 import secrets
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
 
-def require_login() -> str:
+def parse_email_domains(value: str) -> frozenset[str]:
+    return frozenset(d.strip().lower() for d in value.split(",") if d.strip())
+
+
+def email_domain_admits(user: Mapping[str, object], domains: Collection[str]) -> bool:
+    """Whether the logged-in ``user`` claims a verified e-mail address in one
+    of ``domains`` (lowercase). An empty ``domains`` admits everyone."""
+    if not domains:
+        return True
+    email = user.get("email")
+    if not isinstance(email, str) or "@" not in email:
+        return False
+    # Hugging Face sends email_verified alongside email
+    # (https://huggingface.co/docs/huggingface_hub/v0.36.2/en/package_reference/oauth#huggingface_hub.OAuthUserInfo),
+    # but other OIDC providers may leave it out; their address is taken as
+    # given. A "true" string is not a verification.
+    if "email_verified" in user and user["email_verified"] is not True:
+        return False
+    # Exact match only, so that admitting a subdomain takes listing it.
+    return email.rpartition("@")[2].lower() in domains
+
+
+def require_login(email_domains: Collection[str] = frozenset()) -> str:
     """Stop the script run behind a login prompt unless the visitor is
-    logged in, and return an id that is stable across their sessions."""
+    logged in, and with ``email_domains`` unless their verified e-mail
+    address is in one of them. Return an id that is stable across their
+    sessions."""
     try:
         configured = "auth" in st.secrets
     except StreamlitSecretNotFoundError:
@@ -34,6 +58,15 @@ def require_login() -> str:
     if not st.user.is_logged_in:
         st.info("Log in to use this demo.")
         st.button("Log in", on_click=st.login, type="primary")
+        st.stop()
+    if not email_domain_admits(st.user, email_domains):
+        who = st.user.get("email") or st.user.get("preferred_username")
+        # The allowed domains stay unnamed, since the page is public.
+        st.error(
+            f"You are logged in as **{who or st.user.get('sub')}**, which is "
+            "not allowed to use this demo."
+        )
+        st.button("Log out", on_click=st.logout)
         st.stop()
     with st.sidebar:
         name = st.user.get("preferred_username") or st.user.get("name")

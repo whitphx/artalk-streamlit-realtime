@@ -414,6 +414,8 @@ Three options, all off by default, make the app easier to share. Each is a flag 
 - The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
 - Open the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
 
+`--login-email-domains` (`ARTALK_LOGIN_EMAIL_DOMAINS`) takes a comma-separated list such as `example.ac.jp,example.com` and admits only users whose verified e-mail address is in one of those domains. Matching is exact and case-insensitive, so `lab.example.ac.jp` must be listed itself. Anyone else sees who they are logged in as and a button to log out.
+
 On a lab server, put an `[auth]` section for any OIDC provider in `.streamlit/secrets.toml` ([Streamlit's guide](https://docs.streamlit.io/develop/concepts/connections/authentication)), or leave login off.
 
 Still shared between sessions in one process:

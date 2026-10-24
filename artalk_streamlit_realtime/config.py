@@ -474,6 +474,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--login-email-domains",
+        default=os.environ.get("ARTALK_LOGIN_EMAIL_DOMAINS", ""),
+        type=str,
+        help=(
+            "Comma-separated e-mail domains. With --login, admit only users "
+            "whose verified e-mail address is in one of them, matched "
+            "exactly (a subdomain must be listed itself). Empty admits "
+            "everyone who logs in."
+        ),
+    )
+    parser.add_argument(
         "--isolate-user-avatars",
         action=argparse.BooleanOptionalAction,
         default=_env_flag("ARTALK_ISOLATE_USER_AVATARS", False),
