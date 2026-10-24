@@ -104,6 +104,12 @@ def hf_oauth_auth_section(env: Mapping[str, str]) -> str | None:
     # Streamlit asks for e-mail by default, which the Space's OAuth app is not
     # granted unless its metadata lists it; ask for what it was granted.
     scope = env.get("OAUTH_SCOPES") or "openid profile"
+    # HF includes the e-mail claims only for the email scope, and the
+    # domain check turns away anyone without them.
+    if parse_email_domains(env.get("ARTALK_LOGIN_EMAIL_DOMAINS", "")) and (
+        "email" not in scope.split()
+    ):
+        scope += " email"
     lines += ["", "[auth.client_kwargs]", f"scope = {json.dumps(scope)}"]
     # Streamlit defaults to prompt="select_account", which HF rejects
     # (it accepts consent, login and none), sending the visitor back
