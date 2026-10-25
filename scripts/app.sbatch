@@ -44,6 +44,31 @@
 #
 # The job looks for it in $ARTALK_TRACK_ENV (default .envs/track in the repo)
 # and tracks on CPU. Without it, registration stays off.
+#
+# Sign-in with Hugging Face:
+#
+#   1. Find the tunnel's hostname (the "Open in the browser" line of an
+#      earlier run's log; it must stay the same across runs, such as an
+#      ngrok static domain), and set it in the env file:
+#        export ARTALK_PUBLIC_HOST=app.example.com
+#   2. Create an OAuth app in the Hugging Face settings
+#      (https://huggingface.co/docs/hub/oauth#creating-an-oauth-app), with
+#      the redirect URI https://app.example.com/oauth2callback and the
+#      scopes openid, profile, email and read-memberships.
+#   3. Put its credentials in $OAUTH_ENV (default ~/.config/artalk/oauth.env),
+#      readable only by you (chmod 600):
+#        OAUTH_CLIENT_ID=...
+#        OAUTH_CLIENT_SECRET=...
+#        # Optional: keeps visitors logged in across restarts.
+#        ARTALK_AUTH_COOKIE_SECRET=<output of `openssl rand -hex 32`>
+#   4. Optionally restrict who may sign in, in the env file:
+#        export ARTALK_LOGIN_ORGS=example-org
+#        export ARTALK_LOGIN_USERS=alice,bob
+#        export ARTALK_LOGIN_EMAIL_DOMAINS=example.com
+#
+# With login on and at least one of those lists set, signed-in visitors can
+# use the operator's OpenAI key from $OPENAI_ENV (default
+# ~/.config/artalk/openai.env, chmod 600), which exports OPENAI_API_KEY.
 set -euo pipefail
 
 START=$SECONDS
@@ -75,10 +100,15 @@ ST_REMOTE_BIN=${ST_REMOTE_BIN:-$(dirname "$(command -v "$APP_PY")")/st-remote}
 DATA_DIR=${APP_DATA_DIR:-$REPO/.cache/app}
 mkdir -p "$DATA_DIR/.streamlit"
 # The app runs from the data dir, because its diagnostics dumps land in the
-# working directory. Only the Streamlit config follows it there. The repo's
-# secrets.toml stays behind, since a key in it would be billed for every
-# anonymous visitor.
+# working directory. Only the Streamlit config follows it there.
 ln -sfn "$REPO/.streamlit/config.toml" "$DATA_DIR/.streamlit/config.toml"
+# Streamlit reads only this job's own secrets file, never the repo's or the
+# home directory's, since a key in those would be billed for every visitor.
+# The home directory is shared, so the file stays on the node.
+SECRETS_DIR=$(mktemp -d)
+trap 'rm -rf "$SECRETS_DIR"' EXIT
+SECRETS_FILE=$SECRETS_DIR/secrets.toml
+: > "$SECRETS_FILE"
 # The same goes for keys in the environment, which the app reads as a
 # fallback for the secrets file.
 while read -r name; do unset "$name"; done < <(compgen -e | grep '_API_KEY$' || true)
@@ -112,8 +142,57 @@ else
   REGISTRATION_STATUS="off: no tracker environment in $TRACK_ENV or no weights under $TRACK_DIR/assets (see the header of this script)"
 fi
 
-# The Space's login rides on HF OAuth, which a lab host does not have.
+OAUTH_ENV=${OAUTH_ENV:-$CONFIG_DIR/oauth.env}
+OPENAI_ENV=${OPENAI_ENV:-$CONFIG_DIR/openai.env}
+for name in ARTALK_LOGIN_ORGS ARTALK_LOGIN_USERS ARTALK_LOGIN_EMAIL_DOMAINS; do
+  if [ -n "${!name:-}" ]; then export "${name?}"; fi
+done
+if [ ! -f "$OAUTH_ENV" ]; then
+  LOGIN_STATUS="off: no $OAUTH_ENV"
+elif [ -z "${ARTALK_PUBLIC_HOST:-}" ]; then
+  LOGIN_STATUS="off: ARTALK_PUBLIC_HOST is not set"
+# The client secret stays in this subshell, out of the app's environment.
+elif (
+  set -a
+  # shellcheck disable=SC1090
+  . "$OAUTH_ENV"
+  set +a
+  export OPENID_PROVIDER_URL=https://huggingface.co SPACE_HOST=$ARTALK_PUBLIC_HOST
+  # The allow-lists check the e-mail and organizations claims, which Hugging
+  # Face sends only for these scopes
+  # (https://huggingface.co/docs/hub/oauth#currently-supported-scopes).
+  export OAUTH_SCOPES=${OAUTH_SCOPES:-"openid profile email read-memberships"}
+  cd "$REPO" && "$APP_PY" -c '
+import sys
+from pathlib import Path
+
+from artalk_streamlit_realtime.login import write_hf_oauth_secrets
+
+sys.exit(0 if write_hf_oauth_secrets(Path(sys.argv[1])) else 1)
+' "$SECRETS_FILE"
+); then
+  export ARTALK_LOGIN=1
+  LOGIN_STATUS="on, redirect URI https://$ARTALK_PUBLIC_HOST/oauth2callback"
+else
+  LOGIN_STATUS="off: $OAUTH_ENV lacks OAUTH_CLIENT_ID or OAUTH_CLIENT_SECRET"
+fi
+# The Space profile below turns login on, which without the section written
+# above would only show visitors a configuration error.
 export ARTALK_LOGIN=${ARTALK_LOGIN:-0}
+
+KEY_STATUS="none; visitors enter their own"
+if [ -f "$OPENAI_ENV" ]; then
+  if [ "$ARTALK_LOGIN" != 1 ]; then
+    KEY_STATUS="none; $OPENAI_ENV is used only with login on"
+  elif [ -z "${ARTALK_LOGIN_ORGS:-}${ARTALK_LOGIN_USERS:-}${ARTALK_LOGIN_EMAIL_DOMAINS:-}" ]; then
+    # Empty allow-lists admit every Hugging Face account.
+    KEY_STATUS="none; $OPENAI_ENV is used only with an ARTALK_LOGIN_* allow-list"
+  else
+    # shellcheck disable=SC1090
+    . "$OPENAI_ENV"
+    KEY_STATUS="operator key from $OPENAI_ENV for signed-in visitors"
+  fi
+fi
 # A compute node sits behind the lab's NAT, so media to a browser elsewhere
 # needs a TURN relay.
 if [ -n "${CLOUDFLARE_TURN_KEY_ID:-}" ] && [ -n "${CLOUDFLARE_TURN_KEY_API_TOKEN:-}" ]; then
@@ -152,6 +231,7 @@ PIDS=()
 cleanup() {
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
   wait 2>/dev/null || true
+  rm -rf "$SECRETS_DIR"
 }
 trap cleanup EXIT
 # scancel sends SIGTERM, which would otherwise end bash without the EXIT trap.
@@ -166,11 +246,14 @@ echo "host $(hostname) job ${SLURM_JOB_ID:-none} preset $PRESET data $DATA_DIR"
 nvidia-smi -L
 echo "WebRTC: $TURN_STATUS"
 echo "Avatar registration: $REGISTRATION_STATUS"
+echo "Login: $LOGIN_STATUS"
+echo "OpenAI key: $KEY_STATUS"
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 APP_LOG=$DATA_DIR/app-${SLURM_JOB_ID:-$$}-${SLURM_RESTART_COUNT:-0}.log
 (cd "$DATA_DIR" && exec "$ST_REMOTE_BIN" --host 0.0.0.0 --port "$APP_PORT" \
   --provider "${ST_REMOTE_PROVIDER:-ngrok}" --no-browser --no-tui \
+  --streamlit-arg="--secrets.files=$SECRETS_FILE" \
   "${ST_REMOTE_EXTRA[@]}" "$REPO/streamlit_app.py") > "$APP_LOG" 2>&1 &
 APP_PID=$!
 PIDS+=("$APP_PID")
@@ -192,6 +275,13 @@ if [ -z "$URL" ] || ! kill -0 "$APP_PID" 2>/dev/null; then
 fi
 echo "ready after $((SECONDS - START)) s; app log $APP_LOG"
 echo "Open in the browser: $URL"
+URL_HOST=${URL#https://}
+URL_HOST=${URL_HOST%%/*}
+if [ "$ARTALK_LOGIN" = 1 ] && [ "$URL_HOST" != "$ARTALK_PUBLIC_HOST" ]; then
+  echo "WARNING: the tunnel serves $URL_HOST, not ARTALK_PUBLIC_HOST=$ARTALK_PUBLIC_HOST; sign-in will fail"
+elif [ "$ARTALK_LOGIN" != 1 ] && [ -f "$OAUTH_ENV" ] && [ -z "${ARTALK_PUBLIC_HOST:-}" ]; then
+  echo "To turn login on, set ARTALK_PUBLIC_HOST=$URL_HOST and register https://$URL_HOST/oauth2callback in the OAuth app"
+fi
 echo "Node-local app: http://$(hostname -f):$APP_PORT"
 # The USR1 trap interrupts wait while the app keeps running, so wait again
 # until the app itself exits or Slurm ends the job.
