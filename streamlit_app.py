@@ -101,6 +101,7 @@ from artalk_streamlit_realtime.runtime import (
     preimport_path_rebinders,
 )
 from artalk_streamlit_realtime.session_records import (
+    MediaSettings,
     SessionRecorder,
     appearance_kind,
     load_consent_notice,
@@ -1381,15 +1382,17 @@ def main() -> None:
             # session itself, which closes its record.
             slots.attach(session_id, "recorder", recorder)
             ctx = st.session_state.get(streamer_key)
-            if ctx is not None and ctx.state.playing:
-                recorder.start_media(
+            recorder.prepare_media(
+                MediaSettings(
                     mode=mode.lower(),
                     backend=backend if mode == "Interactive" else None,
                     motion_model=motion_model,
                     appearance_kind=appearance_kind(appearance, user_avatar_ids),
                     style=style_id,
                     session_time_limit_s=args.session_time_limit,
-                )
+                ),
+                playing=ctx is not None and ctx.state.playing,
+            )
             render_feedback_form(recorder)
         if bridge is not None:
             render_interactive_status()

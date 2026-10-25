@@ -67,6 +67,16 @@ class VoiceConsentRecord(RecordBase):
 
 
 @dataclass(frozen=True)
+class MediaSettings:
+    mode: str
+    backend: str | None
+    motion_model: str
+    appearance_kind: Literal["mesh", "photoreal-builtin", "photoreal-registered"]
+    style: str
+    session_time_limit_s: float
+
+
+@dataclass(frozen=True)
 class MediaSessionStart(RecordBase):
     media_session: str
     mode: str
@@ -358,8 +368,10 @@ def pipeline_summary(snapshot: dict) -> dict[str, float | int | None]:
 
 class _OpenMediaSession(NamedTuple):
     media_session: str
+    settings: MediaSettings
     started: float
     recorded: bool
+    start_written: bool
     voice: VoiceSession | None
 
 
@@ -396,6 +408,8 @@ class SessionRecorder:
         self.pipeline = None
         self._lock = threading.Lock()
         self._open: _OpenMediaSession | None = None
+        self._settings: MediaSettings | None = None
+        self._armed = False
         # Read without the lock from media threads; replaced, never mutated.
         self._voice: VoiceSession | None = None
 
@@ -451,6 +465,13 @@ class SessionRecorder:
 
     def record_mic(self, frame) -> None:
         voice = self._voice
+        if voice is None and self._armed:
+            # The page run that sees the session playing comes seconds
+            # after its media starts, so waiting for it would cut the
+            # start of what the visitor says.
+            voice = self._open_media(
+                self._settings, time.monotonic() - frame.samples / frame.sample_rate
+            )
         if voice is not None:
             voice.push_mic(frame)
 
@@ -479,19 +500,26 @@ class SessionRecorder:
 
         threading.Thread(target=run, name="voice-records-delete", daemon=True).start()
 
-    def start_media(
-        self,
-        *,
-        mode: str,
-        backend: str | None,
-        motion_model: str,
-        appearance_kind: str,
-        style: str,
-        session_time_limit_s: float,
-    ) -> None:
+    def prepare_media(self, settings: MediaSettings, *, playing: bool) -> None:
+        """Called on each page run. Opens the media session if it plays
+        already, and otherwise arms the next microphone frame to open it."""
+        self._settings = settings
+        if playing:
+            self._open_media(settings, time.monotonic())
+            self._write_start()
+        else:
+            self._armed = True
+
+    def _open_media(self, settings: MediaSettings, started: float) -> VoiceSession | None:
+        """Runs on media threads too, so it does no file or network I/O;
+        the start record waits for the next page run or the session end."""
         with self._lock:
+            # Only a page run that finds the session stopped arms it again.
+            # Frames still arriving after the server stopped a session
+            # would otherwise open a new one.
+            self._armed = False
             if self._open is not None:
-                return
+                return self._voice
             media_session = uuid.uuid4().hex
             # A session started before the visitor accepted stays unrecorded
             # to its end, so no end record lacks its start.
@@ -504,30 +532,38 @@ class SessionRecorder:
                     media_session,
                     # Loopback plays the microphone back, so its reply is
                     # the mic track already.
-                    record_reply=mode != "loopback",
+                    record_reply=settings.mode != "loopback",
+                    started=started,
                     metadata={
                         "subject_kind": self.subject_kind,
-                        "mode": mode,
-                        "backend": backend,
+                        "mode": settings.mode,
+                        "backend": settings.backend,
                         "voice_notice_sha256": self.voice_notice.sha256,
                     },
                 )
-            self._open = _OpenMediaSession(media_session, time.monotonic(), recorded, voice)
+            self._open = _OpenMediaSession(
+                media_session, settings, started, recorded, False, voice
+            )
             self._voice = voice
             self.media_sessions_started += 1
             self.last_media_session = media_session if recorded else None
-        if recorded:
-            self._write(
-                MediaSessionStart,
-                "media_session_start",
-                media_session=media_session,
-                mode=mode,
-                backend=backend,
-                motion_model=motion_model,
-                appearance_kind=appearance_kind,
-                style=style,
-                session_time_limit_s=session_time_limit_s,
-            )
+        return voice
+
+    def _write_start(self) -> None:
+        with self._lock:
+            session = self._open
+            if session is None or not session.recorded or session.start_written:
+                return
+            self._open = session._replace(start_written=True)
+        self._write_start_record(session)
+
+    def _write_start_record(self, session: _OpenMediaSession) -> None:
+        self._write(
+            MediaSessionStart,
+            "media_session_start",
+            media_session=session.media_session,
+            **dataclasses.asdict(session.settings),
+        )
 
     def end_media(self, reason: EndReason) -> None:
         # Called whenever the session's pipeline is stopped, and this
@@ -535,15 +571,17 @@ class SessionRecorder:
         # alive until the session's next script run.
         pipeline, self.pipeline = self.pipeline, None
         with self._lock:
-            if self._open is None:
-                return
-            media_session, started, recorded, voice = self._open
-            self._open = None
+            session, self._open = self._open, None
+            self._armed = False
             self._voice = None
-        if voice is not None:
-            voice.close(reason)
-        if not recorded:
+        if session is None:
             return
+        if session.voice is not None:
+            session.voice.close(reason)
+        if not session.recorded:
+            return
+        if not session.start_written:
+            self._write_start_record(session)
         summary = {}
         if pipeline is not None:
             try:
@@ -553,9 +591,9 @@ class SessionRecorder:
         self._write(
             MediaSessionEnd,
             "media_session_end",
-            media_session=media_session,
+            media_session=session.media_session,
             end_reason=reason,
-            duration_s=round(time.monotonic() - started, 3),
+            duration_s=round(time.monotonic() - session.started, 3),
             pipeline=summary,
         )
 

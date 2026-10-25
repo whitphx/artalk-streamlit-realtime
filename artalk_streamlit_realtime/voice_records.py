@@ -11,7 +11,7 @@ import queue
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, NamedTuple, Protocol
 
@@ -149,14 +149,16 @@ class VoiceSession:
         *,
         record_reply: bool,
         metadata: dict,
+        started: float | None = None,
         on_done=None,
     ) -> None:
         self.directory = directory
         self.media_session = media_session
         self.record_reply = record_reply
         self.metadata = metadata
-        self.started = time.monotonic()
-        self.started_utc = datetime.now(timezone.utc)
+        now = time.monotonic()
+        self.started = now if started is None else started
+        self.started_utc = datetime.now(timezone.utc) - timedelta(seconds=now - self.started)
         self.dropped = {"mic": 0, "reply": 0}
         self.end_reason: str | None = None
         self.ended: float | None = None
@@ -306,6 +308,7 @@ def start_voice_session(
     *,
     record_reply: bool,
     metadata: dict,
+    started: float | None = None,
 ) -> VoiceSession | None:
     with _live_lock:
         # A recording begun while a deletion runs would outlive it.
@@ -323,6 +326,7 @@ def start_voice_session(
             media_session,
             record_reply=record_reply,
             metadata=metadata,
+            started=started,
             on_done=forget,
         )
         _live[key].add(session)
