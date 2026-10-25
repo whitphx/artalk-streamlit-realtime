@@ -32,6 +32,9 @@
 # Cloudflare TURN credentials (CLOUDFLARE_TURN_KEY_ID,
 # CLOUDFLARE_TURN_KEY_API_TOKEN) are read from the environment or from
 # $TURN_ENV (default ~/.config/artalk/turn.env).
+#
+# The sidebar opens on Interactive mode with the OpenAI Live backend; the env
+# file can set ARTALK_DEFAULT_MODE and ARTALK_DEFAULT_BACKEND instead.
 set -euo pipefail
 
 START=$SECONDS
@@ -80,6 +83,9 @@ export ARTALK_USER_AVATAR_DIR=${ARTALK_USER_AVATAR_DIR:-$DATA_DIR/user_avatars}
 export ARTALK_SESSION_DATA_DIR=${ARTALK_SESSION_DATA_DIR:-$DATA_DIR/session_data}
 # An A100 holds about two photoreal sessions.
 export ARTALK_MAX_SESSIONS=${ARTALK_MAX_SESSIONS:-2}
+export ARTALK_DEFAULT_MODE=${ARTALK_DEFAULT_MODE:-interactive}
+export ARTALK_DEFAULT_BACKEND=${ARTALK_DEFAULT_BACKEND:-openai-live}
+
 # The Space's login rides on HF OAuth, which a lab host does not have.
 export ARTALK_LOGIN=${ARTALK_LOGIN:-0}
 # A compute node sits behind the lab's NAT, so media to a browser elsewhere
