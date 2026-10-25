@@ -69,6 +69,8 @@
 # With login on and at least one of those lists set, signed-in visitors can
 # use the operator's OpenAI key from $OPENAI_ENV (default
 # ~/.config/artalk/openai.env, chmod 600), which exports OPENAI_API_KEY.
+# ARTALK_OPENAI_KEY_FOR_ALL=1 in the env file hands that key to every
+# visitor, signed in or not; set it only when the key's spend is capped.
 set -euo pipefail
 
 START=$SECONDS
@@ -182,7 +184,11 @@ export ARTALK_LOGIN=${ARTALK_LOGIN:-0}
 
 KEY_STATUS="none; visitors enter their own"
 if [ -f "$OPENAI_ENV" ]; then
-  if [ "$ARTALK_LOGIN" != 1 ]; then
+  if [ "${ARTALK_OPENAI_KEY_FOR_ALL:-0}" = 1 ]; then
+    # shellcheck disable=SC1090
+    . "$OPENAI_ENV"
+    KEY_STATUS="operator key from $OPENAI_ENV for every visitor (ARTALK_OPENAI_KEY_FOR_ALL=1)"
+  elif [ "$ARTALK_LOGIN" != 1 ]; then
     KEY_STATUS="none; $OPENAI_ENV is used only with login on"
   elif [ -z "${ARTALK_LOGIN_ORGS:-}${ARTALK_LOGIN_USERS:-}${ARTALK_LOGIN_EMAIL_DOMAINS:-}" ]; then
     # Empty allow-lists admit every Hugging Face account.
