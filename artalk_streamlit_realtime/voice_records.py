@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 VOICE_DIR = "voice"
 VOICE_SCHEMA_VERSION = 1
 MIC_SAMPLE_RATE = 16000
-# Speech at this rate is close to transparent with Opus; it is 180 kB per
-# minute and track, against roughly a megabyte for FLAC at 16 kHz.
+# Speech at this rate is close to transparent with Opus; the bit rate caps it at
+# 180 kB per minute and track, against roughly a megabyte for FLAC at 16 kHz.
 OPUS_BIT_RATE = 24000
 # The writer thread's backlog, in chunks: the microphone arrives as 20 ms
 # frames, so this holds at least ten seconds of it.

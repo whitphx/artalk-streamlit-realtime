@@ -212,7 +212,7 @@ if [ -f "$OPENAI_ENV" ]; then
     KEY_STATUS="operator key from $OPENAI_ENV for signed-in visitors"
   fi
 fi
-# A compute node sits behind the lab's NAT, so media to a browser elsewhere
+# A compute node sits behind a NAT, so media to a browser elsewhere
 # needs a TURN relay.
 if [ -n "${CLOUDFLARE_TURN_KEY_ID:-}" ] && [ -n "${CLOUDFLARE_TURN_KEY_API_TOKEN:-}" ]; then
   export ARTALK_ICE_PROVIDER=cloudflare
