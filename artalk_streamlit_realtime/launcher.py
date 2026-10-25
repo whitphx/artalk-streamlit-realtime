@@ -298,11 +298,15 @@ def up(args: argparse.Namespace, app_args: list[str]) -> int:
         if write_hf_oauth_secrets(Path.home() / ".streamlit" / "secrets.toml"):
             print("login: configured the Space's HF OAuth client for st.login")
     app_config = parse_args(app_args)
-    if app_config.feedback or app_config.session_logging:
+    voice = app_config.voice_consent_notice or app_config.voice_consent_notice_text
+    if app_config.feedback or app_config.session_logging or voice:
         # The app itself only finds out on its first page load.
-        from .session_records import load_consent_notice
+        from .session_records import load_consent_notice, load_voice_consent_notice
 
         load_consent_notice(app_config.consent_notice, app_config.consent_notice_text)
+        load_voice_consent_notice(
+            app_config.voice_consent_notice, app_config.voice_consent_notice_text
+        )
     services = _start_services(profile)
     if services:
         # exec would orphan the services; supervise the app instead.

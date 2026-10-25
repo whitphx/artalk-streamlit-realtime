@@ -57,6 +57,8 @@ class OpenAILiveBridge:
         self._api_key = api_key
         self._pipeline = pipeline
         self._on_audio_output = on_audio_output
+        # Receives the reply audio as it arrives, for voice recording.
+        self.reply_tap: Callable[[np.ndarray, int], None] | None = None
         self._event_log = event_log
         self._model = model
         self._voice = voice
@@ -405,4 +407,6 @@ class OpenAILiveBridge:
             self._model_samples_out += samples.size
         if self._on_audio_output is not None:
             self._on_audio_output()
+        if self.reply_tap is not None:
+            self.reply_tap(samples, OPENAI_LIVE_SAMPLE_RATE)
         self._pipeline.push_audio_frame(frame)

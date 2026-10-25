@@ -43,6 +43,8 @@ class OpenAIRealtimeBridge:
         self._api_key = api_key
         self._pipeline = pipeline
         self._on_audio_output = on_audio_output
+        # Receives the reply audio as it arrives, for voice recording.
+        self.reply_tap: Callable[[np.ndarray, int], None] | None = None
         self._event_log = event_log
         self._model = model
         self._voice = voice
@@ -424,5 +426,7 @@ class OpenAIRealtimeBridge:
             samples[np.newaxis, :], format="s16", layout="mono"
         )
         frame.sample_rate = OPENAI_REALTIME_SAMPLE_RATE
+        if self.reply_tap is not None:
+            self.reply_tap(samples, OPENAI_REALTIME_SAMPLE_RATE)
         self._pipeline.push_audio_frame(frame)
         self._last_response_push_s = time.perf_counter()

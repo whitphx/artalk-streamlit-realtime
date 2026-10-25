@@ -603,6 +603,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--voice-consent-notice",
+        default=os.environ.get("ARTALK_VOICE_CONSENT_NOTICE"),
+        type=str,
+        help=(
+            "Markdown file for a second, separate opt-in offered once the "
+            "consent notice is accepted: recording the visitor's microphone "
+            "and the avatar's spoken replies to --session-data-dir. Without "
+            "it no audio is ever written."
+        ),
+    )
+    parser.add_argument(
+        "--voice-consent-notice-text",
+        default=os.environ.get("ARTALK_VOICE_CONSENT_NOTICE_TEXT"),
+        type=str,
+        help=(
+            "The --voice-consent-notice Markdown given as text instead of a "
+            "file. Setting both is an error."
+        ),
+    )
+    parser.add_argument(
         "--session-data-dir",
         default=os.environ.get("ARTALK_SESSION_DATA_DIR", "session_data"),
         type=str,
@@ -617,8 +637,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         help=(
             "Private Hugging Face dataset repo that --feedback and "
-            "--session-logging records are committed to every few minutes, "
-            "from per-process files in --session-data-dir. The write token "
+            "--session-logging records, and voice recordings, are committed "
+            "to every few minutes, from per-process files in "
+            "--session-data-dir. The write token "
             "comes from ARTALK_SESSION_DATA_TOKEN, otherwise HF_TOKEN."
         ),
     )
@@ -652,13 +673,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     args, _ = parser.parse_known_args(argv)
-    if not (args.consent_notice_text or "").strip():
-        args.consent_notice_text = None
-    if args.consent_notice and args.consent_notice_text:
-        # Picking one silently could show visitors a notice the operator
-        # did not mean, and their consent records would carry its hash.
-        parser.error(
-            "--consent-notice (ARTALK_CONSENT_NOTICE) and --consent-notice-text "
-            "(ARTALK_CONSENT_NOTICE_TEXT) are both set; set only one"
-        )
+    for option in ("consent_notice", "voice_consent_notice"):
+        text_option = f"{option}_text"
+        if not (getattr(args, text_option) or "").strip():
+            setattr(args, text_option, None)
+        if getattr(args, option) and getattr(args, text_option):
+            # Picking one silently could show visitors a notice the operator
+            # did not mean, and their consent records would carry its hash.
+            flag = "--" + option.replace("_", "-")
+            env = "ARTALK_" + option.upper()
+            parser.error(
+                f"{flag} ({env}) and {flag}-text ({env}_TEXT) are both set; "
+                "set only one"
+            )
     return args

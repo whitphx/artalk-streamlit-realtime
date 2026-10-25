@@ -104,9 +104,11 @@ from artalk_streamlit_realtime.session_records import (
     SessionRecorder,
     appearance_kind,
     load_consent_notice,
+    load_voice_consent_notice,
     open_record_store,
     render_consent_gate,
     render_feedback_form,
+    render_voice_controls,
 )
 from artalk_streamlit_realtime.silence import PipelineSilencePump
 from artalk_streamlit_realtime.streamlit_patches import (
@@ -380,6 +382,9 @@ def get_session_recorder(args, login_id: str | None) -> SessionRecorder | None:
             login_id=login_id,
             log_sessions=args.session_logging,
             feedback=args.feedback,
+            voice_notice=load_voice_consent_notice(
+                args.voice_consent_notice, args.voice_consent_notice_text
+            ),
         )
         st.session_state[SESSION_RECORDER_KEY] = recorder
     return recorder
@@ -441,10 +446,16 @@ def main() -> None:
         else None
     )
     recorder = None
-    if args.feedback or args.session_logging:
+    if (
+        args.feedback
+        or args.session_logging
+        or args.voice_consent_notice
+        or args.voice_consent_notice_text
+    ):
         recorder = get_session_recorder(args, login_id)
         if recorder is not None:
             render_consent_gate(recorder)
+            render_voice_controls(recorder)
     chunk_caption = st.empty()
 
     try:
@@ -1163,6 +1174,7 @@ def main() -> None:
                 )
             st.session_state[BRIDGE_KEY] = bridge
             st.session_state[BRIDGE_CONFIG_KEY] = config
+        bridge.reply_tap = recorder.record_reply if recorder is not None else None
         return bridge
 
     bridge = get_bridge() if mode == "Interactive" else None
@@ -1189,10 +1201,14 @@ def main() -> None:
         # input queue has no bound and no reader any more.
         if pipeline.is_stopped:
             return
+        if recorder is not None:
+            recorder.record_mic(frame)
         silence_pump.mark_input()
         pipeline.push_audio_frame(frame)
 
     def on_interactive_audio_frame(frame: av.AudioFrame) -> None:
+        if recorder is not None:
+            recorder.record_mic(frame)
         if bridge is not None:
             bridge.push_input(frame)
 

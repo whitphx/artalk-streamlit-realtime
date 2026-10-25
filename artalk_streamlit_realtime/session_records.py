@@ -19,6 +19,8 @@ from typing import Literal, NamedTuple, Protocol
 
 import streamlit as st
 
+from .voice_records import VOICE_DIR, VoiceSession, subject_key, voice_codec
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -47,6 +49,12 @@ class RecordBase:
 @dataclass(frozen=True)
 class ConsentRecord(RecordBase):
     notice_sha256: str
+
+
+@dataclass(frozen=True)
+class VoiceConsentRecord(RecordBase):
+    notice_sha256: str
+    granted: bool
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,8 @@ class RecordStore(Protocol):
 
     def append(self, record: dict) -> None: ...
 
+    def voice_dir(self, subject_key: str) -> Path: ...
+
 
 class JsonlRecordStore:
     def __init__(self, directory: str | os.PathLike) -> None:
@@ -117,6 +127,9 @@ class JsonlRecordStore:
                 os.write(fd, line.encode())
             finally:
                 os.close(fd)
+
+    def voice_dir(self, subject_key: str) -> Path:
+        return self.directory / VOICE_DIR / subject_key
 
 
 class HubRecordStore(JsonlRecordStore):
@@ -165,9 +178,13 @@ class HubRecordStore(JsonlRecordStore):
                     every=HUB_COMMIT_EVERY_MIN,
                     private=True,
                     token=self._token,
-                    # Local-store files in the same folder, named per day
-                    # only, would replace other servers' files of that name.
-                    allow_patterns="records-????-??-??-*.jsonl",
+                    allow_patterns=[
+                        # Local-store files in the same folder, named per
+                        # day only, would replace other servers' files of
+                        # that name.
+                        "records-????-??-??-*.jsonl",
+                        *voice_upload_patterns(),
+                    ],
                 )
                 return
             except Exception:
@@ -179,6 +196,15 @@ class HubRecordStore(JsonlRecordStore):
                     exc_info=True,
                 )
                 time.sleep(HUB_COMMIT_EVERY_MIN * 60)
+
+
+def voice_upload_patterns() -> list[str]:
+    extension = voice_codec().extension
+    return [
+        f"{VOICE_DIR}/*/*.mic.{extension}",
+        f"{VOICE_DIR}/*/*.reply.{extension}",
+        f"{VOICE_DIR}/*/*.json",
+    ]
 
 
 @functools.cache
@@ -200,26 +226,31 @@ class ConsentNotice:
     sha256: str
 
 
-def load_consent_notice(path: str | None, text: str | None) -> ConsentNotice | None:
+def load_consent_notice(
+    path: str | None, text: str | None, *, option: str = "--consent-notice"
+) -> ConsentNotice | None:
     if text is None:
         if not path:
             _warn_once(
-                "session logging / feedback is enabled but neither "
-                "--consent-notice nor --consent-notice-text is set; nothing "
-                "will be collected"
+                f"collection is enabled but neither {option} nor "
+                f"{option}-text is set; nothing will be collected"
             )
             return None
         try:
             text = Path(path).read_text(encoding="utf-8")
         except OSError as exc:
-            _warn_once(
-                f"cannot read --consent-notice {path!r} ({exc}); nothing will be collected"
-            )
+            _warn_once(f"cannot read {option} {path!r} ({exc}); nothing will be collected")
             return None
         if not text.strip():
-            _warn_once(f"--consent-notice {path!r} is empty; nothing will be collected")
+            _warn_once(f"{option} {path!r} is empty; nothing will be collected")
             return None
     return ConsentNotice(text, hashlib.sha256(text.encode("utf-8")).hexdigest())
+
+
+def load_voice_consent_notice(path: str | None, text: str | None) -> ConsentNotice | None:
+    if not path and text is None:
+        return None
+    return load_consent_notice(path, text, option="--voice-consent-notice")
 
 
 @functools.cache
@@ -270,6 +301,7 @@ class _OpenMediaSession(NamedTuple):
     media_session: str
     started: float
     recorded: bool
+    voice: VoiceSession | None
 
 
 class SessionRecorder:
@@ -281,20 +313,26 @@ class SessionRecorder:
         login_id: str | None,
         log_sessions: bool,
         feedback: bool,
+        voice_notice: ConsentNotice | None = None,
     ) -> None:
         self.store = store
         self.notice = notice
         self.log_sessions = log_sessions
         self.feedback = feedback
+        self.voice_notice = voice_notice
         self.browser_session = uuid.uuid4().hex
         self.subject_kind: SubjectKind = "user" if login_id else "anonymous"
         self.subject_id = login_id or self.browser_session
+        self.voice_key = subject_key(self.subject_id)
         self.consent: Literal["pending", "accepted", "declined"] = "pending"
+        self.voice_consent = False
         self.media_sessions_started = 0
         self.last_media_session: str | None = None
         self.pipeline = None
         self._lock = threading.Lock()
         self._open: _OpenMediaSession | None = None
+        # Read without the lock from media threads; replaced, never mutated.
+        self._voice: VoiceSession | None = None
 
     @property
     def collecting(self) -> bool:
@@ -325,6 +363,37 @@ class SessionRecorder:
     def decline(self) -> None:
         self.consent = "declined"
 
+    @property
+    def voice_enabled(self) -> bool:
+        return self.voice_notice is not None
+
+    def set_voice_consent(self, granted: bool) -> None:
+        if not (self.voice_enabled and self.collecting) or granted == self.voice_consent:
+            return
+        self.voice_consent = granted
+        self._write(
+            VoiceConsentRecord,
+            "voice_consent",
+            notice_sha256=self.voice_notice.sha256,
+            granted=granted,
+        )
+        if not granted:
+            # Turning it off stops the recording under way at once; what it
+            # holds so far is kept.
+            voice, self._voice = self._voice, None
+            if voice is not None:
+                voice.close("voice_consent_withdrawn")
+
+    def record_mic(self, frame) -> None:
+        voice = self._voice
+        if voice is not None:
+            voice.push_mic(frame)
+
+    def record_reply(self, samples, sample_rate: int) -> None:
+        voice = self._voice
+        if voice is not None:
+            voice.push_reply(samples, sample_rate)
+
     def start_media(
         self,
         *,
@@ -342,7 +411,23 @@ class SessionRecorder:
             # A session started before the visitor accepted stays unrecorded
             # to its end, so no end record lacks its start.
             recorded = self.collecting and self.log_sessions
-            self._open = _OpenMediaSession(media_session, time.monotonic(), recorded)
+            voice = None
+            if self.collecting and self.voice_enabled and self.voice_consent:
+                voice = VoiceSession(
+                    self.store.voice_dir(self.voice_key),
+                    media_session,
+                    # Loopback plays the microphone back, so its reply is
+                    # the mic track already.
+                    record_reply=mode != "loopback",
+                    metadata={
+                        "subject_kind": self.subject_kind,
+                        "mode": mode,
+                        "backend": backend,
+                        "voice_notice_sha256": self.voice_notice.sha256,
+                    },
+                )
+            self._open = _OpenMediaSession(media_session, time.monotonic(), recorded, voice)
+            self._voice = voice
             self.media_sessions_started += 1
             self.last_media_session = media_session if recorded else None
         if recorded:
@@ -366,8 +451,11 @@ class SessionRecorder:
         with self._lock:
             if self._open is None:
                 return
-            media_session, started, recorded = self._open
+            media_session, started, recorded, voice = self._open
             self._open = None
+            self._voice = None
+        if voice is not None:
+            voice.close(reason)
         if not recorded:
             return
         summary = {}
@@ -433,3 +521,20 @@ def render_feedback_form(recorder: SessionRecorder) -> None:
             else:
                 recorder.submit_feedback(rating, comment)
                 st.success("Thanks, feedback sent.")
+
+
+def render_voice_controls(recorder: SessionRecorder) -> None:
+    if not (recorder.voice_enabled and recorder.collecting):
+        return
+    with st.expander("Voice recording (optional)"):
+        st.markdown(recorder.voice_notice.text)
+        st.toggle(
+            "Record my voice and the avatar's spoken replies",
+            value=recorder.voice_consent,
+            key="voice_consent",
+            on_change=lambda: recorder.set_voice_consent(st.session_state.voice_consent),
+        )
+        st.caption(
+            "Applies from the next START. Turning it off stops a recording "
+            "under way."
+        )

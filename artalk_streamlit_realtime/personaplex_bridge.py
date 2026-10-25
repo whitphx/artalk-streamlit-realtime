@@ -57,6 +57,8 @@ class PersonaPlexBridge:
         self._url = url.rstrip("/")
         self._pipeline = pipeline
         self._on_audio_output = on_audio_output
+        # Receives the reply audio as it arrives, for voice recording.
+        self.reply_tap: Callable[[np.ndarray, int], None] | None = None
         self._text_prompt = text_prompt
         self._voice_prompt = voice_prompt
         self._seed = seed
@@ -351,4 +353,6 @@ class PersonaPlexBridge:
             self._model_samples_out += samples.size
         if self._on_audio_output is not None:
             self._on_audio_output()
+        if self.reply_tap is not None:
+            self.reply_tap(samples, PERSONAPLEX_SAMPLE_RATE)
         self._pipeline.push_audio_frame(frame)
