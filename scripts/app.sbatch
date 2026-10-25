@@ -29,6 +29,12 @@
 #   export HF_HOME=/path/to/huggingface-cache
 #   export ST_REMOTE_ARGS="--ngrok-binary /path/to/ngrok"
 #
+# The app runs on the repo's pixi env unless the env file sets
+# ARTALK_STREAMLIT_PYTHON to another interpreter, such as a venv made with
+# --system-site-packages over the pixi env that swaps in one package build:
+#
+#   export ARTALK_STREAMLIT_PYTHON=/path/to/overlay-venv/bin/python
+#
 # Cloudflare TURN credentials (CLOUDFLARE_TURN_KEY_ID,
 # CLOUDFLARE_TURN_KEY_API_TOKEN) are read from the environment or from
 # $TURN_ENV (default ~/.config/artalk/turn.env).
@@ -96,8 +102,15 @@ if [ -z "${ARTALK_STREAMLIT_PYTHON:-}" ] && [ -x "$REPO/.pixi/envs/default/bin/p
 else
   APP_PY=${ARTALK_STREAMLIT_PYTHON:-python}
 fi
-ST_REMOTE_BIN=${ST_REMOTE_BIN:-$(dirname "$(command -v "$APP_PY")")/st-remote}
-[ -x "$ST_REMOTE_BIN" ] || { echo "$ST_REMOTE_BIN is not an executable; set ST_REMOTE_BIN" >&2; exit 1; }
+if [ -n "${ST_REMOTE_BIN:-}" ]; then
+  [ -x "$ST_REMOTE_BIN" ] || { echo "ST_REMOTE_BIN=$ST_REMOTE_BIN is not an executable" >&2; exit 1; }
+  ST_REMOTE=("$ST_REMOTE_BIN")
+else
+  # Not the st-remote script next to the interpreter: an overlay venv has
+  # none, and the base env's script would start Streamlit on the base env's
+  # Python, since st-remote runs Streamlit with its own interpreter.
+  ST_REMOTE=("$APP_PY" -c 'from streamlit_remote.cli import main; main()')
+fi
 
 DATA_DIR=${APP_DATA_DIR:-$REPO/.cache/app}
 mkdir -p "$DATA_DIR/.streamlit"
@@ -257,7 +270,7 @@ echo "OpenAI key: $KEY_STATUS"
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 APP_LOG=$DATA_DIR/app-${SLURM_JOB_ID:-$$}-${SLURM_RESTART_COUNT:-0}.log
-(cd "$DATA_DIR" && exec "$ST_REMOTE_BIN" --host 0.0.0.0 --port "$APP_PORT" \
+(cd "$DATA_DIR" && exec "${ST_REMOTE[@]}" --host 0.0.0.0 --port "$APP_PORT" \
   --provider "${ST_REMOTE_PROVIDER:-ngrok}" --no-browser --no-tui \
   --streamlit-arg="--secrets.files=$SECRETS_FILE" \
   "${ST_REMOTE_EXTRA[@]}" "$REPO/streamlit_app.py") > "$APP_LOG" 2>&1 &
