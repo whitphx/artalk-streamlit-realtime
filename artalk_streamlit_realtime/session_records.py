@@ -200,21 +200,25 @@ class ConsentNotice:
     sha256: str
 
 
-def load_consent_notice(path: str | None) -> ConsentNotice | None:
-    if not path:
-        _warn_once(
-            "session logging / feedback is enabled but --consent-notice is not "
-            "set; nothing will be collected"
-        )
-        return None
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        _warn_once(f"cannot read --consent-notice {path!r} ({exc}); nothing will be collected")
-        return None
-    if not text.strip():
-        _warn_once(f"--consent-notice {path!r} is empty; nothing will be collected")
-        return None
+def load_consent_notice(path: str | None, text: str | None) -> ConsentNotice | None:
+    if text is None:
+        if not path:
+            _warn_once(
+                "session logging / feedback is enabled but neither "
+                "--consent-notice nor --consent-notice-text is set; nothing "
+                "will be collected"
+            )
+            return None
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            _warn_once(
+                f"cannot read --consent-notice {path!r} ({exc}); nothing will be collected"
+            )
+            return None
+        if not text.strip():
+            _warn_once(f"--consent-notice {path!r} is empty; nothing will be collected")
+            return None
     return ConsentNotice(text, hashlib.sha256(text.encode("utf-8")).hexdigest())
 
 

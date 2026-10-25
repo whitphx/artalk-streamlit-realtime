@@ -302,7 +302,7 @@ def up(args: argparse.Namespace, app_args: list[str]) -> int:
         # The app itself only finds out on its first page load.
         from .session_records import load_consent_notice
 
-        load_consent_notice(app_config.consent_notice)
+        load_consent_notice(app_config.consent_notice, app_config.consent_notice_text)
     services = _start_services(profile)
     if services:
         # exec would orphan the services; supervise the app instead.

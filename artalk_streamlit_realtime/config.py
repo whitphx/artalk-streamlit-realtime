@@ -568,7 +568,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Offer visitors a rating (five faces) with an optional comment "
             "once they have started a session, and store what they send. "
-            "Needs --consent-notice."
+            "Needs --consent-notice or --consent-notice-text."
         ),
     )
     parser.add_argument(
@@ -578,7 +578,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Record each media session's settings, duration and pipeline "
             "latency counters. Never audio, video, transcripts, API keys or "
-            "uploaded photos. Needs --consent-notice."
+            "uploaded photos. Needs --consent-notice or "
+            "--consent-notice-text."
         ),
     )
     parser.add_argument(
@@ -588,7 +589,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Markdown file shown to visitors when --feedback or "
             "--session-logging is on. Nothing is stored for a visitor until "
-            "they accept it, and without this file nothing is stored at all."
+            "they accept it, and without a notice nothing is stored at all."
+        ),
+    )
+    parser.add_argument(
+        "--consent-notice-text",
+        default=os.environ.get("ARTALK_CONSENT_NOTICE_TEXT"),
+        type=str,
+        help=(
+            "The --consent-notice Markdown given as text instead of a file, "
+            "for hosts where only environment variables can be set. Setting "
+            "both is an error."
         ),
     )
     parser.add_argument(
@@ -641,4 +652,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     args, _ = parser.parse_known_args(argv)
+    if not (args.consent_notice_text or "").strip():
+        args.consent_notice_text = None
+    if args.consent_notice and args.consent_notice_text:
+        # Picking one silently could show visitors a notice the operator
+        # did not mean, and their consent records would carry its hash.
+        parser.error(
+            "--consent-notice (ARTALK_CONSENT_NOTICE) and --consent-notice-text "
+            "(ARTALK_CONSENT_NOTICE_TEXT) are both set; set only one"
+        )
     return args

@@ -371,7 +371,7 @@ def stop_bridge() -> None:
 def get_session_recorder(args, login_id: str | None) -> SessionRecorder | None:
     recorder = st.session_state.get(SESSION_RECORDER_KEY)
     if recorder is None:
-        notice = load_consent_notice(args.consent_notice)
+        notice = load_consent_notice(args.consent_notice, args.consent_notice_text)
         if notice is None:
             return None
         recorder = SessionRecorder(

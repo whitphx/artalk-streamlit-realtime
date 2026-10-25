@@ -44,7 +44,8 @@ ARTALK_SESSION_TIME_LIMIT = "60"
 ARTALK_ISOLATE_USER_AVATARS = "1"
 # Needs hf_oauth in the README front matter, which supplies the OAuth client.
 ARTALK_LOGIN = "1"
-# Both store nothing until ARTALK_CONSENT_NOTICE names a notice file.
+# Both store nothing until ARTALK_CONSENT_NOTICE names a notice file or
+# ARTALK_CONSENT_NOTICE_TEXT holds the notice.
 ARTALK_FEEDBACK = "1"
 ARTALK_SESSION_LOGGING = "1"
 
