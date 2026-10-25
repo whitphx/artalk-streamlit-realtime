@@ -83,7 +83,7 @@ from artalk_streamlit_realtime.fallingwater import FallingwaterStreamer
 from artalk_streamlit_realtime.framemodel import FrameModelStreamer
 from artalk_streamlit_realtime.gc_probe import freeze_loaded_objects, gc_pause_probe
 from artalk_streamlit_realtime.hang_watchdog import script_hang_watchdog
-from artalk_streamlit_realtime.login import parse_email_domains, require_login
+from artalk_streamlit_realtime.login import parse_allow_list, require_login
 from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
@@ -432,7 +432,11 @@ def main() -> None:
     )
     st.title(PAGE_TITLE)
     login_id = (
-        require_login(parse_email_domains(args.login_email_domains))
+        require_login(
+            parse_allow_list(args.login_email_domains),
+            parse_allow_list(args.login_orgs),
+            parse_allow_list(args.login_users),
+        )
         if args.login
         else None
     )

@@ -417,7 +417,13 @@ Three options, all off by default, make the app easier to share. Each is a flag 
 - The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
 - Open the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
 
-`--login-email-domains` (`ARTALK_LOGIN_EMAIL_DOMAINS`) takes a comma-separated list such as `example.ac.jp,example.com` and admits only users whose verified e-mail address is in one of those domains. Matching is exact and case-insensitive, so `lab.example.ac.jp` must be listed itself. Anyone else sees who they are logged in as and a button to log out.
+Three comma-separated allow-lists narrow who gets in. Each is case-insensitive:
+
+- `--login-email-domains` (`ARTALK_LOGIN_EMAIL_DOMAINS`), such as `example.ac.jp,example.com`, matches a verified e-mail address in one of those domains. Matching is exact, so `lab.example.ac.jp` must be listed itself. Hugging Face shares only the account's primary address.
+- `--login-orgs` (`ARTALK_LOGIN_ORGS`), such as `example-org`, matches members of those Hugging Face organizations, by the organization's handle.
+- `--login-users` (`ARTALK_LOGIN_USERS`), such as `alice,bob`, matches those usernames.
+
+A user who matches any list that is set gets in; with none set, everyone who logs in does. Anyone else sees who they are logged in as and a button to log out.
 
 On a lab server, put an `[auth]` section for any OIDC provider in `.streamlit/secrets.toml` ([Streamlit's guide](https://docs.streamlit.io/develop/concepts/connections/authentication)), or leave login off.
 

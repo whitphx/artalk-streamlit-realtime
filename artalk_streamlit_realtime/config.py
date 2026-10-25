@@ -478,11 +478,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("ARTALK_LOGIN_EMAIL_DOMAINS", ""),
         type=str,
         help=(
-            "Comma-separated e-mail domains. With --login, admit only users "
-            "whose verified e-mail address is in one of them, matched "
-            "exactly (a subdomain must be listed itself). Empty admits "
-            "everyone who logs in."
+            "Comma-separated e-mail domains. With --login, admit users whose "
+            "verified e-mail address is in one of them, matched exactly (a "
+            "subdomain must be listed itself). A user matching any non-empty "
+            "list among this, --login-orgs and --login-users is admitted; "
+            "with all three empty, everyone who logs in is."
         ),
+    )
+    parser.add_argument(
+        "--login-orgs",
+        default=os.environ.get("ARTALK_LOGIN_ORGS", ""),
+        type=str,
+        help=(
+            "Comma-separated Hugging Face organization names. With --login, "
+            "admit members of any of them. Needs the read-memberships scope."
+        ),
+    )
+    parser.add_argument(
+        "--login-users",
+        default=os.environ.get("ARTALK_LOGIN_USERS", ""),
+        type=str,
+        help="Comma-separated usernames. With --login, admit these users.",
     )
     parser.add_argument(
         "--isolate-user-avatars",

@@ -18,14 +18,38 @@ import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
 
-def parse_email_domains(value: str) -> frozenset[str]:
+def parse_allow_list(value: str) -> frozenset[str]:
     return frozenset(d.strip().lower() for d in value.split(",") if d.strip())
 
 
-def email_domain_admits(user: Mapping[str, object], domains: Collection[str]) -> bool:
-    """Whether the logged-in ``user`` claims a verified e-mail address in one
-    of ``domains`` (lowercase). An empty ``domains`` admits everyone."""
-    if not domains:
+def login_admits(
+    user: Mapping[str, object],
+    email_domains: Collection[str],
+    orgs: Collection[str],
+    users: Collection[str],
+) -> bool:
+    """Whether the logged-in ``user`` matches any of the non-empty allow-lists
+    (lowercase): a verified e-mail address in ``email_domains``, membership
+    of one of ``orgs``, or a username in ``users``. With all three empty,
+    everyone is admitted."""
+    if not (email_domains or orgs or users):
+        return True
+    # The handle, not the name claim: a display name is free text that
+    # anyone can set to someone else's.
+    username = user.get("preferred_username")
+    if isinstance(username, str) and username.lower() in users:
+        return True
+    # The orgs claim and its entries follow huggingface_hub's reading of it
+    # (https://huggingface.co/docs/huggingface_hub/v0.36.2/en/package_reference/oauth#huggingface_hub.OAuthOrgInfo).
+    # Hugging Face sends it only with the read-memberships scope
+    # (https://huggingface.co/docs/hub/spaces-oauth#scopes).
+    memberships = user.get("orgs")
+    if isinstance(memberships, list) and any(
+        isinstance(org, Mapping)
+        and isinstance(org.get("preferred_username"), str)
+        and org["preferred_username"].lower() in orgs
+        for org in memberships
+    ):
         return True
     email = user.get("email")
     if not isinstance(email, str) or "@" not in email:
@@ -37,14 +61,17 @@ def email_domain_admits(user: Mapping[str, object], domains: Collection[str]) ->
     if "email_verified" in user and user["email_verified"] is not True:
         return False
     # Exact match only, so that admitting a subdomain takes listing it.
-    return email.rpartition("@")[2].lower() in domains
+    return email.rpartition("@")[2].lower() in email_domains
 
 
-def require_login(email_domains: Collection[str] = frozenset()) -> str:
+def require_login(
+    email_domains: Collection[str] = frozenset(),
+    orgs: Collection[str] = frozenset(),
+    users: Collection[str] = frozenset(),
+) -> str:
     """Stop the script run behind a login prompt unless the visitor is
-    logged in, and with ``email_domains`` unless their verified e-mail
-    address is in one of them. Return an id that is stable across their
-    sessions."""
+    logged in and ``login_admits`` them. Return an id that is stable across
+    their sessions."""
     try:
         configured = "auth" in st.secrets
     except StreamlitSecretNotFoundError:
@@ -59,9 +86,9 @@ def require_login(email_domains: Collection[str] = frozenset()) -> str:
         st.info("Log in to use this demo.")
         st.button("Log in", on_click=st.login, type="primary")
         st.stop()
-    if not email_domain_admits(st.user, email_domains):
+    if not login_admits(st.user, email_domains, orgs, users):
         who = st.user.get("email") or st.user.get("preferred_username")
-        # The allowed domains stay unnamed, since the page is public.
+        # The allow-lists stay unnamed, since the page is public.
         st.error(
             f"You are logged in as **{who or st.user.get('sub')}**, which is "
             "not allowed to use this demo."
@@ -106,7 +133,7 @@ def hf_oauth_auth_section(env: Mapping[str, str]) -> str | None:
     scope = env.get("OAUTH_SCOPES") or "openid profile"
     # HF includes the e-mail claims only for the email scope, and the
     # domain check turns away anyone without them.
-    if parse_email_domains(env.get("ARTALK_LOGIN_EMAIL_DOMAINS", "")) and (
+    if parse_allow_list(env.get("ARTALK_LOGIN_EMAIL_DOMAINS", "")) and (
         "email" not in scope.split()
     ):
         scope += " email"
