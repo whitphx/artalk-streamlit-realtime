@@ -35,6 +35,15 @@
 #
 # The sidebar opens on Interactive mode with the OpenAI Live backend; the env
 # file can set ARTALK_DEFAULT_MODE and ARTALK_DEFAULT_BACKEND instead.
+#
+# Avatar registration needs the tracker environment, provisioned once:
+#
+#   scripts/provision_track_env.sh --cpu
+#   TRACK_ASSETS_DIR=/path/to/large-storage/track-assets \
+#     scripts/fetch_track_resources.sh
+#
+# The job looks for it in $ARTALK_TRACK_ENV (default .envs/track in the repo)
+# and tracks on CPU. Without it, registration stays off.
 set -euo pipefail
 
 START=$SECONDS
@@ -85,6 +94,23 @@ export ARTALK_SESSION_DATA_DIR=${ARTALK_SESSION_DATA_DIR:-$DATA_DIR/session_data
 export ARTALK_MAX_SESSIONS=${ARTALK_MAX_SESSIONS:-2}
 export ARTALK_DEFAULT_MODE=${ARTALK_DEFAULT_MODE:-interactive}
 export ARTALK_DEFAULT_BACKEND=${ARTALK_DEFAULT_BACKEND:-openai-live}
+
+TRACK_ENV=${ARTALK_TRACK_ENV:-$REPO/.envs/track}
+TRACK_DIR=${GAGAVATAR_TRACK_DIR:-$REPO/vendor/GAGAvatar/gagavatar/libs/GAGAvatar_track}
+# The weights may be links to another disk, which -e follows.
+if [ -x "$TRACK_ENV/bin/python" ] \
+  && [ -e "$TRACK_DIR/assets/emica/EMICA-CVT_flame2020_notexture.pt" ] \
+  && [ -e "$TRACK_DIR/assets/flame/FLAME_with_eye.pt" ]; then
+  export GAGAVATAR_TRACK_PYTHON=$TRACK_ENV/bin/python GAGAVATAR_TRACK_DIR=$TRACK_DIR
+  # The GPU belongs to the live sessions.
+  export GAGAVATAR_TRACK_DEVICE=cpu
+  REGISTRATION_STATUS="on, tracking on CPU with $TRACK_ENV"
+else
+  # Empty rather than unset, so that the launcher's own lookup below cannot
+  # turn registration back on with half the tracker missing.
+  export GAGAVATAR_TRACK_PYTHON=
+  REGISTRATION_STATUS="off: no tracker environment in $TRACK_ENV or no weights under $TRACK_DIR/assets (see the header of this script)"
+fi
 
 # The Space's login rides on HF OAuth, which a lab host does not have.
 export ARTALK_LOGIN=${ARTALK_LOGIN:-0}
@@ -139,6 +165,7 @@ requeue() {
 echo "host $(hostname) job ${SLURM_JOB_ID:-none} preset $PRESET data $DATA_DIR"
 nvidia-smi -L
 echo "WebRTC: $TURN_STATUS"
+echo "Avatar registration: $REGISTRATION_STATUS"
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 APP_LOG=$DATA_DIR/app-${SLURM_JOB_ID:-$$}-${SLURM_RESTART_COUNT:-0}.log
