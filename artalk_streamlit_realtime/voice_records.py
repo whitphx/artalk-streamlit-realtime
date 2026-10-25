@@ -10,9 +10,10 @@ import os
 import queue
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, Protocol
 
 import av
 import numpy as np
@@ -148,6 +149,7 @@ class VoiceSession:
         *,
         record_reply: bool,
         metadata: dict,
+        on_done=None,
     ) -> None:
         self.directory = directory
         self.media_session = media_session
@@ -158,6 +160,7 @@ class VoiceSession:
         self.dropped = {"mic": 0, "reply": 0}
         self.end_reason: str | None = None
         self.ended: float | None = None
+        self._on_done = on_done
         self._queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAX_CHUNKS)
         self._closing = threading.Event()
         self._aborting = threading.Event()
@@ -202,6 +205,11 @@ class VoiceSession:
         self.ended = time.monotonic()
         self._closing.set()
 
+    def abort(self) -> None:
+        """Stops taking audio and deletes whatever was written."""
+        self._aborting.set()
+        self.close("deleted")
+
     def join(self) -> None:
         self._thread.join()
 
@@ -229,6 +237,8 @@ class VoiceSession:
                 logger.warning("[voice-records] could not finalize a recording", exc_info=True)
                 for writer in self._tracks.values():
                     writer.abort()
+            if self._on_done is not None:
+                self._on_done(self)
 
     def _encode(self, track: Track, arrived: float, chunk) -> None:
         if track == "mic":
@@ -276,3 +286,66 @@ class VoiceSession:
         part = path.with_name(path.name + ".part")
         part.write_text(json.dumps(sidecar, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(part, path)
+
+
+class VoiceStore(Protocol):
+    def voice_dir(self, subject_key: str) -> Path: ...
+
+    def delete_voice(self, subject_key: str) -> None: ...
+
+
+_live_lock = threading.Lock()
+_live: dict[str, set[VoiceSession]] = defaultdict(set)
+_deleting: set[str] = set()
+
+
+def start_voice_session(
+    store: VoiceStore,
+    key: str,
+    media_session: str,
+    *,
+    record_reply: bool,
+    metadata: dict,
+) -> VoiceSession | None:
+    with _live_lock:
+        # A recording begun while a deletion runs would outlive it.
+        if key in _deleting:
+            return None
+
+        def forget(session: VoiceSession) -> None:
+            with _live_lock:
+                _live[key].discard(session)
+                if not _live[key]:
+                    del _live[key]
+
+        session = VoiceSession(
+            store.voice_dir(key),
+            media_session,
+            record_reply=record_reply,
+            metadata=metadata,
+            on_done=forget,
+        )
+        _live[key].add(session)
+    return session
+
+
+def has_voice_recordings(store: VoiceStore, key: str) -> bool:
+    directory = store.voice_dir(key)
+    return directory.is_dir() and any(directory.iterdir())
+
+
+def delete_voice_recordings(store: VoiceStore, key: str) -> None:
+    """Deletes every recording of ``key`` that this process can reach,
+    including any being made, and blocks until done."""
+    with _live_lock:
+        _deleting.add(key)
+        sessions = list(_live.get(key, ()))
+    try:
+        for session in sessions:
+            session.abort()
+        for session in sessions:
+            session.join()
+        store.delete_voice(key)
+    finally:
+        with _live_lock:
+            _deleting.discard(key)

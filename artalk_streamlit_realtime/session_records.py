@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -19,7 +20,15 @@ from typing import Literal, NamedTuple, Protocol
 
 import streamlit as st
 
-from .voice_records import VOICE_DIR, VoiceSession, subject_key, voice_codec
+from .voice_records import (
+    VOICE_DIR,
+    VoiceSession,
+    delete_voice_recordings,
+    has_voice_recordings,
+    start_voice_session,
+    subject_key,
+    voice_codec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +111,10 @@ class RecordStore(Protocol):
 
     def voice_dir(self, subject_key: str) -> Path: ...
 
+    def delete_voice(self, subject_key: str) -> None:
+        """Deletes ``voice_dir(subject_key)`` everywhere this store keeps
+        it. Blocks; called from a thread of its own."""
+
 
 class JsonlRecordStore:
     def __init__(self, directory: str | os.PathLike) -> None:
@@ -130,6 +143,10 @@ class JsonlRecordStore:
 
     def voice_dir(self, subject_key: str) -> Path:
         return self.directory / VOICE_DIR / subject_key
+
+    def delete_voice(self, subject_key: str) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            shutil.rmtree(self.voice_dir(subject_key))
 
 
 class HubRecordStore(JsonlRecordStore):
@@ -162,6 +179,48 @@ class HubRecordStore(JsonlRecordStore):
         # without its lock a commit could end on half a line.
         with scheduler.lock if scheduler else contextlib.nullcontext():
             super().append(record)
+
+    def delete_voice(self, subject_key: str) -> None:
+        scheduler = self._scheduler
+        # Under the lock, a scan either sees all of the files or none.
+        with scheduler.lock if scheduler else contextlib.nullcontext():
+            super().delete_voice(subject_key)
+        if scheduler is None:
+            from huggingface_hub import HfApi
+
+            self._delete_voice_on_hub(HfApi(token=self._token), subject_key)
+            return
+        # The scheduler's commits run one at a time on its HfApi's executor.
+        # Queued there, the deletion lands after any commit already under way,
+        # which may still be uploading these files.
+        scheduler.api.run_as_future(
+            self._delete_voice_on_hub, scheduler.api, subject_key
+        ).result()
+
+    def _delete_voice_on_hub(self, api, subject_key: str) -> None:
+        from huggingface_hub.errors import EntryNotFoundError
+
+        path = f"{VOICE_DIR}/{subject_key}"
+        tree = api.list_repo_tree(self.repo_id, path_in_repo=path, repo_type="dataset")
+        try:
+            next(iter(tree), None)
+        except EntryNotFoundError:
+            pass
+        else:
+            api.delete_folder(
+                path,
+                self.repo_id,
+                repo_type="dataset",
+                commit_message="Delete voice recordings at a visitor's request",
+            )
+        # Even with nothing left to delete, a previous deletion may have
+        # stopped before squashing.
+        # https://huggingface.co/docs/huggingface_hub/v0.36.2/en/package_reference/hf_api#huggingface_hub.HfApi.super_squash_history
+        api.super_squash_history(
+            self.repo_id,
+            repo_type="dataset",
+            commit_message="Squash history after deleting voice recordings",
+        )
 
     def _start_scheduler(self) -> None:
         from huggingface_hub import CommitScheduler
@@ -304,6 +363,11 @@ class _OpenMediaSession(NamedTuple):
     voice: VoiceSession | None
 
 
+class VoiceDeletion(NamedTuple):
+    state: Literal["running", "done", "failed"]
+    message: str
+
+
 class SessionRecorder:
     def __init__(
         self,
@@ -326,6 +390,7 @@ class SessionRecorder:
         self.voice_key = subject_key(self.subject_id)
         self.consent: Literal["pending", "accepted", "declined"] = "pending"
         self.voice_consent = False
+        self.voice_deletion: VoiceDeletion | None = None
         self.media_sessions_started = 0
         self.last_media_session: str | None = None
         self.pipeline = None
@@ -379,7 +444,7 @@ class SessionRecorder:
         )
         if not granted:
             # Turning it off stops the recording under way at once; what it
-            # holds so far is kept.
+            # holds so far is kept, and the delete button removes it.
             voice, self._voice = self._voice, None
             if voice is not None:
                 voice.close("voice_consent_withdrawn")
@@ -393,6 +458,26 @@ class SessionRecorder:
         voice = self._voice
         if voice is not None:
             voice.push_reply(samples, sample_rate)
+
+    def has_voice_recordings(self) -> bool:
+        return has_voice_recordings(self.store, self.voice_key)
+
+    def delete_voice_recordings(self) -> None:
+        if self.voice_deletion is not None and self.voice_deletion.state == "running":
+            return
+        self._voice = None
+        self.voice_deletion = VoiceDeletion("running", "")
+
+        def run() -> None:
+            try:
+                delete_voice_recordings(self.store, self.voice_key)
+            except Exception as exc:
+                logger.warning("[session-records] voice deletion failed", exc_info=True)
+                self.voice_deletion = VoiceDeletion("failed", f"{type(exc).__name__}: {exc}")
+            else:
+                self.voice_deletion = VoiceDeletion("done", "")
+
+        threading.Thread(target=run, name="voice-records-delete", daemon=True).start()
 
     def start_media(
         self,
@@ -413,8 +498,9 @@ class SessionRecorder:
             recorded = self.collecting and self.log_sessions
             voice = None
             if self.collecting and self.voice_enabled and self.voice_consent:
-                voice = VoiceSession(
-                    self.store.voice_dir(self.voice_key),
+                voice = start_voice_session(
+                    self.store,
+                    self.voice_key,
                     media_session,
                     # Loopback plays the microphone back, so its reply is
                     # the mic track already.
@@ -524,17 +610,64 @@ def render_feedback_form(recorder: SessionRecorder) -> None:
 
 
 def render_voice_controls(recorder: SessionRecorder) -> None:
-    if not (recorder.voice_enabled and recorder.collecting):
+    if not recorder.voice_enabled:
+        return
+    may_have_recordings = (
+        recorder.voice_consent
+        or recorder.voice_deletion is not None
+        # Signed-in visitors' earlier sessions may have left recordings that
+        # only the uploaded copy still holds.
+        or recorder.subject_kind == "user"
+        or recorder.has_voice_recordings()
+    )
+    if not (recorder.collecting or may_have_recordings):
         return
     with st.expander("Voice recording (optional)"):
-        st.markdown(recorder.voice_notice.text)
-        st.toggle(
-            "Record my voice and the avatar's spoken replies",
-            value=recorder.voice_consent,
-            key="voice_consent",
-            on_change=lambda: recorder.set_voice_consent(st.session_state.voice_consent),
+        if recorder.collecting:
+            st.markdown(recorder.voice_notice.text)
+            st.toggle(
+                "Record my voice and the avatar's spoken replies",
+                value=recorder.voice_consent,
+                key="voice_consent",
+                on_change=lambda: recorder.set_voice_consent(st.session_state.voice_consent),
+            )
+            st.caption(
+                "Applies from the next START. Turning it off stops a recording "
+                "under way."
+            )
+        if not may_have_recordings:
+            return
+        # Not inside the polling fragment below, whose reruns lose clicks.
+        st.button(
+            "Delete my voice recordings",
+            key="voice_delete",
+            on_click=recorder.delete_voice_recordings,
         )
-        st.caption(
-            "Applies from the next START. Turning it off stops a recording "
-            "under way."
-        )
+        if recorder.subject_kind == "user":
+            scope = "Deletes every voice recording made while signed in to this account"
+        else:
+            scope = "Deletes the voice recordings of this browser session"
+        if isinstance(recorder.store, HubRecordStore):
+            scope += ", including uploaded copies and the history that still holds them"
+        caption = f"{scope}. Ratings and session records are kept."
+        if recorder.subject_kind != "user":
+            caption += (
+                " You are not signed in, so recordings from before a reload, "
+                "which starts a new browser session, are not covered."
+            )
+        st.caption(caption)
+        running = recorder.voice_deletion is not None and recorder.voice_deletion.state == "running"
+
+        @st.fragment(run_every="1s" if running else None)
+        def render_deletion_status() -> None:
+            deletion = recorder.voice_deletion
+            if deletion is None:
+                return
+            if deletion.state == "running":
+                st.info("Deleting your voice recordings...")
+            elif deletion.state == "done":
+                st.success("Your voice recordings were deleted.")
+            else:
+                st.error(f"Deletion failed ({deletion.message}). Press the button to try again.")
+
+        render_deletion_status()
