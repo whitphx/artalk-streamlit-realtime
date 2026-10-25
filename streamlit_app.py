@@ -131,6 +131,11 @@ SILENCE_PUMP_CONFIG_KEY = "artalk_silence_pump_config"
 BACKEND_OPENAI = "OpenAI Realtime"
 BACKEND_OPENAI_LIVE = "OpenAI Live"
 BACKEND_PERSONAPLEX = "PersonaPlex"
+BACKEND_LABELS = {
+    "openai-realtime": BACKEND_OPENAI,
+    "openai-live": BACKEND_OPENAI_LIVE,
+    "personaplex": BACKEND_PERSONAPLEX,
+}
 BRIDGE_KEY = "openai_realtime_bridge"
 BRIDGE_CONFIG_KEY = "openai_realtime_bridge_config"
 EVENT_LOG_KEY = "artalk_event_log"
@@ -648,9 +653,11 @@ def main() -> None:
         personaplex_text_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
         if mode == "Interactive":
             st.header("Conversation backend")
+            backend_options = list(BACKEND_LABELS.values())
             backend = st.radio(
                 "Backend",
-                [BACKEND_OPENAI, BACKEND_OPENAI_LIVE, BACKEND_PERSONAPLEX],
+                backend_options,
+                index=backend_options.index(BACKEND_LABELS[args.default_backend]),
                 horizontal=True,
                 help=(
                     "Live and PersonaPlex are full duplex: they stream "

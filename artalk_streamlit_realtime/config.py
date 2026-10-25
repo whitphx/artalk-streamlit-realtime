@@ -7,6 +7,7 @@ import os
 from typing import NamedTuple
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
+CONVERSATION_BACKENDS = ("openai-realtime", "openai-live", "personaplex")
 # Mimi's rate, which PersonaPlex inherits.
 PERSONAPLEX_SAMPLE_RATE = 24000
 DEFAULT_PERSONAPLEX_URL = os.environ.get("ARTALK_PERSONAPLEX_URL", "ws://localhost:8998")
@@ -650,6 +651,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Mode the sidebar starts in.",
     )
     parser.add_argument(
+        "--default-backend",
+        default=os.environ.get("ARTALK_DEFAULT_BACKEND", "openai-realtime"),
+        choices=CONVERSATION_BACKENDS,
+        help="Conversation backend the sidebar starts on in Interactive mode.",
+    )
+    parser.add_argument(
         "--ice-provider",
         default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
         choices=["stun", "cloudflare"],
@@ -673,6 +680,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     args, _ = parser.parse_known_args(argv)
+    # argparse checks choices only for values given on the command line, so a
+    # typo in the variable would otherwise surface as a crash in the sidebar.
+    if args.default_backend not in CONVERSATION_BACKENDS:
+        parser.error(
+            "--default-backend (ARTALK_DEFAULT_BACKEND) must be one of "
+            f"{', '.join(CONVERSATION_BACKENDS)}, not {args.default_backend!r}"
+        )
     for option in ("consent_notice", "voice_consent_notice"):
         text_option = f"{option}_text"
         if not (getattr(args, text_option) or "").strip():
