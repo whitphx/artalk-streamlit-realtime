@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the model weights the vendored GAGAvatar_track loads, except FLAME,
-# into the tracker's assets/ and the tracker env's download caches.
+# into the tracker's assets/ (or $TRACK_ASSETS_DIR, linked from there) and the
+# tracker env's download caches.
 # FLAME is license-gated and never baked into an image: the tracker reads the
 # app's own copy through a symlink, which resolves once
 # `artalk-demo assets` has placed FLAME_with_eye.pt in the asset tree.
@@ -8,7 +9,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-TRACK_DIR=vendor/GAGAvatar/gagavatar/libs/GAGAvatar_track
+TRACK_DIR="${GAGAVATAR_TRACK_DIR:-vendor/GAGAvatar/gagavatar/libs/GAGAvatar_track}"
+# The tracker loads its weights from its own assets/ only, so weights kept
+# elsewhere (on a larger disk) are linked in there.
+TRACK_ASSETS_DIR="${TRACK_ASSETS_DIR:-$TRACK_DIR/assets}"
 TRACK_PYTHON="${TRACK_ENV_DIR:-.envs/track}/bin/python"
 ASSET_DIR="${ARTALK_ASSET_DIR:-assets}"
 
@@ -22,7 +26,13 @@ curl -fsSL -o "$tmp/track_resources.tar" "$RESOURCES_URL"
 echo "$RESOURCES_SHA256  $tmp/track_resources.tar" | sha256sum -c -
 # flame/ holds FLAME_with_eye.pt, byte-identical to the app's gated copy, and
 # canonical.obj, which nothing in the tracker reads.
-tar -xf "$tmp/track_resources.tar" -C "$TRACK_DIR/assets" --exclude=flame
+mkdir -p "$TRACK_ASSETS_DIR"
+tar -xf "$tmp/track_resources.tar" -C "$TRACK_ASSETS_DIR" --exclude=flame
+if [ "$(realpath "$TRACK_ASSETS_DIR")" != "$(realpath "$TRACK_DIR/assets")" ]; then
+  # File by file, not one link per directory: the tracker checkout ignores
+  # the weight files themselves, but would list directory links as untracked.
+  cp -rs --remove-destination "$(realpath "$TRACK_ASSETS_DIR")/." "$TRACK_DIR/assets/"
+fi
 mkdir -p "$TRACK_DIR/assets/flame"
 ln -sfr "$ASSET_DIR/FLAME_with_eye.pt" "$TRACK_DIR/assets/flame/FLAME_with_eye.pt"
 
