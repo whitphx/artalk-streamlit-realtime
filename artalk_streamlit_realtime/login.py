@@ -137,6 +137,12 @@ def hf_oauth_auth_section(env: Mapping[str, str]) -> str | None:
         "email" not in scope.split()
     ):
         scope += " email"
+    # Likewise the orgs claim needs read-memberships, and the organization
+    # check turns away anyone without it.
+    if parse_allow_list(env.get("ARTALK_LOGIN_ORGS", "")) and (
+        "read-memberships" not in scope.split()
+    ):
+        scope += " read-memberships"
     lines += ["", "[auth.client_kwargs]", f"scope = {json.dumps(scope)}"]
     # Streamlit defaults to prompt="select_account", which HF rejects
     # (it accepts consent, login and none), sending the visitor back

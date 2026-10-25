@@ -9,6 +9,7 @@ pinned: false
 hf_oauth: true
 hf_oauth_scopes:
   - email
+  - read-memberships
 models:
   - xg-chu/ARTalk
   - xg-chu/GAGAvatar
@@ -413,7 +414,7 @@ Three options, all off by default, make the app easier to share. Each is a flag 
 **Login** (`--login`). Visitors log in through Streamlit's OpenID Connect support (`st.login`) before anything loads. On a Space:
 
 - `hf_oauth: true` in the front matter of this README creates an OAuth app for the Space and hands its client to the container. At start, `artalk-demo up` writes the `[auth]` section Streamlit reads from that client.
-- `hf_oauth_scopes` lists `email` so that the domain restriction below can read the visitor's address. Visitors are asked to share it when they sign in.
+- `hf_oauth_scopes` lists `email` and `read-memberships` so that the restrictions below can read the visitor's address and organizations. Visitors are asked to share both when they sign in.
 - The optional secret `ARTALK_AUTH_COOKIE_SECRET` keeps visitors logged in across restarts; without it, every restart logs them out.
 - Open the app at its own `*.hf.space` address. Inside the huggingface.co page the app runs in an iframe, and the [Spaces OAuth guide](https://huggingface.co/docs/hub/spaces-oauth#adding-the-button-to-your-space) warns that sign-in cookies can fail there.
 
