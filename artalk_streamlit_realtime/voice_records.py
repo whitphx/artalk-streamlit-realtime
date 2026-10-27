@@ -82,7 +82,10 @@ class _TrackWriter:
 
     def write(self, samples: np.ndarray, start_at: float) -> None:
         if self._container is None:
-            self.part.parent.mkdir(parents=True, exist_ok=True)
+            self.part.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # PyAV creates the file with the process umask; a voice recording
+            # must stay readable by the server's user only, like the records.
+            os.close(os.open(self.part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
             self._container = av.open(str(self.part), mode="w", format=self.codec.container)
             self._stream = self._container.add_stream(
                 self.codec.name, rate=self.rate, layout="mono"
@@ -286,7 +289,9 @@ class VoiceSession:
         }
         path = self.directory / f"{self.media_session}.json"
         part = path.with_name(path.name + ".part")
-        part.write_text(json.dumps(sidecar, ensure_ascii=False, indent=1), encoding="utf-8")
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
         os.replace(part, path)
 
 
