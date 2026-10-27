@@ -22,8 +22,11 @@ Each message on the ``motion`` channel is one frame, little-endian:
                       was sent, ms
     36      f32       RMS of the audio frame emitted with the message
     40      f64       media time where that audio frame starts, in seconds
-    48      12 x f32  camera, the 3x4 transform GAGAvatar builds its view from
-    96      int16     head-vertex offsets (x, y, z per vertex) from the
+    48      u32       RTP timestamp under which the browser plays the frame's
+                      first audio sample
+    52      u32       1 when the RTP timestamp is known, else 0
+    56      12 x f32  camera, the 3x4 transform GAGAvatar builds its view from
+    104     int16     head-vertex offsets (x, y, z per vertex) from the
                       avatar bundle's neutral vertices, in QUANT_STEP units
 
 The audio RMS and the jaw opening let the browser estimate the audio-to-face
@@ -40,6 +43,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import struct
 import threading
 import time
@@ -73,14 +77,14 @@ MAX_BUFFERED_BYTES = 160 * 1024
 # seen in recorded conversations, at about 1/400 px of a 512 px frame.
 QUANT_STEP = 2.0**-17
 HEAD_VERTICES = 5023
-HEADER = struct.Struct("<4sIIfddffd")
+HEADER = struct.Struct("<4sIIfddffdII")
 CAMERA_OFFSET = HEADER.size
 OFFSETS_OFFSET = CAMERA_OFFSET + 12 * 4
 RECORD_BYTES = OFFSETS_OFFSET + HEAD_VERTICES * 3 * 2
 # The frame index and the timing fields are only known when the frame is
 # sent; the worker fills in the rest.
 STAMP_INDEX = struct.Struct("<I")
-STAMP_TIMING = struct.Struct("<ddffd")
+STAMP_TIMING = struct.Struct("<ddffdII")
 JS_DIR = Path(__file__).with_name("client_render_js")
 ORT_BUNDLE = "ort.webgpu.bundle.min.mjs"
 ORT_CDN_URL = f"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/{ORT_BUNDLE}"
@@ -100,6 +104,9 @@ ORT_PATCHED_SHA256 = "5557036315cfbc7facf8a4bcbcff03703e0f6a6a54f7a172e1e29d14cc
 # identifies.
 ORT_PATCH_SITE = b"if(ae===O[R]||oe.includes(O[R])){"
 ORT_PATCH = b'if(ae===O[R]||oe.includes(O[R])||A&&i[R]?.[3]==="gpu-buffer"){'
+# Spike only: holds every motion message back by this long before sending,
+# to make the data channel slower than the audio.
+SPIKE_SEND_DELAY_S = float(os.environ.get("ARTALK_SPIKE_SEND_DELAY_MS", "0")) / 1000.0
 NETWORKS = {
     "trained_lowres16": "Network, 256 px core (lowres16)",
     "trained_plain16": "Network, 512 px (plain16)",
@@ -241,7 +248,7 @@ class ClientRenderAdapter:
         jaw = batch["jaw"].float().cpu().numpy()
         records = np.zeros((n, RECORD_BYTES), dtype=np.uint8)
         for i in range(n):
-            HEADER.pack_into(records[i], 0, b"ARV1", 0, batch["generation"], jaw[i], 0.0, 0.0, 0.0, 0.0, 0.0)
+            HEADER.pack_into(records[i], 0, b"ARV1", 0, batch["generation"], jaw[i], 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
         records[:, CAMERA_OFFSET:OFFSETS_OFFSET] = camera.astype("<f4").reshape(n, -1).view(np.uint8)
         records[:, OFFSETS_OFFSET:] = offsets.astype("<i2").reshape(n, -1).view(np.uint8)
         # The pipeline treats a uint8 batch as finished frames; each "frame"
@@ -262,6 +269,8 @@ class ClientRenderPipeline(ARTalkPipeline):
         # Frames must leave the renderer as the adapter's raw bytes.
         kwargs["renderer_output_uint8"] = False
         self.channel_source = lambda: None
+        # (pts, time_base) -> the outbound audio's RTP timestamp at pts, or None.
+        self.rtp_timestamp = lambda pts, time_base: None
         super().__init__(**kwargs)
 
     @property
@@ -305,14 +314,30 @@ class ClientRenderPipeline(ARTalkPipeline):
         lead_ms = (float((start - pts) * time_base) + AUDIO_OUT_PTIME) * 1000.0
         samples = frame.to_ndarray().astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(samples * samples)))
+        rtp = self.rtp_timestamp(int(start), time_base)
         message = bytearray(rendered.image.tobytes())
         STAMP_INDEX.pack_into(message, 4, frame_index)
         STAMP_TIMING.pack_into(
-            message, 16, start_s, time.time() * 1000.0, lead_ms, rms, float(pts * time_base)
+            message,
+            16,
+            start_s,
+            time.time() * 1000.0,
+            lead_ms,
+            rms,
+            float(pts * time_base),
+            rtp or 0,
+            rtp is not None,
         )
-        if channel.send(bytes(message), max_buffered=MAX_BUFFERED_BYTES):
+        if SPIKE_SEND_DELAY_S > 0:
+            threading.Timer(SPIKE_SEND_DELAY_S, self._send, (channel, bytes(message), metrics)).start()
+        else:
+            self._send(channel, bytes(message), metrics)
+        return frame
+
+    @staticmethod
+    def _send(channel, message: bytes, metrics) -> None:
+        if channel.send(message, max_buffered=MAX_BUFFERED_BYTES):
             metrics.inc("client_render_frames_sent")
             metrics.inc("client_render_bytes_sent", len(message))
         else:
             metrics.inc("client_render_frames_dropped")
-        return frame

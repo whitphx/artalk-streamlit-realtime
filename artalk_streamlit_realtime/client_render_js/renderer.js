@@ -16,7 +16,7 @@ const OUT = 512, CHANNELS = 16;
 const PAIR_CAPACITY = { 256: 1_500_000, 512: 3_000_000 };
 const WASM_PARTS = ['ort-wasm-asyncify-1.30.0.part0.wasm', 'ort-wasm-asyncify-1.30.0.part1.wasm'];
 const WASM_SHA256 = '39f9f0894d478800487ed9f7dbe92618498db320cf55c8e3d89adff8dce658da';
-export const CAMERA_OFFSET = 48, OFFSETS_OFFSET = 96;
+export const CAMERA_OFFSET = 56, OFFSETS_OFFSET = 104;
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const sha256 = async (bytes) => hex(await crypto.subtle.digest('SHA-256', bytes));

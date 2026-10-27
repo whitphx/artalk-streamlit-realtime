@@ -1808,6 +1808,11 @@ def main() -> None:
             pipeline.channel_source = lambda: (streamer_ctx.data_channels or {}).get(
                 CHANNEL_LABEL
             )
+            # Absent from data-channel builds without the RTP clock.
+            if hasattr(streamer_ctx, "rtp_timestamp"):
+                pipeline.rtp_timestamp = lambda pts, time_base: streamer_ctx.rtp_timestamp(
+                    "audio", pts, time_base
+                )
         ctx = st.session_state.get(streamer_key)
         if ctx is not None and (ctx.state.playing or ctx.state.signalling):
             slots.mark_started(session_id)

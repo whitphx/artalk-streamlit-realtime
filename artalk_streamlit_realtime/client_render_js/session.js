@@ -7,7 +7,7 @@ import { createPacer, slewToward, RING_SLOTS } from './pacer.js';
 import { makeBadge } from './badge.js';
 
 const PAGE = 'artalk-client-render/1';
-const HEADER_BYTES = 48;
+const HEADER_BYTES = 56;
 const OFFSET_WINDOW_MS = 2000;
 const SAMPLE_CAP = 30000;
 const PER_FRAME_CAP = 750;
@@ -19,7 +19,23 @@ function parseHeader(buf) {
     index: v.getUint32(4, true), generation: v.getUint32(8, true), jaw: v.getFloat32(12, true),
     mediaMs: v.getFloat64(16, true) * 1000, sentWallMs: v.getFloat64(24, true), leadMs: v.getFloat32(32, true),
     rms: v.getFloat32(36, true), audioFrameMs: v.getFloat64(40, true) * 1000,
+    rtp: v.getUint32(52, true) ? v.getUint32(48, true) : null,
   };
+}
+
+// On the app's URL, ?raw=1 adds the time series to the results for offline
+// analysis, and ?sync=rtp starts with the RTP scheme.
+const PAGE_PARAMS = (() => { try { return new URLSearchParams(window.parent.location.search); } catch { return new URLSearchParams(); } })();
+const RAW = PAGE_PARAMS.has('raw');
+
+function schemeWindows(rows, windowMs = 8000) {
+  const out = [];
+  const valid = rows.filter((r) => r[3] !== null);
+  for (let t0 = valid[0]?.[0]; valid.length && t0 + windowMs <= valid.at(-1)[0]; t0 += windowMs) {
+    const d = summary(valid.filter((r) => r[0] >= t0 && r[0] < t0 + windowMs).map((r) => r[3] - r[2]));
+    if (d) out.push({ atS: Math.round(t0 / 100) / 10, median: d.median, p10: d.p10, p90: d.p90 });
+  }
+  return out;
 }
 
 function summary(xs) {
@@ -135,7 +151,7 @@ async function startAudioProbe(track, onEnvelope) {
   return ctx;
 }
 
-export function start({ channels, root, pc, data }) {
+export function start({ channels, root, pc, data, createPlayoutClock }) {
   const channel = channels.motion;
   channel.binaryType = 'arraybuffer';
   const dataBase = new URL(`../${data.dirs.data}/`, location.href);
@@ -165,13 +181,25 @@ export function start({ channels, root, pc, data }) {
   const delayInput = document.createElement('input');
   delayInput.type = 'number'; delayInput.step = '10'; delayInput.value = '0'; delayInput.style.width = '5em';
   delayLabel.append(delayInput);
+  // Which estimate of when a frame's audio plays schedules the face: arrival
+  // time plus the jitter buffer, or the receiver's RTP playout clock.
+  const schemeLabel = document.createElement('label');
+  schemeLabel.textContent = 'Sync ';
+  const schemeSelect = document.createElement('select');
+  for (const [value, text] of [['arrival', 'arrival + jitter buffer'], ['rtp', 'RTP playout clock']]) {
+    const option = document.createElement('option');
+    option.value = value; option.textContent = text;
+    schemeSelect.append(option);
+  }
+  schemeSelect.value = PAGE_PARAMS.get('sync') === 'rtp' ? 'rtp' : 'arrival';
+  schemeLabel.append(schemeSelect);
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.textContent = 'Copy results as JSON';
   const json = document.createElement('textarea');
   json.readOnly = true;
   json.style.cssText = 'width: 100%; height: 6em; display: none';
-  controls.append(delayLabel, copyButton);
+  controls.append(delayLabel, schemeLabel, copyButton);
   wrap.append(stage, status, readout, controls, json);
   root.append(wrap);
 
@@ -184,7 +212,10 @@ export function start({ channels, root, pc, data }) {
     rendered: 0, renderedAhead: 0, presented: 0, skippedOverdue: 0, droppedRingFull: 0, requeuedRingFull: 0,
   };
   const pacer = createPacer(counts);
-  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [] };
+  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [], schemes: [], rtpClock: [] };
+  const playoutClock = createPlayoutClock?.('audio') ?? null;
+  // Due minus media time under the RTP scheme, slewed like the hold.
+  let rtpOffsetNow = null, rtpOffsetAt = 0, lastRtpFrame = null, outputLatencyMs = null;
   const startedPerf = performance.now(), startedWall = Date.now();
   let lastIndex = -1, audioProbe = null, audioProbeError = null;
 
@@ -251,6 +282,7 @@ export function start({ channels, root, pc, data }) {
     push(series.arrival, [arrival, h.index, h.sentWallMs, Date.now()]);
     push(series.audioServer, [h.audioFrameMs + 10, h.rms]);
     push(series.mouthMedia, [h.mediaMs, h.jaw]);
+    if (h.rtp !== null) lastRtpFrame = h;
     // Chrome pauses animation frames in a hidden tab, so a queued frame could only come back late.
     if (document.hidden) { counts.skippedHidden++; return; }
     pacer.add(h);
@@ -265,7 +297,26 @@ export function start({ channels, root, pc, data }) {
     holdSettled = jitterBufferMs > 0;
     holdAt = now;
   }
-  const dueAt = (h) => h.mediaMs + offsetMs + holdMs();
+  // When the latest stamped frame's audio is heard, by the receiver's RTP
+  // clock, minus that frame's media time. Where the browser reports no output
+  // delay, the audio probe's output latency stands in for it.
+  function rtpOffsetTarget() {
+    if (!playoutClock || !lastRtpFrame) return null;
+    const heard = playoutClock.playoutTime(lastRtpFrame.rtp);
+    if (heard === null) return null;
+    const tail = playoutClock.outputDelay() === null ? outputLatencyMs ?? 0 : 0;
+    return heard + tail - lastRtpFrame.mediaMs + (Number(delayInput.value) || 0);
+  }
+  function updateRtpOffset(now) {
+    const target = rtpOffsetTarget();
+    if (target === null) return;
+    rtpOffsetNow = rtpOffsetNow === null || !holdSettled ? target : slewToward(rtpOffsetNow, target, now - rtpOffsetAt);
+    rtpOffsetAt = now;
+  }
+  const arrivalDue = (h) => h.mediaMs + offsetMs + holdMs();
+  const rtpDue = (h) => (rtpOffsetNow === null ? null : h.mediaMs + rtpOffsetNow);
+  // Falls back to the arrival estimate until the RTP clock has a reading.
+  const dueAt = (h) => (schemeSelect.value === 'rtp' && rtpOffsetNow !== null ? rtpDue(h) : arrivalDue(h));
 
   // At most one render in flight: queuing more on the GPU only delays the
   // frames due soonest.
@@ -301,6 +352,7 @@ export function start({ channels, root, pc, data }) {
     const h = job.h, due = dueAt(h);
     push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end, h.mediaMs]);
     push(series.mouthShown, [shown, h.jaw]);
+    push(series.schemes, [shown, h.mediaMs, arrivalDue(h), rtpDue(h), schemeSelect.value === 'rtp' && rtpOffsetNow !== null ? 1 : 0]);
     series.perFrame.push([h.index, h.mediaMs, h.arrival, job.start, job.end, due, shown].map((x) => Math.round(x * 10) / 10));
     if (series.perFrame.length > PER_FRAME_CAP) series.perFrame.shift();
   }
@@ -311,6 +363,7 @@ export function start({ channels, root, pc, data }) {
     raf = requestAnimationFrame(tick);
     counts.animationFrames++;
     updateHold(ts);
+    updateRtpOffset(ts);
     if (renderer && offsetMs !== null && !document.hidden) {
       const job = pacer.present(ts, dueAt);
       if (job) show(job, ts);
@@ -334,10 +387,16 @@ export function start({ channels, root, pc, data }) {
       playoutMs = playoutMs ? playoutMs * 0.7 + pd * 0.3 : pd;
     }
     prevStats = { audio, playout };
+    const ctx = await Promise.resolve(audioProbe).catch(() => null);
+    if (ctx?.outputLatency !== undefined) outputLatencyMs = ctx.outputLatency * 1000;
+    const recv = pc.getReceivers().find((r) => r.track.kind === 'audio');
+    const src = recv?.getSynchronizationSources?.()[0];
+    if (src) push(series.rtpClock, [performance.now(), src.timestamp - performance.timeOrigin, Date.now() - src.timestamp, src.rtpTimestamp ?? null]);
     const s = (performance.now() - startedPerf) / 1000;
     readout.textContent = `received ${counts.received} (${(counts.bytes * 8 / 1000 / Math.max(s, 1)).toFixed(0)} kbit/s), shown ${counts.presented}, ` +
       `rendered ahead ${counts.renderedAhead}, late ${counts.skippedLate + counts.skippedOverdue}, hold ${holdMs().toFixed(0)} ms ` +
-      `(jitter buffer ${jitterBufferMs.toFixed(0)} + playout ${playoutMs.toFixed(0)}), render ${renderMsAvg.toFixed(0)} ms`;
+      `(jitter buffer ${jitterBufferMs.toFixed(0)} + playout ${playoutMs.toFixed(0)}), render ${renderMsAvg.toFixed(0)} ms, ` +
+      `RTP minus arrival scheme ${rtpOffsetNow === null || offsetMs === null ? 'n/a' : (rtpOffsetNow - offsetMs - holdMs()).toFixed(0)} ms`;
   }, 500);
 
   function onTrack(track) {
@@ -379,7 +438,15 @@ export function start({ channels, root, pc, data }) {
       shownIntervalsOver60ms: shownGaps.filter((g) => g > 60).length,
       // Positive: the face trails the sound. "shown" is measured on the page (drawn frames against the audio
       // it plays); "intended" is the same estimate on the server's own timeline.
-      sync: { intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError, faceVsAudio: faceVsAudio(drawn, series.audioServer, series.audioShown) },
+      sync: {
+        intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError, faceVsAudio: faceVsAudio(drawn, series.audioServer, series.audioShown),
+        scheme: schemeSelect.value, playoutClock: !!playoutClock, clockOutputDelayMs: playoutClock?.outputDelay() ?? null, rtpStamped: !!lastRtpFrame, outputLatencyMs: outputLatencyMs === null ? null : Math.round(outputLatencyMs),
+        // Per window: how much later the RTP scheme would show a frame than the arrival scheme.
+        rtpMinusArrival: schemeWindows(series.schemes),
+        // getSynchronizationSources: playout time minus now (should be a little negative) and Date.now() minus the timestamp.
+        ssrcTimestampMinusNow: summary(series.rtpClock.map((r) => r[1] - r[0])), dateNowMinusSsrcTimestamp: summary(series.rtpClock.map((r) => r[2])),
+      },
+      raw: RAW ? { drawn: series.drawn, audioServer: series.audioServer, audioShown: series.audioShown, schemes: series.schemes, arrival: series.arrival } : undefined,
       perFrame: { fields: ['index', 'mediaMs', 'arrival', 'renderStart', 'renderEnd', 'due', 'shown'], rows: series.perFrame },
       log: logLines.slice(-50),
     };
@@ -392,7 +459,7 @@ export function start({ channels, root, pc, data }) {
     try { await navigator.clipboard.writeText(text); copyButton.textContent = 'Copied'; } catch { json.select(); copyButton.textContent = 'Select and copy below'; }
     setTimeout(() => { copyButton.textContent = 'Copy results as JSON'; }, 2000);
   });
-  window.artalkClientRender = { results };
+  window.artalkClientRender = { results, setScheme: (v) => { schemeSelect.value = v; } };
 
   const onVisibility = () => {
     if (!document.hidden) return;
