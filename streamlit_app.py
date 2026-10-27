@@ -10,6 +10,7 @@ environment variables.
 from __future__ import annotations
 
 import faulthandler
+import inspect
 import logging
 import os
 import signal
@@ -482,6 +483,15 @@ def main() -> None:
             st.error(
                 "--client-render needs --client-render-dir and the GAGAvatar "
                 "assets (its vertices come from the GAGAvatar runtime)."
+            )
+            st.stop()
+        # Probed by parameter rather than by version: the data-channel build
+        # is an unreleased checkout, so no version number marks it.
+        if "data_channels" not in inspect.signature(webrtc_streamer).parameters:
+            st.error(
+                "--client-render needs a streamlit-webrtc build with data "
+                "channels, and the installed one has none. See the README's "
+                "section on rendering in the browser."
             )
             st.stop()
         client_assets = ClientRenderAssets(args.client_render_dir)
