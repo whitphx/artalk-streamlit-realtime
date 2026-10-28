@@ -24,7 +24,7 @@ function parseHeader(buf) {
 }
 
 // On the app's URL, ?raw=1 adds the time series to the results for offline
-// analysis, and ?sync=rtp starts with the RTP scheme.
+// analysis.
 const PAGE_PARAMS = (() => { try { return new URLSearchParams(window.parent.location.search); } catch { return new URLSearchParams(); } })();
 const RAW = PAGE_PARAMS.has('raw');
 
@@ -181,29 +181,17 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
   const delayInput = document.createElement('input');
   delayInput.type = 'number'; delayInput.step = '10'; delayInput.value = '0'; delayInput.style.width = '5em';
   delayLabel.append(delayInput);
-  // Which estimate of when a frame's audio plays schedules the face: arrival
-  // time plus the jitter buffer, or the receiver's RTP playout clock.
-  const schemeLabel = document.createElement('label');
-  schemeLabel.textContent = 'Sync ';
-  const schemeSelect = document.createElement('select');
-  for (const [value, text] of [['arrival', 'arrival + jitter buffer'], ['rtp', 'RTP playout clock']]) {
-    const option = document.createElement('option');
-    option.value = value; option.textContent = text;
-    schemeSelect.append(option);
-  }
-  schemeSelect.value = PAGE_PARAMS.get('sync') === 'rtp' ? 'rtp' : 'arrival';
-  schemeLabel.append(schemeSelect);
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.textContent = 'Copy results as JSON';
   const json = document.createElement('textarea');
   json.readOnly = true;
   json.style.cssText = 'width: 100%; height: 6em; display: none';
-  controls.append(delayLabel, schemeLabel, copyButton);
+  controls.append(delayLabel, copyButton);
   wrap.append(stage, status, readout, controls, json);
   root.append(wrap);
 
-  let config = data, renderer = null, pending = null, rendering = null, raf = 0, stopped = false;
+  let config = data, scheme = data.sync, renderer = null, pending = null, rendering = null, raf = 0, stopped = false;
   const offsets = [];
   let offsetMs = null, jitterBufferMs = 0, playoutMs = 0, renderMsAvg = 0, prevStats = null;
   let holdMsNow = null, holdAt = 0, holdSettled = false;
@@ -290,7 +278,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     if (h.rtp !== null) {
       lastRtpFrame = h;
       // Only frames the RTP scheme schedules should hold the audio back.
-      if (schemeSelect.value === 'rtp') playoutClock?.noteDataArrival(h.rtp, arrival);
+      if (scheme === 'rtp') playoutClock?.noteDataArrival(h.rtp, arrival);
       if (RAW) push(series.margins, [arrival, h.index, h.mediaMs, playoutClock?.playoutTime(h.rtp) ?? null, rtpDue(h)]);
     }
     // Chrome pauses animation frames in a hidden tab, so a queued frame could only come back late.
@@ -326,7 +314,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
   const arrivalDue = (h) => h.mediaMs + offsetMs + holdMs();
   const rtpDue = (h) => (rtpOffsetNow === null ? null : h.mediaMs + rtpOffsetNow);
   // Falls back to the arrival estimate until the RTP clock has a reading.
-  const dueAt = (h) => (schemeSelect.value === 'rtp' && rtpOffsetNow !== null ? rtpDue(h) : arrivalDue(h));
+  const dueAt = (h) => (scheme === 'rtp' && rtpOffsetNow !== null ? rtpDue(h) : arrivalDue(h));
 
   // At most one render in flight: queuing more on the GPU only delays the
   // frames due soonest.
@@ -362,7 +350,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     const h = job.h, due = dueAt(h);
     push(series.drawn, [h.index, h.arrival, due, job.start, shown, h.sentWallMs, Date.now(), job.end, h.mediaMs]);
     push(series.mouthShown, [shown, h.jaw]);
-    push(series.schemes, [shown, h.mediaMs, arrivalDue(h), rtpDue(h), schemeSelect.value === 'rtp' && rtpOffsetNow !== null ? 1 : 0]);
+    push(series.schemes, [shown, h.mediaMs, arrivalDue(h), rtpDue(h), scheme === 'rtp' && rtpOffsetNow !== null ? 1 : 0]);
     series.perFrame.push([h.index, h.mediaMs, h.arrival, job.start, job.end, due, shown].map((x) => Math.round(x * 10) / 10));
     if (series.perFrame.length > PER_FRAME_CAP) series.perFrame.shift();
   }
@@ -462,7 +450,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
         hold: playoutClock?.hold() ?? null,
         // Every 500 ms: [page time, target, the clock's jitter buffer delay, frame margin p2, the session's smoothed jitter buffer delay].
         holdSeries: series.hold.filter((_, i) => i % 4 === 0).map((r) => r.map((x) => (x === null ? null : Math.round(x)))),
-        scheme: schemeSelect.value, playoutClock: !!playoutClock, clockOutputDelayMs: playoutClock?.outputDelay() ?? null, rtpStamped: !!lastRtpFrame, outputLatencyMs: outputLatencyMs === null ? null : Math.round(outputLatencyMs),
+        scheme, playoutClock: !!playoutClock, clockOutputDelayMs: playoutClock?.outputDelay() ?? null, rtpStamped: !!lastRtpFrame, outputLatencyMs: outputLatencyMs === null ? null : Math.round(outputLatencyMs),
         // Per window: how much later the RTP scheme would show a frame than the arrival scheme.
         rtpMinusArrival: schemeWindows(series.schemes),
         // getSynchronizationSources: playout time minus now (should be a little negative) and Date.now() minus the timestamp.
@@ -481,7 +469,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     try { await navigator.clipboard.writeText(text); copyButton.textContent = 'Copied'; } catch { json.select(); copyButton.textContent = 'Select and copy below'; }
     setTimeout(() => { copyButton.textContent = 'Copy results as JSON'; }, 2000);
   });
-  window.artalkClientRender = { results, setScheme: (v) => { schemeSelect.value = v; } };
+  window.artalkClientRender = { results, setScheme: (v) => { scheme = v; } };
 
   const onVisibility = () => {
     if (!document.hidden) return;
@@ -496,6 +484,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     update(next) {
       const changed = next.avatar !== config.avatar || next.network !== config.network || next.generation !== config.generation;
       config = next;
+      scheme = next.sync;
       if (changed && !stopped) load(next);
     },
     cleanup() {

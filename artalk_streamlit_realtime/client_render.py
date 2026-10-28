@@ -115,6 +115,11 @@ NETWORKS = {
     "trained_plain16": "Network, 512 px (plain16)",
     "none": "None: data path only (jaw bar)",
 }
+# Which estimate of when a frame's audio plays schedules the face.
+SYNC_SCHEMES = {
+    "arrival": "Arrival + jitter buffer",
+    "rtp": "RTP playout clock",
+}
 # streamlit-webrtc imports the script from a data: URL, against which
 # relative imports do not resolve; the modules are served next to the
 # component's own iframe instead.

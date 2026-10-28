@@ -58,6 +58,7 @@ from artalk_streamlit_realtime.client_render import (
     NETWORKS,
     ORT_CDN_URL,
     QUANT_STEP,
+    SYNC_SCHEMES,
     ClientRenderAdapter,
     ClientRenderAssets,
     ClientRenderPipeline,
@@ -791,6 +792,7 @@ def main() -> None:
         if args.output_rebuffer_seconds is not None
         else args.output_prebuffer_seconds
     )
+    default_sync = "rtp" if st.query_params.get("sync") == "rtp" else "arrival"
     if advanced_box is not None:
         with advanced_box:
             st.subheader("Avatar motion")
@@ -840,6 +842,19 @@ def main() -> None:
                     key="client_network",
                     persist_state="page",
                     help="Switches without restarting the session.",
+                )
+                st.selectbox(
+                    "Face sync",
+                    list(SYNC_SCHEMES),
+                    index=list(SYNC_SCHEMES).index(default_sync),
+                    format_func=SYNC_SCHEMES.__getitem__,
+                    key="client_sync",
+                    persist_state="page",
+                    help=(
+                        "What times the face against the audio: when its "
+                        "message arrives, or the audio's RTP playout clock. "
+                        "Switches without restarting the session."
+                    ),
                 )
             st.selectbox(
                 "Style",
@@ -901,6 +916,7 @@ def main() -> None:
                 )
     style_id = st.session_state.get("style", default_style)
     client_network = st.session_state.get("client_network", next(iter(NETWORKS)))
+    client_sync = st.session_state.get("client_sync", default_sync)
     mic_processing = st.session_state.get("mic_processing", True)
     underrun_policy = st.session_state.get("underrun_policy", args.output_underrun_policy)
     rebuffer_seconds = st.session_state.get("rebuffer_seconds", default_rebuffer_seconds)
@@ -1708,6 +1724,7 @@ def main() -> None:
                 "avatar": pipeline.client_renderer.avatar_id,
                 "generation": pipeline.client_renderer.generation,
                 "network": client_network,
+                "sync": client_sync,
                 "quantStep": QUANT_STEP,
                 "ortUrl": None if client_assets.has_local_ort else ORT_CDN_URL,
                 "graphCapture": client_assets.ort_patched,
