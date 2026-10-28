@@ -130,8 +130,8 @@ export ARTALK_ASSET_DIR=/path/to/ARTalk/assets
 ```
 
 To run a different ARTalk model variant (e.g. a retrained checkpoint that
-shares the default audio encoder), point at it directly; the sidebar shows
-which checkpoint is loaded:
+shares the default audio encoder), point at it directly; the **Advanced** tab
+shows which checkpoint is loaded:
 
 ```bash
 export ARTALK_CHECKPOINT=/path/to/ARTalk_english.pt
@@ -182,6 +182,10 @@ its event loop whenever `sys.modules` changes, and with this app's dependency
 set that blocks the WebRTC tracks for hundreds of milliseconds to several
 seconds, long enough for the browser to conceal audio and freeze video. Set
 `ARTALK_STREAMLIT_SOURCE_WATCHER=1` to restore the watcher when editing.
+
+The page opens in an easy view: a gallery of the avatars, the mode, and the voice. **Professional mode**, a toggle beside the title, adds an **Advanced** tab with every other setting and the pipeline diagnostics. The choice is kept in the URL (`?pro=true`), so a reload or a bookmark keeps the view. What the easy view leaves out keeps its launch default, or whatever professional mode last set it to.
+
+Voice descriptions come from each provider's own documentation, so a voice the provider does not describe is listed by name alone.
 
 The launcher uses `st-remote` from the selected Python environment and defaults
 to an ngrok HTTPS tunnel so the browser gets the secure context that microphone
@@ -261,7 +265,7 @@ It needs two things this repository does not ship:
   --client-render --client-render-dir /path/to/client-render-data
 ```
 
-The sidebar's **Browser renderer** and **Appearance** switch without restarting the session. Under the face, **Extra face delay** shifts the drawing against the audio by hand, and **Copy results as JSON** exports what the page measured: frames received, drawn and skipped, the data rate, timings from arrival to display, and an estimate of the audio-to-face offset.
+The avatar gallery and the **Advanced** tab's **Browser renderer** switch without restarting the session. Under the face, **Extra face delay** shifts the drawing against the audio by hand, and **Copy results as JSON** exports what the page measured: frames received, drawn and skipped, the data rate, timings from arrival to display, and an estimate of the audio-to-face offset.
 
 ## Profiling
 
@@ -310,7 +314,7 @@ ssh -L 8501:localhost:8501 <gpu-host>
 
 ## Registering avatars from face images
 
-The sidebar's **Register avatar** expander accepts an uploaded face image and
+The **Your own avatars** expander under the avatar gallery accepts an uploaded face image and
 builds a new GAGAvatar avatar from it on demand. Tracking (face detection,
 FLAME fitting, matting) runs in the separate
 [GAGAvatar_track](https://github.com/xg-chu/GAGAvatar_track) environment as a
@@ -324,8 +328,9 @@ export GAGAVATAR_TRACK_DIR=/path/to/GAGAvatar_track
 
 (or pass `--gagavatar-track-python` / `--gagavatar-track-dir` as app
 arguments). Registered avatars are stored one directory per avatar under
-`--user-avatar-dir` (default `user_avatars/`, git-ignored) and appear as
-`gagavatar:<name>` under **Appearance**, persisting across restarts. Names
+`--user-avatar-dir` (default `user_avatars/`, git-ignored) and appear in the
+avatar gallery, selected as soon as tracking finishes and persisting across
+restarts. Names
 are slugified, and a name that is already taken gets an automatic `-2` /
 `-3` suffix instead of overwriting the existing avatar. The
 built-in `tracked.pt` asset is never modified. Tracking runs on CPU by
@@ -333,7 +338,7 @@ default (`--gagavatar-track-device`), taking well under a minute per image
 with no GPU memory contention; switch to `cuda` for faster tracking on GPUs
 supported by the tracker environment's torch build.
 
-Interactive mode picks its conversation backend in the sidebar: the OpenAI
+Interactive mode picks its conversation backend in the **Advanced** tab: the OpenAI
 Realtime API (or any server speaking that protocol, chosen under **Endpoint**),
 OpenAI's GPT-Live, or a local PersonaPlex server. Both OpenAI backends read the
 API key from a local Streamlit secrets file:
@@ -348,7 +353,7 @@ OPENAI_API_KEY = "sk-..."
 GPT-Live is a separate protocol rather than another Realtime model. It is full
 duplex, so like PersonaPlex it has no turn boundary to truncate at barge-in,
 and it splits the voice frontend from a backend that reasons and calls tools.
-That backend is off by default; the sidebar can hand it to a Responses model
+That backend is off by default; the **Advanced** tab can hand it to a Responses model
 with web search, billed on top of the session's per-second charge.
 
 ## Talking to an open speech-to-speech stack
@@ -386,7 +391,7 @@ export PERSONAPLEX_PYTHON=/path/to/personaplex-env/bin/python
 DEMO_BACKEND=personaplex sbatch scripts/s2s_demo.sbatch
 ```
 
-PersonaPlex speaks English only and takes its persona and voice from the sidebar. `PERSONAPLEX_EXTRA_ARGS` passes further `moshi.server` flags.
+PersonaPlex speaks English only and takes its persona from the **Advanced** tab and its voice from the voice picker. `PERSONAPLEX_EXTRA_ARGS` passes further `moshi.server` flags.
 
 `S2S_HOLD_MS` sets speech-to-speech's `--speculative_reopen_ms`, the grace it waits after a turn its turn detector calls complete before replying. Lowering it from the default 800 ms shortens the reply onset in English by about the same amount, at the cost of replying into pauses mid-sentence more often. `S2S_LLM_MODEL` picks another chat model for vLLM (default `Qwen/Qwen3.5-4B`), and `S2S_EXTRA_ARGS` passes further `speech-to-speech serve` flags.
 
@@ -408,7 +413,7 @@ Space needs, in its settings:
 - Secret `HF_TOKEN` with read access to that repo.
 - Optionally the variable `ARTALK1S_REPO`, a Hub repo holding the retrained
   ARTalk 1 s model (`ARTalk1s_wav2vec.pt` and `metadata_stats.json`), readable
-  with the same token. When it is set, the sidebar offers both motion models.
+  with the same token. When it is set, the **Advanced** tab offers both motion models.
 - Secrets `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_KEY_API_TOKEN` from a
   [Cloudflare Realtime TURN key](https://developers.cloudflare.com/realtime/turn/).
   Behind the Spaces proxy WebRTC media must relay through TURN, and the
@@ -456,7 +461,7 @@ Still shared between sessions in one process:
 - The loaded models. Each session builds its own pipeline and motion streamer on top of them, and its own view of the photoreal renderer, so selections and per-avatar caches do not leak between sessions.
 - **Save diagnostics snapshot** writes the session's event log and its last video frame to `diagnostics_snapshots/` on the server, and any visitor can press it. Nothing in the app serves those files back.
 - The GC pause panel shows process-wide counters.
-- An API key set as a server secret (`OPENAI_API_KEY`) is used by every visitor. A key typed into the sidebar stays in that browser session.
+- An API key set as a server secret (`OPENAI_API_KEY`) is used by every visitor. A key typed into the page stays in that browser session.
 
 ## Session logging and feedback
 

@@ -13,6 +13,7 @@ import faulthandler
 import inspect
 import logging
 import os
+import re
 import signal
 import threading
 import time
@@ -34,6 +35,11 @@ from streamlit_webrtc import (
 
 from artalk_streamlit_realtime.ai_badge import BadgedARTalkPipeline
 from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
+from artalk_streamlit_realtime.avatar_gallery import (
+    avatar_gallery,
+    builtin_thumbnails,
+    user_thumbnail,
+)
 from artalk_streamlit_realtime.avatar_registry import (
     AvatarRegistrationError,
     UserAvatarRegistry,
@@ -75,6 +81,7 @@ from artalk_streamlit_realtime.config import (
     PERSONAPLEX_VOICES,
     REALTIME_ENDPOINT_PRESETS,
     REALTIME_VOICES,
+    VOICE_DESCRIPTIONS,
     parse_args,
 )
 from artalk_streamlit_realtime.diagnostics import (
@@ -158,6 +165,12 @@ EVENT_WATCHER_CONFIG_KEY = "artalk_event_watcher_config"
 SESSION_ENDED_KEY = "artalk_session_ended"
 QUEUED_KEY = "artalk_queued"
 SESSION_RECORDER_KEY = "artalk_session_recorder"
+APPEARANCE_KEY = "artalk_appearance"
+AVATAR_GALLERY_KEY = "avatar_gallery"
+VOICE_HELP = (
+    "Descriptions are the provider's own. OpenAI publishes none for its "
+    "original voices, so those show only their names."
+)
 SESSION_END_WARNING_SECONDS = 10
 PAGE_TITLE = "ARTalk Realtime"
 
@@ -318,6 +331,11 @@ def register_avatar_with_progress(
     return outcome["entry"]
 
 
+def voice_label(voice: str) -> str:
+    description = VOICE_DESCRIPTIONS.get(voice)
+    return f"{voice} ({description})" if description else voice
+
+
 def split_appearance(value: str) -> tuple[str, str | None]:
     if value == DEFAULT_APPEARANCE:
         return "mesh", None
@@ -455,7 +473,15 @@ def main() -> None:
         page_icon=":speech_balloon:",
         layout="wide",
     )
-    st.title(PAGE_TITLE)
+    title_col, view_col = st.columns([3, 1], vertical_alignment="bottom")
+    title_col.title(PAGE_TITLE)
+    pro = view_col.toggle(
+        "Professional mode",
+        key="pro",
+        # In the URL, so a reload or a bookmark keeps the view.
+        bind="query-params",
+        help="Every setting, plus the pipeline diagnostics, in an Advanced tab.",
+    )
     login_id = (
         require_login(
             parse_allow_list(args.login_email_domains),
@@ -548,42 +574,25 @@ def main() -> None:
         track_device=args.gagavatar_track_device,
     )
 
-    with st.sidebar:
-        motion_labels = {"artalk": "ARTalk (4 s chunks)", "artalk1s": "ARTalk 1 s"}
-        if args.motion_model in motion_labels and args.artalk1s_train_code_dir and args.artalk1s_checkpoint:
-            motion_model = st.radio(
-                "Motion model",
-                list(motion_labels),
-                index=list(motion_labels).index(args.motion_model),
-                format_func=motion_labels.__getitem__,
-                horizontal=True,
-                help=(
-                    "The 1 s model starts speaking about three seconds sooner. "
-                    "Switching rebuilds the pipeline."
-                ),
-            )
-        else:
-            motion_model = args.motion_model
-        if motion_model == "fallingwater":
-            st.caption(
-                "Fallingwater model: "
-                f"`{Path(args.fallingwater_checkpoint or '?').name}`"
-            )
-        elif motion_model == "artalk1s":
-            st.caption(
-                "ARTalk 1s model: "
-                f"`{Path(args.artalk1s_checkpoint or '?').name}`"
-            )
-        elif motion_model == "frame":
-            st.caption(
-                "Frame model: "
-                f"`{Path(args.frame_checkpoint or '?').name}`"
-            )
-        else:
-            st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
-        gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
-        user_avatar_ids = user_registry.list_ids()
-        style_ids = list_style_ids(str(asset_dir))
+    gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
+    user_avatar_ids = user_registry.list_ids()
+    style_ids = list_style_ids(str(asset_dir))
+
+    avatar_col, panel_col = st.columns([1, 1.35] if pro else [1, 1], gap="large")
+    if pro:
+        picker_box, advanced_box = panel_col.tabs(["Avatar and voice", "Advanced"])
+    else:
+        picker_box, advanced_box = panel_col.container(), None
+    with avatar_col:
+        st.subheader("Avatar")
+        # Filled once the mode is known, which the panel beside decides.
+        ai_caption = st.empty()
+        # Every notice goes inside this container: an element that appears or
+        # vanishes ahead of the WebRTC component between runs makes the
+        # browser remount it, which drops the media connection.
+        status_box = st.container()
+
+    with picker_box:
         if not gagavatar_ids and not user_avatar_ids:
             with st.expander("GAGAvatar assets", expanded=True):
                 st.write(f"Asset dir: `{asset_dir}`")
@@ -598,247 +607,438 @@ def main() -> None:
                 "--asset-dir to an asset tree containing GAGAvatar/tracked.pt."
             )
 
-        if client_assets is None:
-            appearance_options = [
-                DEFAULT_APPEARANCE,
-                *[f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids],
-                *[f"gagavatar:{avatar_id}" for avatar_id in user_avatar_ids],
-            ]
-        else:
+        builtin_ids = sorted(
+            gagavatar_ids,
+            # Numbered ids in numeric order: 2.jpg before 10.jpg.
+            key=lambda name: [
+                (0, int(part)) if part.isdigit() else (1, part)
+                for part in re.split(r"(\d+)", name)
+            ],
+        )
+        if client_assets is not None:
             # The browser can only draw avatars it has a bundle for.
             bundled = set(client_assets.avatar_ids())
-            appearance_options = [
-                f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids if avatar_id in bundled
-            ]
-            if not appearance_options:
+            builtin_ids = [avatar_id for avatar_id in builtin_ids if avatar_id in bundled]
+            if not builtin_ids:
                 st.error(
                     f"No avatar in {client_assets.root / 'avatars'} matches a "
                     "GAGAvatar avatar."
                 )
                 st.stop()
-        appearance = st.selectbox(
-            "Appearance",
-            appearance_options,
-            index=appearance_options.index(args.default_appearance)
-            if args.default_appearance in appearance_options
-            else 0,
-        )
-        if client_assets is not None:
-            client_network = st.selectbox(
-                "Browser renderer",
-                list(NETWORKS),
-                format_func=NETWORKS.__getitem__,
-                help="Switches without restarting the session.",
+        builtin_previews = builtin_thumbnails(str(tracked_path) if tracked_path else None)
+
+        def user_preview(avatar_id: str) -> str:
+            path = user_registry.root / avatar_id / "tracked.pt"
+            return user_thumbnail(str(path), path.stat().st_mtime)
+
+        gallery_items = [
+            *(
+                [{"value": DEFAULT_APPEARANCE, "label": "Mesh", "src": None, "alt": ""}]
+                if client_assets is None
+                else []
+            ),
+            *[
+                {
+                    "value": f"gagavatar:{avatar_id}",
+                    "label": avatar_id,
+                    "src": builtin_previews.get(avatar_id),
+                    "alt": f"{avatar_id} preview",
+                }
+                for avatar_id in builtin_ids
+            ],
+            *(
+                [
+                    {
+                        "value": f"gagavatar:{avatar_id}",
+                        "label": avatar_id,
+                        "src": user_preview(avatar_id),
+                        "alt": f"{avatar_id} preview",
+                    }
+                    for avatar_id in user_avatar_ids
+                ]
+                if client_assets is None
+                else []
+            ),
+        ]
+        appearance_options = [item["value"] for item in gallery_items]
+        # Also catches an avatar deleted since the last run.
+        if st.session_state.get(APPEARANCE_KEY) not in appearance_options:
+            st.session_state[APPEARANCE_KEY] = (
+                args.default_appearance
+                if args.default_appearance in appearance_options
+                else appearance_options[0]
             )
-        default_style_index = (
-            style_ids.index("natural_0") + 1 if "natural_0" in style_ids else 0
-        )
-        style_id = st.selectbox(
-            "Style",
-            [DEFAULT_STYLE, *style_ids],
-            index=default_style_index,
+        appearance = st.session_state[APPEARANCE_KEY]
+
+        def on_avatar_pick() -> None:
+            st.session_state[APPEARANCE_KEY] = st.session_state[AVATAR_GALLERY_KEY].picked
+
+        avatar_gallery(
+            "Avatar",
+            gallery_items,
+            appearance,
+            key=AVATAR_GALLERY_KEY,
+            on_pick=on_avatar_pick,
         )
         modes = ["Loopback", "Interactive"]
         mode = st.radio(
-            "Mode", modes, index=modes.index(args.default_mode.capitalize()), horizontal=True
-        )
-        mic_processing = st.toggle(
-            "Mic echo cancellation & noise suppression",
-            value=True,
-            key="mic_processing",
+            "Mode",
+            modes,
+            index=modes.index(args.default_mode.capitalize()),
+            horizontal=True,
             help=(
-                "Browser-side echoCancellation / noiseSuppression / "
-                "autoGainControl on the microphone. Echo cancellation is "
-                "what stops the avatar's speaker output from looping back "
-                "into the mic (and self-interrupting it). Takes effect on "
-                "the next START."
+                "Loopback moves the avatar to your own voice and needs no API "
+                "key. Interactive lets you talk with an AI through the avatar."
             ),
         )
+    ai_caption.caption(
+        "The avatar's face, voice and words are generated by AI."
+        if mode == "Interactive"
+        else "The avatar's face is generated by AI; the voice is your own."
+    )
 
-        with st.expander("Playback when rendering falls behind"):
-            st.radio(
-                "Underrun policy",
-                ["continuous", "rebuffer"],
-                index=["continuous", "rebuffer"].index(
-                    args.output_underrun_policy
-                ),
-                key="underrun_policy",
-                horizontal=True,
+    # Easy mode leaves these widgets out, so each value is read back from
+    # Session State with the widget's own default. `persist_state` keeps
+    # what was set in professional mode while easy mode hides it, so
+    # switching views does not change the session or rebuild the pipeline.
+    motion_labels = {"artalk": "ARTalk (4 s chunks)", "artalk1s": "ARTalk 1 s"}
+    can_switch_motion = bool(
+        args.motion_model in motion_labels
+        and args.artalk1s_train_code_dir
+        and args.artalk1s_checkpoint
+    )
+    style_options = [DEFAULT_STYLE, *style_ids]
+    default_style = "natural_0" if "natural_0" in style_ids else DEFAULT_STYLE
+    default_rebuffer_seconds = float(
+        args.output_rebuffer_seconds
+        if args.output_rebuffer_seconds is not None
+        else args.output_prebuffer_seconds
+    )
+    if advanced_box is not None:
+        with advanced_box:
+            st.subheader("Avatar motion")
+            if can_switch_motion:
+                st.radio(
+                    "Motion model",
+                    list(motion_labels),
+                    index=list(motion_labels).index(args.motion_model),
+                    format_func=motion_labels.__getitem__,
+                    horizontal=True,
+                    key="motion_model",
+                    persist_state="page",
+                    help=(
+                        "The 1 s model starts speaking about three seconds sooner. "
+                        "Switching rebuilds the pipeline."
+                    ),
+                )
+    motion_model = (
+        st.session_state.get("motion_model", args.motion_model)
+        if can_switch_motion
+        else args.motion_model
+    )
+    if advanced_box is not None:
+        with advanced_box:
+            if motion_model == "fallingwater":
+                st.caption(
+                    "Fallingwater model: "
+                    f"`{Path(args.fallingwater_checkpoint or '?').name}`"
+                )
+            elif motion_model == "artalk1s":
+                st.caption(
+                    "ARTalk 1s model: "
+                    f"`{Path(args.artalk1s_checkpoint or '?').name}`"
+                )
+            elif motion_model == "frame":
+                st.caption(
+                    "Frame model: "
+                    f"`{Path(args.frame_checkpoint or '?').name}`"
+                )
+            else:
+                st.caption(f"ARTalk model: `{Path(artalk_runtime.checkpoint_path).name}`")
+            if client_assets is not None:
+                st.selectbox(
+                    "Browser renderer",
+                    list(NETWORKS),
+                    format_func=NETWORKS.__getitem__,
+                    key="client_network",
+                    persist_state="page",
+                    help="Switches without restarting the session.",
+                )
+            st.selectbox(
+                "Style",
+                style_options,
+                index=style_options.index(default_style),
+                key="style",
+                persist_state="page",
+            )
+            st.toggle(
+                "Mic echo cancellation & noise suppression",
+                value=True,
+                key="mic_processing",
+                persist_state="page",
                 help=(
-                    "continuous resumes on the first complete audio frame, "
-                    "staying closest to live; when the renderer is marginal "
-                    "the buffer then oscillates around empty and both tracks "
-                    "stutter. rebuffer waits for the buffer to refill, "
-                    "trading latency for continuity. Applies immediately, so "
-                    "the two can be compared within one conversation."
+                    "Browser-side echoCancellation / noiseSuppression / "
+                    "autoGainControl on the microphone. Echo cancellation is "
+                    "what stops the avatar's speaker output from looping back "
+                    "into the mic (and self-interrupting it). Takes effect on "
+                    "the next START."
                 ),
-            )
-            st.slider(
-                "Refill target (s)",
-                0.0,
-                3.0,
-                value=float(
-                    args.output_rebuffer_seconds
-                    if args.output_rebuffer_seconds is not None
-                    else args.output_prebuffer_seconds
-                ),
-                step=0.25,
-                key="rebuffer_seconds",
-            )
-            st.slider(
-                "Max added latency (s)",
-                0.0,
-                10.0,
-                value=float(args.max_added_latency_seconds),
-                step=0.5,
-                key="max_added_latency",
             )
 
-        api_key = ""
-        realtime_model = DEFAULT_REALTIME_MODEL
-        realtime_voice = DEFAULT_REALTIME_VOICE
-        realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
-        realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
-        realtime_declare_audio_format = False
-        backend = BACKEND_OPENAI
-        live_model = DEFAULT_LIVE_MODEL
-        live_voice = DEFAULT_LIVE_VOICE
-        live_instructions = DEFAULT_LIVE_INSTRUCTIONS
-        live_delegation_model = ""
-        personaplex_url = DEFAULT_PERSONAPLEX_URL
-        personaplex_voice = DEFAULT_PERSONAPLEX_VOICE
-        personaplex_text_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
-        if mode == "Interactive":
-            st.header("Conversation backend")
+            with st.expander("Playback when rendering falls behind"):
+                st.radio(
+                    "Underrun policy",
+                    ["continuous", "rebuffer"],
+                    index=["continuous", "rebuffer"].index(
+                        args.output_underrun_policy
+                    ),
+                    key="underrun_policy",
+                    persist_state="page",
+                    horizontal=True,
+                    help=(
+                        "continuous resumes on the first complete audio frame, "
+                        "staying closest to live; when the renderer is marginal "
+                        "the buffer then oscillates around empty and both tracks "
+                        "stutter. rebuffer waits for the buffer to refill, "
+                        "trading latency for continuity. Applies immediately, so "
+                        "the two can be compared within one conversation."
+                    ),
+                )
+                st.slider(
+                    "Refill target (s)",
+                    0.0,
+                    3.0,
+                    value=default_rebuffer_seconds,
+                    step=0.25,
+                    key="rebuffer_seconds",
+                    persist_state="page",
+                )
+                st.slider(
+                    "Max added latency (s)",
+                    0.0,
+                    10.0,
+                    value=float(args.max_added_latency_seconds),
+                    step=0.5,
+                    key="max_added_latency",
+                    persist_state="page",
+                )
+    style_id = st.session_state.get("style", default_style)
+    client_network = st.session_state.get("client_network", next(iter(NETWORKS)))
+    mic_processing = st.session_state.get("mic_processing", True)
+    underrun_policy = st.session_state.get("underrun_policy", args.output_underrun_policy)
+    rebuffer_seconds = st.session_state.get("rebuffer_seconds", default_rebuffer_seconds)
+    max_added_latency = st.session_state.get(
+        "max_added_latency", float(args.max_added_latency_seconds)
+    )
+
+    api_key = ""
+    realtime_model = DEFAULT_REALTIME_MODEL
+    realtime_voice = DEFAULT_REALTIME_VOICE
+    realtime_instructions = DEFAULT_REALTIME_INSTRUCTIONS
+    realtime_ws_base_url = DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+    realtime_declare_audio_format = False
+    live_model = DEFAULT_LIVE_MODEL
+    live_voice = DEFAULT_LIVE_VOICE
+    live_instructions = DEFAULT_LIVE_INSTRUCTIONS
+    live_delegation_model = ""
+    personaplex_url = DEFAULT_PERSONAPLEX_URL
+    personaplex_voice = DEFAULT_PERSONAPLEX_VOICE
+    personaplex_text_prompt = DEFAULT_PERSONAPLEX_TEXT_PROMPT
+    show_backend = advanced_box is not None and mode == "Interactive"
+    if show_backend:
+        with advanced_box:
+            st.subheader("Conversation backend")
             backend_options = list(BACKEND_LABELS.values())
-            backend = st.radio(
+            st.radio(
                 "Backend",
                 backend_options,
                 index=backend_options.index(BACKEND_LABELS[args.default_backend]),
                 horizontal=True,
+                key="backend",
+                persist_state="page",
                 help=(
                     "Live and PersonaPlex are full duplex: they stream "
                     "continuously and have no turn boundaries, so there is no "
                     "barge-in truncation."
                 ),
             )
-        if mode == "Interactive" and backend == BACKEND_OPENAI_LIVE:
+    backend = st.session_state.get("backend", BACKEND_LABELS[args.default_backend])
+    if mode == "Interactive" and backend == BACKEND_OPENAI_LIVE:
+        with picker_box:
             api_key = api_key_input("OPENAI_API_KEY")
-            # Keyed so the Realtime branch's identically labelled widgets
-            # cannot be mistaken for these when the backend is switched.
-            live_model = st.text_input(
-                "Model", value=DEFAULT_LIVE_MODEL, key="live_model"
-            ).strip()
             live_voice = st.selectbox(
                 "Voice",
                 LIVE_VOICES,
                 index=LIVE_VOICES.index(DEFAULT_LIVE_VOICE),
+                format_func=voice_label,
                 key="live_voice",
+                help=VOICE_HELP,
             )
-            live_instructions = st.text_area(
-                "Instructions",
-                value=DEFAULT_LIVE_INSTRUCTIONS,
-                height=120,
-                key="live_instructions",
-            )
-            delegate = st.toggle(
-                "Delegate tasks to a Responses backend",
-                value=False,
-                key="live_delegate",
-                help=(
-                    "Splitting the voice frontend from a backend that reasons "
-                    "and calls tools is what separates Live from Realtime. The "
-                    "backend model and its tool calls are billed on top of the "
-                    "session's per-second charge; without it the avatar "
-                    "answers from the Live model alone."
-                ),
-            )
-            if delegate:
-                live_delegation_model = st.text_input(
-                    "Backend model",
-                    value=DEFAULT_LIVE_DELEGATION_MODEL,
-                    key="live_delegation_model",
-                ).strip()
-                st.caption("Web search is the only tool offered to the backend.")
-        if mode == "Interactive" and backend == BACKEND_PERSONAPLEX:
-            personaplex_url = st.text_input(
-                "moshi server URL", value=DEFAULT_PERSONAPLEX_URL
+        if show_backend:
+            with advanced_box:
+                st.text_input(
+                    "Model", value=DEFAULT_LIVE_MODEL, key="live_model", persist_state="page"
+                )
+                st.text_area(
+                    "Instructions",
+                    value=DEFAULT_LIVE_INSTRUCTIONS,
+                    height=120,
+                    key="live_instructions",
+                    persist_state="page",
+                )
+                st.toggle(
+                    "Delegate tasks to a Responses backend",
+                    value=False,
+                    key="live_delegate",
+                    persist_state="page",
+                    help=(
+                        "Splitting the voice frontend from a backend that reasons "
+                        "and calls tools is what separates Live from Realtime. The "
+                        "backend model and its tool calls are billed on top of the "
+                        "session's per-second charge; without it the avatar "
+                        "answers from the Live model alone."
+                    ),
+                )
+                if st.session_state.live_delegate:
+                    st.text_input(
+                        "Backend model",
+                        value=DEFAULT_LIVE_DELEGATION_MODEL,
+                        key="live_delegation_model",
+                        persist_state="page",
+                    )
+                    st.caption("Web search is the only tool offered to the backend.")
+        live_model = st.session_state.get("live_model", DEFAULT_LIVE_MODEL).strip()
+        live_instructions = st.session_state.get(
+            "live_instructions", DEFAULT_LIVE_INSTRUCTIONS
+        )
+        if st.session_state.get("live_delegate", False):
+            live_delegation_model = st.session_state.get(
+                "live_delegation_model", DEFAULT_LIVE_DELEGATION_MODEL
             ).strip()
+    if mode == "Interactive" and backend == BACKEND_PERSONAPLEX:
+        with picker_box:
             personaplex_voice = st.selectbox(
-                "Voice prompt",
+                "Voice",
                 PERSONAPLEX_VOICES,
                 index=PERSONAPLEX_VOICES.index(DEFAULT_PERSONAPLEX_VOICE),
+                format_func=voice_label,
+                key="personaplex_voice",
+                help=VOICE_HELP,
             )
-            personaplex_text_prompt = st.text_area(
-                "Persona", value=DEFAULT_PERSONAPLEX_TEXT_PROMPT, height=120
-            )
-        if mode == "Interactive" and backend == BACKEND_OPENAI:
-            preset_names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
-            # An endpoint supplied through the environment is by definition not
-            # one of the presets, so start on Custom and carry it in.
-            endpoint_name = st.selectbox(
-                "Endpoint",
-                preset_names,
-                index=preset_names.index(CUSTOM_ENDPOINT_LABEL)
-                if DEFAULT_REALTIME_WEBSOCKET_BASE_URL
-                else 0,
-                help="Anything speaking the OpenAI Realtime protocol.",
-            )
-            if endpoint_name == CUSTOM_ENDPOINT_LABEL:
-                realtime_ws_base_url = st.text_input(
-                    "WebSocket base URL",
-                    value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
-                    help="The SDK appends `/realtime`.",
-                ).strip()
-                secret_name = "OPENAI_API_KEY"
-                endpoint_model = DEFAULT_REALTIME_MODEL
-                endpoint_voices = tuple(REALTIME_VOICES)
-            else:
-                endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
-                realtime_ws_base_url = endpoint.base_url
-                realtime_declare_audio_format = endpoint.declares_audio_format
-                secret_name = endpoint.secret
-                endpoint_model = endpoint.model
-                endpoint_voices = endpoint.voices
-                if realtime_ws_base_url:
+        if show_backend:
+            with advanced_box:
+                st.text_input(
+                    "moshi server URL",
+                    value=DEFAULT_PERSONAPLEX_URL,
+                    key="personaplex_url",
+                    persist_state="page",
+                )
+                st.text_area(
+                    "Persona",
+                    value=DEFAULT_PERSONAPLEX_TEXT_PROMPT,
+                    height=120,
+                    key="personaplex_text_prompt",
+                    persist_state="page",
+                )
+        personaplex_url = st.session_state.get(
+            "personaplex_url", DEFAULT_PERSONAPLEX_URL
+        ).strip()
+        personaplex_text_prompt = st.session_state.get(
+            "personaplex_text_prompt", DEFAULT_PERSONAPLEX_TEXT_PROMPT
+        )
+    if mode == "Interactive" and backend == BACKEND_OPENAI:
+        preset_names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
+        # An endpoint supplied through the environment is by definition not
+        # one of the presets, so start on Custom and carry it in.
+        default_endpoint = (
+            CUSTOM_ENDPOINT_LABEL if DEFAULT_REALTIME_WEBSOCKET_BASE_URL else preset_names[0]
+        )
+        if show_backend:
+            with advanced_box:
+                st.selectbox(
+                    "Endpoint",
+                    preset_names,
+                    index=preset_names.index(default_endpoint),
+                    key="realtime_endpoint",
+                    persist_state="page",
+                    help="Anything speaking the OpenAI Realtime protocol.",
+                )
+        endpoint_name = st.session_state.get("realtime_endpoint", default_endpoint)
+        if endpoint_name == CUSTOM_ENDPOINT_LABEL:
+            if show_backend:
+                with advanced_box:
+                    st.text_input(
+                        "WebSocket base URL",
+                        value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
+                        key="realtime_ws_base_url",
+                        persist_state="page",
+                        help="The SDK appends `/realtime`.",
+                    )
+            realtime_ws_base_url = st.session_state.get(
+                "realtime_ws_base_url", DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+            ).strip()
+            secret_name = "OPENAI_API_KEY"
+            endpoint_model = DEFAULT_REALTIME_MODEL
+            endpoint_voices = tuple(REALTIME_VOICES)
+        else:
+            endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
+            realtime_ws_base_url = endpoint.base_url
+            realtime_declare_audio_format = endpoint.declares_audio_format
+            secret_name = endpoint.secret
+            endpoint_model = endpoint.model
+            endpoint_voices = endpoint.voices
+        # Keyed per endpoint so switching presets re-seeds the model (and,
+        # below, the voice) rather than carrying the previous provider's
+        # names over.
+        model_key = f"realtime_model_{endpoint_name}"
+        if show_backend:
+            with advanced_box:
+                if endpoint_name != CUSTOM_ENDPOINT_LABEL and realtime_ws_base_url:
                     st.caption(f"`{realtime_ws_base_url}`")
-
+                if not secret_name:
+                    st.info("This endpoint takes no credential.")
+                st.text_input(
+                    "Model",
+                    value=endpoint_model,
+                    key=model_key,
+                    persist_state="page",
+                    help="Sent in the connection URL, so a wrong name fails the handshake.",
+                )
+                if not endpoint_voices:
+                    st.caption("Voice is configured on the server.")
+                st.text_area(
+                    "Instructions",
+                    value=DEFAULT_REALTIME_INSTRUCTIONS,
+                    height=120,
+                    key="realtime_instructions",
+                    persist_state="page",
+                )
+        realtime_model = st.session_state.get(model_key, endpoint_model).strip()
+        with picker_box:
             if secret_name:
                 api_key = api_key_input(secret_name)
-            else:
-                st.info("This endpoint takes no credential.")
-            # Keyed per endpoint so switching presets re-seeds these rather
-            # than carrying the previous provider's names over.
-            realtime_model = st.text_input(
-                "Model",
-                value=endpoint_model,
-                key=f"realtime_model_{endpoint_name}",
-                help="Sent in the connection URL, so a wrong name fails the handshake.",
-            ).strip()
             if endpoint_voices:
                 realtime_voice = st.selectbox(
                     "Voice",
                     endpoint_voices,
+                    format_func=voice_label,
                     key=f"realtime_voice_{endpoint_name}",
+                    help=VOICE_HELP,
                 )
-            else:
-                realtime_voice = DEFAULT_REALTIME_VOICE
-                st.caption("Voice is configured on the server.")
-            realtime_instructions = st.text_area(
-                "Instructions",
-                value=DEFAULT_REALTIME_INSTRUCTIONS,
-                height=120,
-            )
+        realtime_instructions = st.session_state.get(
+            "realtime_instructions", DEFAULT_REALTIME_INSTRUCTIONS
+        )
 
+    with picker_box:
         if user_registry.can_register:
-            with st.expander("Register avatar"):
+            with st.expander("Your own avatars"):
                 registered_flash = st.session_state.pop("avatar_registered_flash", None)
                 if registered_flash is not None:
                     elapsed_s = registered_flash.get("elapsed_s")
                     took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
                     st.success(
-                        f"Registered{took} — select "
-                        f"`gagavatar:{registered_flash['avatar_id']}` under Appearance."
+                        f"Registered{took} and selected "
+                        f"`{registered_flash['avatar_id']}`."
                     )
                     st.image(
                         registered_flash["vis_image"],
@@ -886,10 +1086,11 @@ def main() -> None:
                             except AvatarRegistrationError as exc:
                                 st.error(str(exc))
                             else:
-                                # The Appearance selectbox above rendered before
-                                # this handler ran; rerun so it includes the new
-                                # avatar, carrying the confirmation across as a
-                                # flash.
+                                # The gallery above rendered before this
+                                # handler ran; rerun so it shows the new
+                                # avatar, carrying the confirmation across as
+                                # a flash.
+                                st.session_state[APPEARANCE_KEY] = f"gagavatar:{avatar_id}"
                                 st.session_state["avatar_registered_flash"] = {
                                     "avatar_id": avatar_id,
                                     "vis_image": entry["vis_image"]
@@ -898,17 +1099,17 @@ def main() -> None:
                                     "elapsed_s": user_registry.last_track_seconds(),
                                 }
                                 st.rerun()
-            if user_avatar_ids:
-                delete_id = st.selectbox(
-                    "Delete registered avatar",
-                    ["(select)", *user_avatar_ids],
-                    key="avatar_delete_select",
-                )
-                if delete_id != "(select)" and st.button(
-                    f"Delete {delete_id}", key="avatar_delete"
-                ):
-                    user_registry.delete(delete_id)
-                    st.rerun()
+                if user_avatar_ids:
+                    delete_id = st.selectbox(
+                        "Delete registered avatar",
+                        ["(select)", *user_avatar_ids],
+                        key="avatar_delete_select",
+                    )
+                    if delete_id != "(select)" and st.button(
+                        f"Delete {delete_id}", key="avatar_delete"
+                    ):
+                        user_registry.delete(delete_id)
+                        st.rerun()
 
     chunk_caption.caption(
         "Speak into the microphone — the avatar starts moving "
@@ -1076,7 +1277,8 @@ def main() -> None:
     if mode == "Interactive" and needs_secret:
         stop_bridge()
         stop_pipeline()
-        st.info("Enter an API key in the sidebar to use Interactive mode.")
+        with status_box:
+            st.info("Enter an API key under Mode to use Interactive mode.")
         st.stop()
 
     session_id = current_session_id()
@@ -1108,9 +1310,10 @@ def main() -> None:
         stop_bridge()
         stop_pipeline()
         st.session_state.pop(QUEUED_KEY, None)
-        render_ended_notice("restart_after_end")
-        if recorder is not None:
-            render_feedback_slot(recorder)
+        with status_box:
+            render_ended_notice("restart_after_end")
+            if recorder is not None:
+                render_feedback_slot(recorder)
         st.stop()
 
     if not slots.acquire(session_id):
@@ -1119,59 +1322,62 @@ def main() -> None:
         stop_pipeline()
         st.session_state[QUEUED_KEY] = True
 
-        @st.fragment(run_every="1s")
-        def render_queue_status() -> None:
-            ended = slots.pop_ended(session_id)
-            if ended is not None:
-                st.session_state[SESSION_ENDED_KEY] = ended
-                st.rerun(scope="app")
-            if slots.acquire(session_id):
-                st.rerun(scope="app")
-            position = slots.queue_position(session_id)
-            if position is None:
-                # Admitted since the acquire above.
-                st.rerun(scope="app")
-            st.warning(
-                "Every GPU session is in use. "
-                f"You are number {position} in the queue."
-            )
-            wait = slots.estimated_wait(session_id, args.session_time_limit)
-            if wait is None:
-                st.caption("Estimated wait: unknown, since sessions have no time limit.")
-            else:
-                st.caption(f"Estimated wait: about {format_wait(wait)}.")
-            st.html(queue_title_script(position), unsafe_allow_javascript=True)
+        with status_box:
 
-        render_queue_status()
-        st.caption(
-            "Keep this tab open: the app appears here by itself when it is "
-            f"your turn, and you then have {args.start_grace:g} s to press "
-            "START. Leaving or reloading the page gives up your place."
-        )
-        # Outside the fragment, which would replace the button every second
-        # and lose clicks.
-        st.html(TURN_ALERT_OPT_IN, unsafe_allow_javascript=True)
-        if not args.session_time_limit:
-            if st.button("Take the GPU over"):
-                slots.take_over(session_id)
-                st.rerun()
+            @st.fragment(run_every="1s")
+            def render_queue_status() -> None:
+                ended = slots.pop_ended(session_id)
+                if ended is not None:
+                    st.session_state[SESSION_ENDED_KEY] = ended
+                    st.rerun(scope="app")
+                if slots.acquire(session_id):
+                    st.rerun(scope="app")
+                position = slots.queue_position(session_id)
+                if position is None:
+                    # Admitted since the acquire above.
+                    st.rerun(scope="app")
+                st.warning(
+                    "Every GPU session is in use. "
+                    f"You are number {position} in the queue."
+                )
+                wait = slots.estimated_wait(session_id, args.session_time_limit)
+                if wait is None:
+                    st.caption("Estimated wait: unknown, since sessions have no time limit.")
+                else:
+                    st.caption(f"Estimated wait: about {format_wait(wait)}.")
+                st.html(queue_title_script(position), unsafe_allow_javascript=True)
+
+            render_queue_status()
             st.caption(
-                "Taking over ends the session in use, for when it is stuck "
-                "rather than in use. Without a time limit nothing else frees it."
+                "Keep this tab open: the app appears here by itself when it is "
+                f"your turn, and you then have {args.start_grace:g} s to press "
+                "START. Leaving or reloading the page gives up your place."
             )
-        if recorder is not None:
-            # Answering while queued lets the first session be recorded.
-            render_feedback_slot(recorder)
+            # Outside the fragment, which would replace the button every second
+            # and lose clicks.
+            st.html(TURN_ALERT_OPT_IN, unsafe_allow_javascript=True)
+            if not args.session_time_limit:
+                if st.button("Take the GPU over"):
+                    slots.take_over(session_id)
+                    st.rerun()
+                st.caption(
+                    "Taking over ends the session in use, for when it is stuck "
+                    "rather than in use. Without a time limit nothing else frees it."
+                )
+            if recorder is not None:
+                # Answering while queued lets the first session be recorded.
+                render_feedback_slot(recorder)
         st.stop()
 
     try:
         with _MODEL_BUILD_LOCK:
             pipeline = get_pipeline()
     except Exception as exc:
-        st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
-        # Initialization spans several optional model paths whose imports and
-        # checkpoints fail in ways the message alone does not locate.
-        st.exception(exc)
+        with status_box:
+            st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
+            # Initialization spans several optional model paths whose imports
+            # and checkpoints fail in ways the message alone does not locate.
+            st.exception(exc)
         st.stop()
     if not slots.attach(session_id, "pipeline", pipeline):
         # Taken over while this pipeline was being built; it is untracked, so
@@ -1192,9 +1398,9 @@ def main() -> None:
         )
     slots.attach(session_id, "pump", silence_pump)
     pipeline.set_output_underrun_policy(
-        st.session_state.underrun_policy,
-        rebuffer_seconds=st.session_state.rebuffer_seconds,
-        max_added_latency_seconds=st.session_state.max_added_latency,
+        underrun_policy,
+        rebuffer_seconds=rebuffer_seconds,
+        max_added_latency_seconds=max_added_latency,
     )
     event_log = get_event_log()
     slots.attach(session_id, "watcher", get_event_watcher(pipeline, event_log))
@@ -1267,14 +1473,15 @@ def main() -> None:
         # PersonaPlex withholds its handshake until the system prompts have
         # been stepped through the model, which is far slower than a hosted API.
         connect_timeout = 60.0 if backend == BACKEND_PERSONAPLEX else 8.0
-        with st.spinner(f"Connecting to {backend}..."):
-            bridge.start()
-            bridge.wait_until_connected(timeout=connect_timeout)
-        snap = bridge.snapshot()
-        if snap["error"]:
-            st.error(f"{backend} error: {snap['error']}")
-        elif not snap["connected"]:
-            st.warning(f"{backend} is still connecting. Wait a moment before START.")
+        with status_box:
+            with st.spinner(f"Connecting to {backend}..."):
+                bridge.start()
+                bridge.wait_until_connected(timeout=connect_timeout)
+            snap = bridge.snapshot()
+            if snap["error"]:
+                st.error(f"{backend} error: {snap['error']}")
+            elif not snap["connected"]:
+                st.warning(f"{backend} is still connecting. Wait a moment before START.")
 
     def on_loopback_audio_frame(frame: av.AudioFrame) -> None:
         # A pipeline stopped off the script thread (time limit, take-over)
@@ -1365,7 +1572,7 @@ def main() -> None:
     try:
         rtc_configuration = resolve_rtc_configuration(args.ice_provider)
     except Exception as exc:
-        st.warning(
+        status_box.warning(
             f"ICE provider {args.ice_provider!r} failed ({exc}); using STUN "
             "only, which cannot connect through a proxy or a strict NAT."
         )
@@ -1411,8 +1618,6 @@ def main() -> None:
             on_change=on_change,
             **client_render_kwargs,
         )
-
-    avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
 
     @st.fragment(run_every="1s")
     def render_session_status_fragment() -> None:
@@ -1471,16 +1676,6 @@ def main() -> None:
             )
 
     with avatar_col:
-        st.subheader("Avatar")
-        st.caption(
-            "The avatar's face, voice and words are generated by AI."
-            if mode == "Interactive"
-            else "The avatar's face is generated by AI; the voice is your own."
-        )
-        # Whatever the status shows goes inside this container: an element
-        # that appears or vanishes ahead of the WebRTC component between runs
-        # makes the browser remount it, which drops the media connection.
-        status_box = st.container()
         streamer_ctx = render_webrtc_component()
         if client_assets is not None:
             pipeline.channel_source = lambda: (streamer_ctx.data_channels or {}).get(
@@ -1519,6 +1714,9 @@ def main() -> None:
         if bridge is not None:
             render_interactive_status()
 
+    if advanced_box is None:
+        return
+
     @st.fragment(run_every="500ms")
     def render_diagnostics_fragment() -> None:
         render_pipeline_diagnostics(pipeline)
@@ -1535,7 +1733,8 @@ def main() -> None:
     def render_event_log_fragment() -> None:
         render_event_log_panel(event_log)
 
-    with diagnostics_col:
+    with advanced_box:
+        st.subheader("Diagnostics")
         # Deliberately outside the auto-rerunning fragments: a button inside
         # a run_every fragment races with its reruns and clicks get lost.
         if st.button(

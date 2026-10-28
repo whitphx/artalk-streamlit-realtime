@@ -133,6 +133,43 @@ REALTIME_ENDPOINT_PRESETS = {
 }
 CUSTOM_ENDPOINT_LABEL = "Custom"
 
+# Only what each provider publishes about its own voices. OpenAI describes
+# the GPT-Live voices it added (presentation and accent) but none of its
+# original ones, so those carry no label rather than a guessed gender.
+VOICE_DESCRIPTIONS = {
+    # https://developers.openai.com/api/docs/guides/live-conversations#voice-options
+    "quartz": "feminine, Australian English",
+    "ripple": "masculine, Australian English",
+    "vesper": "masculine, British English",
+    "willow": "feminine, Irish English",
+    "stone": "masculine, Irish English",
+    "gleam": "feminine, North American English",
+    "meridian": "masculine, North American English",
+    "bossa": "feminine, Brazilian Portuguese",
+    "tempo": "masculine, Brazilian Portuguese",
+    "beacon": "masculine, Filipino English",
+    "delta": "feminine, Southern U.S. English",
+    "cinder": "masculine, Southern U.S. English",
+    # https://developers.openai.com/api/docs/guides/text-to-speech names
+    # these two as its best-quality voices.
+    "marin": "recommended",
+    "cedar": "recommended",
+    # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech#voices
+    "ara": "warm and friendly",
+    "eve": "energetic and upbeat, British accent",
+    "leo": "authoritative and strong, British accent",
+    "rex": "confident and clear",
+    "sal": "smooth and balanced",
+    # https://github.com/NVIDIA/personaplex/blob/3428dfd95309a7f3c84fd93259ded0f810d1ff91/README.md#voices
+    **{
+        voice: (
+            f"{'natural' if voice.startswith('NAT') else 'varied'}, "
+            f"{'female' if voice[3] == 'F' else 'male'}"
+        )
+        for voice in PERSONAPLEX_VOICES
+    },
+}
+
 ARTALK_SAMPLE_RATE = 16000
 ARTALK_FPS = 25
 DEFAULT_OUTPUT_AUDIO_PREBUFFER_SECONDS = 1.00
@@ -693,8 +730,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("ARTALK_DEFAULT_APPEARANCE", "gagavatar:1.jpg"),
         type=str,
         help=(
-            "Appearance the sidebar starts on: mesh, or gagavatar:<avatar id>. "
-            "An avatar this server does not have falls back to mesh."
+            "Appearance the page starts on: mesh, or gagavatar:<avatar id>. "
+            "An avatar this server does not offer falls back to the first one "
+            "it does."
         ),
     )
     parser.add_argument(
