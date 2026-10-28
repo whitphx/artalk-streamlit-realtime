@@ -736,6 +736,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--avatars",
+        default=os.environ.get("ARTALK_AVATARS", ""),
+        type=str,
+        help=(
+            "Comma-separated built-in GAGAvatar ids to offer visitors, for "
+            "example 1.jpg,5.jpg; empty offers them all. A visitor's own "
+            "registered avatars are always offered to them."
+        ),
+    )
+    parser.add_argument(
         "--ice-provider",
         default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
         choices=["stun", "cloudflare"],

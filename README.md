@@ -187,6 +187,8 @@ The page opens in an easy view: a gallery of the avatars, the mode, and the voic
 
 Voice descriptions come from each provider's own documentation, so a voice the provider does not describe is listed by name alone.
 
+The gallery numbers the built-in avatars instead of showing their ids, which can be file names that name the person pictured. `ARTALK_AVATARS` (or `--avatars`) narrows the built-in avatars offered to a comma-separated list of ids, such as `1.jpg,5.jpg`; a visitor's own registered avatars are always offered to them.
+
 The launcher uses `st-remote` from the selected Python environment and defaults
 to an ngrok HTTPS tunnel so the browser gets the secure context that microphone
 access requires. Set `ST_REMOTE_PROVIDER` or pass `--provider` to use another

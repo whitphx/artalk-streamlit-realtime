@@ -607,8 +607,15 @@ def main() -> None:
                 "--asset-dir to an asset tree containing GAGAvatar/tracked.pt."
             )
 
+        offered = {
+            avatar_id.strip() for avatar_id in args.avatars.split(",") if avatar_id.strip()
+        }
         builtin_ids = sorted(
-            gagavatar_ids,
+            (
+                avatar_id
+                for avatar_id in gagavatar_ids
+                if not offered or avatar_id in offered
+            ),
             # Numbered ids in numeric order: 2.jpg before 10.jpg.
             key=lambda name: [
                 (0, int(part)) if part.isdigit() else (1, part)
@@ -622,7 +629,7 @@ def main() -> None:
             if not builtin_ids:
                 st.error(
                     f"No avatar in {client_assets.root / 'avatars'} matches a "
-                    "GAGAvatar avatar."
+                    "GAGAvatar avatar offered here."
                 )
                 st.stop()
         builtin_previews = builtin_thumbnails(str(tracked_path) if tracked_path else None)
@@ -631,6 +638,8 @@ def main() -> None:
             path = user_registry.root / avatar_id / "tracked.pt"
             return user_thumbnail(str(path), path.stat().st_mtime)
 
+        # Built-in ids can be file names that name the person pictured, so
+        # visitors see a number instead. Visitors named their own uploads.
         gallery_items = [
             *(
                 [{"value": DEFAULT_APPEARANCE, "label": "Mesh", "src": None, "alt": ""}]
@@ -640,11 +649,11 @@ def main() -> None:
             *[
                 {
                     "value": f"gagavatar:{avatar_id}",
-                    "label": avatar_id,
+                    "label": f"Avatar {number}",
                     "src": builtin_previews.get(avatar_id),
-                    "alt": f"{avatar_id} preview",
+                    "alt": f"Avatar {number} preview",
                 }
-                for avatar_id in builtin_ids
+                for number, avatar_id in enumerate(builtin_ids, start=1)
             ],
             *(
                 [
