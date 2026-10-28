@@ -212,8 +212,13 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     rendered: 0, renderedAhead: 0, presented: 0, skippedOverdue: 0, droppedRingFull: 0, requeuedRingFull: 0,
   };
   const pacer = createPacer(counts);
-  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [], schemes: [], rtpClock: [] };
-  const playoutClock = createPlayoutClock?.('audio') ?? null;
+  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [], schemes: [], rtpClock: [], hold: [], margins: [] };
+  // ?hold=0 turns off holding the audio back for late frames; ?holdmax=<ms>
+  // changes the most it may add.
+  const holdForData = PAGE_PARAMS.get('hold') === '0' ? undefined : {
+    ...(PAGE_PARAMS.has('holdmax') && { maxMs: Number(PAGE_PARAMS.get('holdmax')) }),
+  };
+  const playoutClock = createPlayoutClock?.('audio', { holdForData }) ?? null;
   // Due minus media time under the RTP scheme, slewed like the hold.
   let rtpOffsetNow = null, rtpOffsetAt = 0, lastRtpFrame = null, outputLatencyMs = null;
   const startedPerf = performance.now(), startedWall = Date.now();
@@ -282,7 +287,12 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     push(series.arrival, [arrival, h.index, h.sentWallMs, Date.now()]);
     push(series.audioServer, [h.audioFrameMs + 10, h.rms]);
     push(series.mouthMedia, [h.mediaMs, h.jaw]);
-    if (h.rtp !== null) lastRtpFrame = h;
+    if (h.rtp !== null) {
+      lastRtpFrame = h;
+      // Only frames the RTP scheme schedules should hold the audio back.
+      if (schemeSelect.value === 'rtp') playoutClock?.noteDataArrival(h.rtp, arrival);
+      if (RAW) push(series.margins, [arrival, h.index, h.mediaMs, playoutClock?.playoutTime(h.rtp) ?? null, rtpDue(h)]);
+    }
     // Chrome pauses animation frames in a hidden tab, so a queued frame could only come back late.
     if (document.hidden) { counts.skippedHidden++; return; }
     pacer.add(h);
@@ -391,13 +401,22 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     if (ctx?.outputLatency !== undefined) outputLatencyMs = ctx.outputLatency * 1000;
     const recv = pc.getReceivers().find((r) => r.track.kind === 'audio');
     const src = recv?.getSynchronizationSources?.()[0];
+    const hold = playoutClock?.hold();
+    if (hold) push(series.hold, [performance.now(), hold.targetMs, hold.jitterBufferMs, hold.marginMs, jitterBufferMs]);
     if (src) push(series.rtpClock, [performance.now(), src.timestamp - performance.timeOrigin, Date.now() - src.timestamp, src.rtpTimestamp ?? null]);
     const s = (performance.now() - startedPerf) / 1000;
     readout.textContent = `received ${counts.received} (${(counts.bytes * 8 / 1000 / Math.max(s, 1)).toFixed(0)} kbit/s), shown ${counts.presented}, ` +
       `rendered ahead ${counts.renderedAhead}, late ${counts.skippedLate + counts.skippedOverdue}, hold ${holdMs().toFixed(0)} ms ` +
       `(jitter buffer ${jitterBufferMs.toFixed(0)} + playout ${playoutMs.toFixed(0)}), render ${renderMsAvg.toFixed(0)} ms, ` +
-      `RTP minus arrival scheme ${rtpOffsetNow === null || offsetMs === null ? 'n/a' : (rtpOffsetNow - offsetMs - holdMs()).toFixed(0)} ms`;
+      `${holdText()}, RTP minus arrival scheme ${rtpOffsetNow === null || offsetMs === null ? 'n/a' : (rtpOffsetNow - offsetMs - holdMs()).toFixed(0)} ms`;
   }, 500);
+
+  function holdText() {
+    const hold = playoutClock?.hold();
+    if (!hold?.supported) return 'audio hold off';
+    const ms = (x) => (x === null ? 'none' : `${x.toFixed(0)} ms`);
+    return `audio hold target ${ms(hold.targetMs)}, frame margin p2 ${ms(hold.marginMs)}`;
+  }
 
   function onTrack(track) {
     if (audioProbe || track.kind !== 'audio') return;
@@ -440,13 +459,16 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
       // it plays); "intended" is the same estimate on the server's own timeline.
       sync: {
         intended, shown, offsetMs: intended && shown ? shown.lagMs - intended.lagMs : null, audioProbeError, faceVsAudio: faceVsAudio(drawn, series.audioServer, series.audioShown),
+        hold: playoutClock?.hold() ?? null,
+        // Every 500 ms: [page time, target, the clock's jitter buffer delay, frame margin p2, the session's smoothed jitter buffer delay].
+        holdSeries: series.hold.filter((_, i) => i % 4 === 0).map((r) => r.map((x) => (x === null ? null : Math.round(x)))),
         scheme: schemeSelect.value, playoutClock: !!playoutClock, clockOutputDelayMs: playoutClock?.outputDelay() ?? null, rtpStamped: !!lastRtpFrame, outputLatencyMs: outputLatencyMs === null ? null : Math.round(outputLatencyMs),
         // Per window: how much later the RTP scheme would show a frame than the arrival scheme.
         rtpMinusArrival: schemeWindows(series.schemes),
         // getSynchronizationSources: playout time minus now (should be a little negative) and Date.now() minus the timestamp.
         ssrcTimestampMinusNow: summary(series.rtpClock.map((r) => r[1] - r[0])), dateNowMinusSsrcTimestamp: summary(series.rtpClock.map((r) => r[2])),
       },
-      raw: RAW ? { drawn: series.drawn, audioServer: series.audioServer, audioShown: series.audioShown, schemes: series.schemes, arrival: series.arrival } : undefined,
+      raw: RAW ? { margins: series.margins, hold: series.hold, drawn: series.drawn, audioServer: series.audioServer, audioShown: series.audioShown, schemes: series.schemes, arrival: series.arrival } : undefined,
       perFrame: { fields: ['index', 'mediaMs', 'arrival', 'renderStart', 'renderEnd', 'due', 'shown'], rows: series.perFrame },
       log: logLines.slice(-50),
     };

@@ -44,6 +44,7 @@ import copy
 import hashlib
 import json
 import os
+import random
 import struct
 import threading
 import time
@@ -105,8 +106,10 @@ ORT_PATCHED_SHA256 = "5557036315cfbc7facf8a4bcbcff03703e0f6a6a54f7a172e1e29d14cc
 ORT_PATCH_SITE = b"if(ae===O[R]||oe.includes(O[R])){"
 ORT_PATCH = b'if(ae===O[R]||oe.includes(O[R])||A&&i[R]?.[3]==="gpu-buffer"){'
 # Spike only: holds every motion message back by this long before sending,
-# to make the data channel slower than the audio.
+# plus a random extra of up to the jitter, to make the data channel slower
+# and less regular than the audio.
 SPIKE_SEND_DELAY_S = float(os.environ.get("ARTALK_SPIKE_SEND_DELAY_MS", "0")) / 1000.0
+SPIKE_SEND_JITTER_S = float(os.environ.get("ARTALK_SPIKE_SEND_JITTER_MS", "0")) / 1000.0
 NETWORKS = {
     "trained_lowres16": "Network, 256 px core (lowres16)",
     "trained_plain16": "Network, 512 px (plain16)",
@@ -328,8 +331,9 @@ class ClientRenderPipeline(ARTalkPipeline):
             rtp or 0,
             rtp is not None,
         )
-        if SPIKE_SEND_DELAY_S > 0:
-            threading.Timer(SPIKE_SEND_DELAY_S, self._send, (channel, bytes(message), metrics)).start()
+        delay_s = SPIKE_SEND_DELAY_S + random.uniform(0.0, SPIKE_SEND_JITTER_S)
+        if delay_s > 0:
+            threading.Timer(delay_s, self._send, (channel, bytes(message), metrics)).start()
         else:
             self._send(channel, bytes(message), metrics)
         return frame
