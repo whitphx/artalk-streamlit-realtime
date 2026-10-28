@@ -657,6 +657,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Conversation backend the sidebar starts on in Interactive mode.",
     )
     parser.add_argument(
+        "--default-appearance",
+        default=os.environ.get("ARTALK_DEFAULT_APPEARANCE", "gagavatar:1.jpg"),
+        type=str,
+        help=(
+            "Appearance the sidebar starts on: mesh, or gagavatar:<avatar id>. "
+            "An avatar this server does not have falls back to mesh."
+        ),
+    )
+    parser.add_argument(
         "--ice-provider",
         default=os.environ.get("ARTALK_ICE_PROVIDER", "stun"),
         choices=["stun", "cloudflare"],

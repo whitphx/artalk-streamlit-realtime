@@ -569,7 +569,13 @@ def main() -> None:
             *[f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids],
             *[f"gagavatar:{avatar_id}" for avatar_id in user_avatar_ids],
         ]
-        appearance = st.selectbox("Appearance", appearance_options, index=0)
+        appearance = st.selectbox(
+            "Appearance",
+            appearance_options,
+            index=appearance_options.index(args.default_appearance)
+            if args.default_appearance in appearance_options
+            else 0,
+        )
         default_style_index = (
             style_ids.index("natural_0") + 1 if "natural_0" in style_ids else 0
         )
