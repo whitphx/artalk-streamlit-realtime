@@ -4,6 +4,7 @@
 
 import { init, createRenderer, environment } from './renderer.js';
 import { createPacer, slewToward, RING_SLOTS } from './pacer.js';
+import { makeBadge } from './badge.js';
 
 const PAGE = 'artalk-client-render/1';
 const HEADER_BYTES = 48;
@@ -194,16 +195,18 @@ export function start({ channels, root, pc, data }) {
       let next;
       if (cfg.network === 'none') {
         const canvas = new OffscreenCanvas(512, 512), ctx = canvas.getContext('2d');
+        const badge = cfg.aiBadge ? makeBadge(512) : null;
         next = { network: 'none', avatar: cfg.avatar };
         next.render = async (_message, _step, h) => {
           ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 512, 512);
           ctx.fillStyle = '#6cf'; ctx.fillRect(156, 256, 200, Math.max(2, h.jaw * 1200));
+          if (badge) ctx.drawImage(badge.image, badge.x, badge.y);
           return canvas.transferToImageBitmap();
         };
         next.done = async () => {};
       } else {
         await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, graphCapture: cfg.graphCapture, dataBase, log });
-        next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, dataBase, log });
+        next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, aiBadge: cfg.aiBadge, dataBase, log });
       }
       next.generation = cfg.generation;
       next.loadMs = Math.round(performance.now() - t0);

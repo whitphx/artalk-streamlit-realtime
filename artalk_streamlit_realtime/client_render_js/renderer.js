@@ -10,6 +10,7 @@
 
 import { parseBundle } from './bundle.js';
 import { createSplatter } from './splatter.js';
+import { makeBadge } from './badge.js';
 
 const OUT = 512, CHANNELS = 16;
 const PAIR_CAPACITY = { 256: 1_500_000, 512: 3_000_000 };
@@ -92,7 +93,19 @@ ${fp16
   return vec4f(clamp(vec3f(rd(pix), rd(PLANE + pix), rd(2u * PLANE + pix)), vec3f(0.0), vec3f(1.0)), 1.0);
 }`;
 
-let ort = null, env = null, device = null, models = null, presentPipeline = null;
+// Drawn with the viewport set to the badge's rectangle. The texture holds
+// premultiplied colors, which the pipeline's blend expects.
+const badgeCode = (x, y) => /* wgsl */ `
+@group(0) @binding(0) var badge: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  return textureLoad(badge, vec2i(pos.xy) - vec2i(${x}, ${y}), 0);
+}`;
+
+let ort = null, env = null, device = null, models = null, presentPipeline = null, badgeDraw = null;
 const sessions = new Map(), bundles = new Map();
 
 export function environment() { return env; }
@@ -142,6 +155,27 @@ async function ensureDevice(log) {
     layout: 'auto', vertex: { module, entryPoint: 'vs' },
     fragment: { module, entryPoint: 'fs', targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
   });
+}
+
+// The badge goes on in the pass that presents the frame: one more draw and
+// no extra submit or copy.
+function badgeDrawFor() {
+  if (badgeDraw) return badgeDraw;
+  const badge = makeBadge(OUT);
+  const texture = device.createTexture({
+    size: [badge.w, badge.h], format: 'rgba8unorm', label: 'ai_badge',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture({ source: badge.image }, { texture, premultipliedAlpha: true }, [badge.w, badge.h]);
+  const module = device.createShaderModule({ code: badgeCode(badge.x, badge.y), label: 'ai_badge' });
+  const blend = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' };
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto', vertex: { module, entryPoint: 'vs' },
+    fragment: { module, entryPoint: 'fs', targets: [{ format: navigator.gpu.getPreferredCanvasFormat(), blend: { color: blend, alpha: blend } }] },
+  });
+  const bindGroup = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: texture.createView() }] });
+  badgeDraw = { ...badge, pipeline, bindGroup };
+  return badgeDraw;
 }
 
 async function readBuffer(src, bytes) {
@@ -216,7 +250,7 @@ function bundleFor(avatar, dataBase) {
 }
 
 // One network and one avatar, each frame rendered into an ImageBitmap.
-export async function createRenderer({ network, avatar, dataBase, log }) {
+export async function createRenderer({ network, avatar, aiBadge, dataBase, log }) {
   const sess = await sessionFor(network, dataBase, log);
   const bundle = await bundleFor(avatar, dataBase);
   const fp16 = env.precision === 'fp16';
@@ -230,6 +264,7 @@ export async function createRenderer({ network, avatar, dataBase, log }) {
   const bg = device.createBindGroup({ layout: presentPipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: sess.outBuf } }] });
   const headRef = bundle.arrays.head_ref.data, n = headRef.length;
   const pos = new Float32Array(n), view = new Float32Array(16);
+  const badge = aiBadge ? badgeDrawFor() : null;
   return {
     network, avatar, precision: env.precision, graphCapture: sess.capture, networkCheck: sess.check,
     // Resolves, once the frame's work is submitted, to the frame as an ImageBitmap.
@@ -242,7 +277,12 @@ export async function createRenderer({ network, avatar, dataBase, log }) {
       await sess.run();
       const enc = device.createCommandEncoder();
       const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
-      pass.setPipeline(presentPipeline); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
+      pass.setPipeline(presentPipeline); pass.setBindGroup(0, bg); pass.draw(3);
+      if (badge) {
+        pass.setPipeline(badge.pipeline); pass.setBindGroup(0, badge.bindGroup);
+        pass.setViewport(badge.x, badge.y, badge.w, badge.h, 0, 1); pass.draw(3);
+      }
+      pass.end();
       device.queue.submit([enc.finish()]);
       return canvas.transferToImageBitmap();
     },

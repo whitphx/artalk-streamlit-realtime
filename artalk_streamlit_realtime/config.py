@@ -471,6 +471,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ai-badge",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_AI_BADGE", True),
+        help=(
+            "Draw an \"AI-generated\" badge into the avatar's frames, on the "
+            "server or, with --client-render, in the browser. Turn it off "
+            "only for research recordings."
+        ),
+    )
+    parser.add_argument(
         "--client-render-dir",
         default=os.environ.get("ARTALK_CLIENT_RENDER_DIR"),
         type=str,
