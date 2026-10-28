@@ -1379,6 +1379,7 @@ def main() -> None:
                 "network": client_network,
                 "quantStep": QUANT_STEP,
                 "ortUrl": None if client_assets.has_local_ort else ORT_CDN_URL,
+                "graphCapture": client_assets.ort_patched,
             },
         }
 

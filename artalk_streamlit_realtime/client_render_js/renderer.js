@@ -98,9 +98,11 @@ const sessions = new Map(), bundles = new Map();
 export function environment() { return env; }
 
 // Loads ONNX Runtime Web and picks the precision; safe to call again.
-export async function init({ ortUrl, dataBase, log }) {
+export async function init({ ortUrl, graphCapture, dataBase, log }) {
   if (env) return env;
-  const e = { ortUrl };
+  const e = { ortUrl, graphCapture };
+  // client_render.ORT_PATCH says why capture needs the patched bundle.
+  if (!graphCapture) log('graph capture off: ONNX Runtime Web is not the patched copy');
   ort = await import(ortUrl);
   ort.env.wasm.numThreads = 1;
   try {
@@ -167,11 +169,11 @@ async function sessionFor(key, dataBase, log) {
     ...(capture ? { enableGraphCapture: true } : {}),
   });
   const t0 = performance.now();
-  let session = await make(true);
+  let session = await make(env.graphCapture);
   await ensureDevice(log);
   const U = GPUBufferUsage, dt = prec === 'fp16' ? 'float16' : 'float32', bpe = prec === 'fp16' ? 2 : 4;
   const nIn = spec.input.reduce((a, b) => a * b), nOut = spec.output.reduce((a, b) => a * b);
-  const s = { key, size: spec.splat_size, capture: true, bpe };
+  const s = { key, size: spec.splat_size, capture: env.graphCapture, bpe };
   const bind = () => {
     s.inBuf = device.createBuffer({ size: nIn * bpe, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST, label: `${key}_in` });
     s.outBuf = device.createBuffer({ size: nOut * bpe, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST, label: `${key}_out` });
@@ -187,6 +189,7 @@ async function sessionFor(key, dataBase, log) {
   try {
     await s.run();
   } catch (e) {
+    if (!s.capture) throw e;
     log(`${key}: graph capture failed (${e.message}); running without it`);
     session = await make(false);
     s.capture = false;

@@ -254,7 +254,7 @@ It needs two things this repository does not ship:
   uv pip install --python .venv/bin/python -e /path/to/streamlit-webrtc --no-deps
   ```
 
-- A directory with the browser's data, given as `--client-render-dir` (or `ARTALK_CLIENT_RENDER_DIR`): `avatars/<avatar id>/avatar.gsb` per avatar, `models.json` with the networks under `models/`, and optionally `ort/` with a local copy of ONNX Runtime Web (otherwise it loads from jsDelivr). Only avatars with a bundle there are offered.
+- A directory with the browser's data, given as `--client-render-dir` (or `ARTALK_CLIENT_RENDER_DIR`): `avatars/<avatar id>/avatar.gsb` per avatar, `models.json` with the networks under `models/`, and optionally `ort/` with a local copy of ONNX Runtime Web (otherwise it loads from jsDelivr). Only avatars with a bundle there are offered. ONNX Runtime Web 1.30 mishandles the outputs of a graph-captured session after its first run, so the renderer captures its network only with a patched copy of the bundle in `ort/`, which `artalk-demo client-ort --client-render-dir <dir>` puts there.
 
 ```bash
 .venv/bin/python -m streamlit run streamlit_app.py -- \

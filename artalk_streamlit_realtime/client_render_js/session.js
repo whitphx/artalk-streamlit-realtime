@@ -202,7 +202,7 @@ export function start({ channels, root, pc, data }) {
         };
         next.done = async () => {};
       } else {
-        await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, dataBase, log });
+        await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, graphCapture: cfg.graphCapture, dataBase, log });
         next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, dataBase, log });
       }
       next.generation = cfg.generation;

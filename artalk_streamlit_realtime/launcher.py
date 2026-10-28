@@ -369,6 +369,16 @@ def main() -> int:
         action="store_true",
         help="validate the tree without downloading",
     )
+    ort_parser = sub.add_parser(
+        "client-ort",
+        help=(
+            "put the patched ONNX Runtime Web bundle that --client-render "
+            "needs for graph capture into a --client-render-dir"
+        ),
+    )
+    ort_parser.add_argument(
+        "--client-render-dir", default=os.environ.get("ARTALK_CLIENT_RENDER_DIR")
+    )
     doctor_parser = sub.add_parser("doctor", help="validate the installation")
     doctor_parser.add_argument(
         "--render",
@@ -389,6 +399,13 @@ def main() -> int:
             from . import doctor
 
             return doctor.run(args)
+        if args.subcommand == "client-ort":
+            if not args.client_render_dir:
+                parser.error("client-ort needs --client-render-dir or ARTALK_CLIENT_RENDER_DIR")
+            from .client_render import install_patched_ort
+
+            print(install_patched_ort(args.client_render_dir))
+            return 0
         if args.subcommand == "assets":
             from . import fetch_assets
 

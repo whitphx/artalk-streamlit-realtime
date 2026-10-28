@@ -38,10 +38,12 @@ repository.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import struct
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -80,7 +82,24 @@ RECORD_BYTES = OFFSETS_OFFSET + HEAD_VERTICES * 3 * 2
 STAMP_INDEX = struct.Struct("<I")
 STAMP_TIMING = struct.Struct("<ddffd")
 JS_DIR = Path(__file__).with_name("client_render_js")
-ORT_CDN_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.bundle.min.mjs"
+ORT_BUNDLE = "ort.webgpu.bundle.min.mjs"
+ORT_CDN_URL = f"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/{ORT_BUNDLE}"
+ORT_SHA256 = "0730816731ce2cdfb06f273da065d4a1c7091eb9d1756a83b2916c8a89d015e2"
+ORT_PATCHED_SHA256 = "5557036315cfbc7facf8a4bcbcff03703e0f6a6a54f7a172e1e29d14cce3223d"
+# ONNX Runtime Web 1.30 binds a graph-captured session's pre-allocated
+# outputs on the first run only:
+# https://github.com/microsoft/onnxruntime/blob/v1.30.0/js/web/lib/wasm/wasm-core-impl.ts#L781-L834
+# Later runs recognise them by comparing the returned value with the handle
+# made for that run, which never matches:
+# https://github.com/microsoft/onnxruntime/blob/v1.30.0/js/web/lib/wasm/wasm-core-impl.ts#L876
+# The output then takes the path for an output ORT allocated itself, which
+# looks its GPU buffer up through a handle freed after the first run. That
+# throws, or works when the allocator hands the same address back. The patch
+# treats every gpu-buffer output of a captured session as pre-allocated.
+# The names are the minifier's, so it only applies to the file ORT_SHA256
+# identifies.
+ORT_PATCH_SITE = b"if(ae===O[R]||oe.includes(O[R])){"
+ORT_PATCH = b'if(ae===O[R]||oe.includes(O[R])||A&&i[R]?.[3]==="gpu-buffer"){'
 NETWORKS = {
     "trained_lowres16": "Network, 256 px core (lowres16)",
     "trained_plain16": "Network, 512 px (plain16)",
@@ -119,7 +138,8 @@ class ClientRenderAssets:
 
     avatars/<avatar id>/avatar.gsb   Gaussians and neutral head vertices
     models.json, models/             the networks as ONNX, fp16 and fp32
-    ort/                             optional local ONNX Runtime Web files
+    ort/                             optional local ONNX Runtime Web files,
+                                     the bundle as install_patched_ort leaves it
     """
 
     def __init__(self, root: str | Path):
@@ -127,7 +147,12 @@ class ClientRenderAssets:
         if not (self.root / "models.json").is_file():
             raise FileNotFoundError(f"{self.root / 'models.json'} not found")
         self.models = json.loads((self.root / "models.json").read_text())["models"]
-        self.has_local_ort = (self.root / "ort" / "ort.webgpu.bundle.min.mjs").is_file()
+        ort = self.root / "ort" / ORT_BUNDLE
+        self.has_local_ort = ort.is_file()
+        # Graph capture is only safe on the patched copy, see ORT_PATCH.
+        self.ort_patched = (
+            self.has_local_ort and hashlib.sha256(ort.read_bytes()).hexdigest() == ORT_PATCHED_SHA256
+        )
 
     def avatar_ids(self) -> list[str]:
         avatars = self.root / "avatars"
@@ -140,6 +165,21 @@ class ClientRenderAssets:
         if ref.shape != (HEAD_VERTICES, 3):
             raise ValueError(f"{avatar_id}: head_ref has shape {ref.shape}")
         return ref
+
+
+def install_patched_ort(root: str | Path) -> Path:
+    """Writes the patched ONNX Runtime Web bundle to ``<root>/ort/``, from
+    the copy already there or else from jsDelivr."""
+    path = Path(root) / "ort" / ORT_BUNDLE
+    bundle = path.read_bytes() if path.is_file() else urllib.request.urlopen(ORT_CDN_URL).read()
+    digest = hashlib.sha256(bundle).hexdigest()
+    if digest == ORT_PATCHED_SHA256:
+        return path
+    if digest != ORT_SHA256:
+        raise ValueError(f"{path} is not ONNX Runtime Web 1.30.0's {ORT_BUNDLE}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bundle.replace(ORT_PATCH_SITE, ORT_PATCH))
+    return path
 
 
 def serve_dirs(assets: ClientRenderAssets) -> dict[str, str]:
