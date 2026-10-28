@@ -403,7 +403,9 @@ class SessionRecorder:
         self.consent: Literal["pending", "accepted", "declined"] = "pending"
         self.voice_consent = False
         self.voice_deletion: VoiceDeletion | None = None
-        self.media_sessions_started = 0
+        self.media_sessions_ended = 0
+        # The value of media_sessions_ended when feedback was last sent.
+        self.feedback_sent_for = 0
         self.last_media_session: str | None = None
         self.pipeline = None
         self._lock = threading.Lock()
@@ -416,6 +418,10 @@ class SessionRecorder:
     @property
     def collecting(self) -> bool:
         return self.consent == "accepted"
+
+    @property
+    def media_open(self) -> bool:
+        return self._open is not None
 
     def _base(self, record: str) -> dict:
         return {
@@ -545,7 +551,6 @@ class SessionRecorder:
                 media_session, settings, started, recorded, False, voice
             )
             self._voice = voice
-            self.media_sessions_started += 1
             self.last_media_session = media_session if recorded else None
         return voice
 
@@ -574,6 +579,8 @@ class SessionRecorder:
             session, self._open = self._open, None
             self._armed = False
             self._voice = None
+            if session is not None:
+                self.media_sessions_ended += 1
         if session is None:
             return
         if session.voice is not None:
@@ -614,37 +621,70 @@ class SessionRecorder:
             comment=comment.strip()[:COMMENT_MAX_CHARS],
             media_session=self.last_media_session,
         )
+        self.feedback_sent_for = self.media_sessions_ended
 
 
-def render_consent_gate(recorder: SessionRecorder) -> None:
-    if recorder.consent != "pending":
-        return
+def render_feedback_slot(recorder: SessionRecorder) -> None:
+    """The consent panel while the visitor has not answered it, then the
+    feedback form, in one place so that accepting swaps one for the other."""
+    if recorder.consent == "pending":
+        _render_consent_panel(recorder)
+    else:
+        render_feedback_form(recorder)
+    render_voice_controls(recorder)
+
+
+def _render_consent_panel(recorder: SessionRecorder) -> None:
+    kept = []
+    if recorder.feedback:
+        kept.append("the feedback you send")
+    if recorder.log_sessions:
+        kept.append("records of your sessions")
+    if recorder.voice_enabled:
+        kept.append("voice recordings if you turn them on")
+    listed = kept[0] if len(kept) == 1 else f"{', '.join(kept[:-1])} and {kept[-1]}"
     with st.container(border=True):
-        st.markdown(recorder.notice.text)
-        accept_col, decline_col = st.columns(2)
-        accept_col.button(
-            "Accept", key="consent_accept", type="primary", on_click=recorder.accept
-        )
-        decline_col.button("No thanks", key="consent_decline", on_click=recorder.decline)
+        st.markdown("##### Help improve this demo")
+        st.markdown(f"May this demo keep {listed}? Nothing is kept unless you accept.")
+        with st.expander("Read the full notice"):
+            st.markdown(recorder.notice.text)
+        with st.container(horizontal=True):
+            st.button(
+                "Accept", key="consent_accept", type="primary", on_click=recorder.accept
+            )
+            st.button("No thanks", key="consent_decline", on_click=recorder.decline)
 
 
 def render_feedback_form(recorder: SessionRecorder) -> None:
     if not (recorder.collecting and recorder.feedback):
         return
-    if recorder.media_sessions_started == 0:
+    ended = recorder.media_sessions_ended
+    if recorder.media_open or ended == 0:
         return
-    with st.form("feedback_form", clear_on_submit=True, border=True):
-        st.caption("How was it?")
-        rating = st.feedback("faces", key="feedback_rating")
-        comment = st.text_input(
-            "Comment (optional)", max_chars=COMMENT_MAX_CHARS, key="feedback_comment"
-        )
-        if st.form_submit_button("Send feedback"):
-            if rating is None:
-                st.warning("Pick a face first.")
-            else:
-                recorder.submit_feedback(rating, comment)
-                st.success("Thanks, feedback sent.")
+    if recorder.feedback_sent_for == ended:
+        st.success("Thanks, feedback sent.")
+        return
+    # Keys of their own give each session an empty form.
+    rating_key = f"feedback_rating_{ended}"
+    comment_key = f"feedback_comment_{ended}"
+    missing_key = f"feedback_missing_rating_{ended}"
+
+    def submit() -> None:
+        rating = st.session_state[rating_key]
+        if rating is None:
+            st.session_state[missing_key] = True
+            return
+        recorder.submit_feedback(rating, st.session_state[comment_key])
+
+    with st.form(f"feedback_form_{ended}", border=True):
+        st.markdown("##### How was this session?")
+        st.feedback("faces", key=rating_key)
+        st.text_input("Comment (optional)", max_chars=COMMENT_MAX_CHARS, key=comment_key)
+        # A callback rather than the button's return value: it runs before
+        # the page, so the run that follows the click already shows thanks.
+        st.form_submit_button("Send feedback", on_click=submit)
+        if st.session_state.get(missing_key):
+            st.warning("Pick a face first.")
 
 
 def render_voice_controls(recorder: SessionRecorder) -> None:

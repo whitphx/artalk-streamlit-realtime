@@ -74,6 +74,7 @@ from artalk_streamlit_realtime.event_log import PipelineEventWatcher, SessionEve
 from artalk_streamlit_realtime.ice import STUN_ONLY, resolve_rtc_configuration
 from artalk_streamlit_realtime.sessions import (
     ENDED_NOT_STARTED,
+    ENDED_TIME_LIMIT,
     current_session_id,
     live_session_ids,
     slots,
@@ -107,9 +108,8 @@ from artalk_streamlit_realtime.session_records import (
     load_consent_notice,
     load_voice_consent_notice,
     open_record_store,
-    render_consent_gate,
     render_feedback_form,
-    render_voice_controls,
+    render_feedback_slot,
 )
 from artalk_streamlit_realtime.silence import PipelineSilencePump
 from artalk_streamlit_realtime.streamlit_patches import (
@@ -459,9 +459,6 @@ def main() -> None:
         or args.voice_consent_notice_text
     ):
         recorder = get_session_recorder(args, login_id)
-        if recorder is not None:
-            render_consent_gate(recorder)
-            render_voice_controls(recorder)
     chunk_caption = st.empty()
 
     try:
@@ -1040,7 +1037,7 @@ def main() -> None:
         st.session_state.pop(QUEUED_KEY, None)
         render_ended_notice("restart_after_end")
         if recorder is not None:
-            render_feedback_form(recorder)
+            render_feedback_slot(recorder)
         st.stop()
 
     if not slots.acquire(session_id):
@@ -1089,6 +1086,9 @@ def main() -> None:
                 "Taking over ends the session in use, for when it is stuck "
                 "rather than in use. Without a time limit nothing else frees it."
             )
+        if recorder is not None:
+            # Answering while queued lets the first session be recorded.
+            render_feedback_slot(recorder)
         st.stop()
 
     try:
@@ -1327,6 +1327,14 @@ def main() -> None:
             # fragments, and the browser can fail to render the result
             # ("'setIn' cannot be called on an ElementNode").
             render_ended_notice("restart_after_end_inline")
+            # The page under the video was last drawn while the session
+            # played, so its form slot stays empty until the next full run.
+            # A start-grace end follows a STOP, whose run drew the form there.
+            if (
+                recorder is not None
+                and st.session_state[SESSION_ENDED_KEY] == ENDED_TIME_LIMIT
+            ):
+                render_feedback_form(recorder)
             return
         now = time.monotonic()
         deadline = slots.deadline(session_id)
@@ -1400,7 +1408,7 @@ def main() -> None:
                 ),
                 playing=ctx is not None and ctx.state.playing,
             )
-            render_feedback_form(recorder)
+            render_feedback_slot(recorder)
         if bridge is not None:
             render_interactive_status()
 
