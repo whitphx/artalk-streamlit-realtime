@@ -10,6 +10,7 @@ environment variables.
 from __future__ import annotations
 
 import faulthandler
+import inspect
 import logging
 import os
 import signal
@@ -39,6 +40,18 @@ from artalk_streamlit_realtime.avatar_registry import (
     prune_session_owners,
     session_owner_dir,
     slugify_avatar_id,
+)
+from artalk_streamlit_realtime.client_render import (
+    CHANNEL_LABEL,
+    CHANNEL_OPTIONS,
+    FRONTEND_SCRIPT,
+    NETWORKS,
+    ORT_CDN_URL,
+    QUANT_STEP,
+    ClientRenderAdapter,
+    ClientRenderAssets,
+    ClientRenderPipeline,
+    serve_dirs,
 )
 from artalk_streamlit_realtime.config import (
     ARTALK_FPS,
@@ -461,6 +474,26 @@ def main() -> None:
         recorder = get_session_recorder(args, login_id)
     chunk_caption = st.empty()
 
+    client_assets = None
+    if args.client_render:
+        if not args.client_render_dir or model_path is None:
+            st.error(
+                "--client-render needs --client-render-dir and the GAGAvatar "
+                "assets (its vertices come from the GAGAvatar runtime)."
+            )
+            st.stop()
+        # Probed by parameter rather than by version: the data-channel build
+        # is an unreleased checkout, so no version number marks it.
+        if "data_channels" not in inspect.signature(webrtc_streamer).parameters:
+            st.error(
+                "--client-render needs a streamlit-webrtc build with data "
+                "channels, and the installed one has none. See the README's "
+                "section on rendering in the browser."
+            )
+            st.stop()
+        client_assets = ClientRenderAssets(args.client_render_dir)
+        client_dirs = serve_dirs(client_assets)
+
     try:
         with _MODEL_BUILD_LOCK:
             artalk_runtime, mesh_renderer = load_artalk_runtime(
@@ -564,11 +597,24 @@ def main() -> None:
                 "--asset-dir to an asset tree containing GAGAvatar/tracked.pt."
             )
 
-        appearance_options = [
-            DEFAULT_APPEARANCE,
-            *[f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids],
-            *[f"gagavatar:{avatar_id}" for avatar_id in user_avatar_ids],
-        ]
+        if client_assets is None:
+            appearance_options = [
+                DEFAULT_APPEARANCE,
+                *[f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids],
+                *[f"gagavatar:{avatar_id}" for avatar_id in user_avatar_ids],
+            ]
+        else:
+            # The browser can only draw avatars it has a bundle for.
+            bundled = set(client_assets.avatar_ids())
+            appearance_options = [
+                f"gagavatar:{avatar_id}" for avatar_id in gagavatar_ids if avatar_id in bundled
+            ]
+            if not appearance_options:
+                st.error(
+                    f"No avatar in {client_assets.root / 'avatars'} matches a "
+                    "GAGAvatar avatar."
+                )
+                st.stop()
         appearance = st.selectbox(
             "Appearance",
             appearance_options,
@@ -576,6 +622,13 @@ def main() -> None:
             if args.default_appearance in appearance_options
             else 0,
         )
+        if client_assets is not None:
+            client_network = st.selectbox(
+                "Browser renderer",
+                list(NETWORKS),
+                format_func=NETWORKS.__getitem__,
+                help="Switches without restarting the session.",
+            )
         default_style_index = (
             style_ids.index("natural_0") + 1 if "natural_0" in style_ids else 0
         )
@@ -873,7 +926,10 @@ def main() -> None:
                     "GAGAVATAR_MODEL_PATH is required for GAGAvatar appearance."
                 )
             gagavatar_runtime = load_photoreal_renderer()
-            gagavatar = StreamingGAGAvatarAdapter(gagavatar_runtime, user_registry)
+            if client_assets is not None:
+                gagavatar = ClientRenderAdapter(gagavatar_runtime, client_assets)
+            else:
+                gagavatar = StreamingGAGAvatarAdapter(gagavatar_runtime, user_registry)
             gagavatar_flame = gagavatar_runtime.flame_model
         streamer = None
         if motion_model == "fallingwater":
@@ -943,7 +999,9 @@ def main() -> None:
             args.profile_trace_dir,
             args.profile_skip_chunks,
             args.profile_max_chunks,
-            appearance,
+            # Client rendering switches avatars on the live pipeline.
+            appearance if client_assets is None else None,
+            client_assets is not None,
             style_id,
             str(asset_dir),
             str(model_path) if model_path else None,
@@ -961,7 +1019,8 @@ def main() -> None:
             pipeline.stop()
             pipeline = None
         if pipeline is None:
-            pipeline = ARTalkPipeline(
+            pipeline_cls = ARTalkPipeline if client_assets is None else ClientRenderPipeline
+            pipeline = pipeline_cls(
                 model=model,
                 streamer=streamer,
                 flame_model=flame_model,
@@ -983,7 +1042,7 @@ def main() -> None:
                 renderer_output_uint8=args.render_uint8_gpu,
                 warm_key_extra=(
                     f"fp16={args.renderer_fp16},compile={args.renderer_compile},"
-                    f"motion={motion_model}"
+                    f"motion={motion_model},client={client_assets is not None}"
                 ),
                 profile_trace_dir=args.profile_trace_dir,
                 profile_skip_chunks=args.profile_skip_chunks,
@@ -996,6 +1055,8 @@ def main() -> None:
             st.session_state[PIPELINE_KEY] = pipeline
             st.session_state[PIPELINE_CONFIG_KEY] = config
             freeze_loaded_objects(force=True)
+        if client_assets is not None:
+            pipeline.set_avatar(avatar_id)
         return pipeline
 
     if mode == "Loopback":
@@ -1234,10 +1295,15 @@ def main() -> None:
         # visitor may press START again, while a closed tab is left to the
         # reaper.
 
-    video_source_track = create_video_source_track(
-        pipeline.video_source_callback,
-        key=f"artalk_video_source_{mode.lower()}",
-        fps=ARTALK_FPS,
+    # With client rendering the browser draws the face; there is no video.
+    video_source_track = (
+        create_video_source_track(
+            pipeline.video_source_callback,
+            key=f"artalk_video_source_{mode.lower()}",
+            fps=ARTALK_FPS,
+        )
+        if client_assets is None
+        else None
     )
     audio_source_track = create_audio_source_track(
         pipeline.audio_source_callback,
@@ -1299,8 +1365,25 @@ def main() -> None:
         )
         rtc_configuration = STUN_ONLY
 
-    def render_webrtc_component() -> None:
-        webrtc_streamer(
+    # Passed only when client rendering is on: the streamlit-webrtc release
+    # this app pins has none of these parameters.
+    client_render_kwargs = {}
+    if client_assets is not None:
+        client_render_kwargs = {
+            "data_channels": {CHANNEL_LABEL: CHANNEL_OPTIONS},
+            "frontend_script": FRONTEND_SCRIPT,
+            "frontend_data": {
+                "dirs": client_dirs,
+                "avatar": pipeline.client_renderer.avatar_id,
+                "generation": pipeline.client_renderer.generation,
+                "network": client_network,
+                "quantStep": QUANT_STEP,
+                "ortUrl": None if client_assets.has_local_ort else ORT_CDN_URL,
+            },
+        }
+
+    def render_webrtc_component():
+        return webrtc_streamer(
             key=streamer_key,
             rtc_configuration=rtc_configuration,
             mode=WebRtcMode.SENDRECV,
@@ -1318,6 +1401,7 @@ def main() -> None:
                 "video": False,
             },
             on_change=on_change,
+            **client_render_kwargs,
         )
 
     avatar_col, diagnostics_col = st.columns([1, 1.35], gap="large")
@@ -1384,7 +1468,11 @@ def main() -> None:
         # that appears or vanishes ahead of the WebRTC component between runs
         # makes the browser remount it, which drops the media connection.
         status_box = st.container()
-        render_webrtc_component()
+        streamer_ctx = render_webrtc_component()
+        if client_assets is not None:
+            pipeline.channel_source = lambda: (streamer_ctx.data_channels or {}).get(
+                CHANNEL_LABEL
+            )
         ctx = st.session_state.get(streamer_key)
         if ctx is not None and (ctx.state.playing or ctx.state.signalling):
             slots.mark_started(session_id)

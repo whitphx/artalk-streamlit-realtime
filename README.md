@@ -240,6 +240,29 @@ The `audio_rebuffer_events`, `video_frames_dropped_for_sync` and
 `added_latency_seconds` counters in the diagnostics panel show which is
 happening.
 
+## Rendering in the browser (experimental)
+
+With `--client-render` the server stops before GAGAvatar's network and sends each frame's FLAME head vertices and camera (about 30 KB, 6 Mbit/s at 25 fps) over a WebRTC data channel on the connection that carries the audio. The browser splats the avatar's Gaussians at those vertices, runs a small network distilled from GAGAvatar on WebGPU, and draws each frame when the audio it belongs to plays. The wire format is described in `artalk_streamlit_realtime/client_render.py`.
+
+It needs two things this repository does not ship:
+
+- A streamlit-webrtc build with data channels. No release has them yet, so install a checkout over the pinned version in a separate environment, keeping `pixi.lock` as it is. One way, with the pixi environment as the base:
+
+  ```bash
+  (cd /path/to/streamlit-webrtc/streamlit_webrtc/frontend && pnpm install && pnpm build)
+  uv venv --python .pixi/envs/default/bin/python --system-site-packages .venv
+  uv pip install --python .venv/bin/python -e /path/to/streamlit-webrtc --no-deps
+  ```
+
+- A directory with the browser's data, given as `--client-render-dir` (or `ARTALK_CLIENT_RENDER_DIR`): `avatars/<avatar id>/avatar.gsb` per avatar, `models.json` with the networks under `models/`, and optionally `ort/` with a local copy of ONNX Runtime Web (otherwise it loads from jsDelivr). Only avatars with a bundle there are offered.
+
+```bash
+.venv/bin/python -m streamlit run streamlit_app.py -- \
+  --client-render --client-render-dir /path/to/client-render-data
+```
+
+The sidebar's **Browser renderer** and **Appearance** switch without restarting the session. Under the face, **Extra face delay** shifts the drawing against the audio by hand, and **Copy results as JSON** exports what the page measured: frames received, drawn and skipped, the data rate, timings from arrival to display, and an estimate of the audio-to-face offset.
+
 ## Profiling
 
 Capture PyTorch Profiler traces of the pipeline worker to inspect per-op
