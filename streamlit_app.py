@@ -20,6 +20,7 @@ import weakref
 from pathlib import Path
 
 import av
+import numpy as np
 import streamlit as st
 import torch
 from artalk.assets import ARTalkAssets
@@ -343,7 +344,7 @@ def split_appearance(value: str) -> tuple[str, str | None]:
     return source, avatar_id
 
 
-def pipeline_source_callback(method):
+def pipeline_source_callback(method, kind: str):
     """The pipeline's source callback, without the track owning the pipeline.
 
     streamlit-webrtc subscribes each source track to a process-wide aiortc
@@ -351,12 +352,47 @@ def pipeline_source_callback(method):
     started, or whose relayed proxy was stopped while read, for the life of
     the process. A track holding the bound method would keep the stopped
     pipeline and its GPU memory along with it. The session state holds the
-    pipeline for as long as the track should play it."""
+    pipeline for as long as the track should play it.
+
+    Once the pipeline is gone the callback returns a black or silent frame
+    shaped like the last real one. streamlit-webrtc stamps whatever comes
+    back with a pts, so returning None would raise in the sender and end
+    the outbound track for the rest of the connection. A rerun that
+    rebuilds the pipeline, after an avatar change for instance, hands the
+    track the new callback, and the placeholder covers the gap before that."""
     method_ref = weakref.WeakMethod(method)
+    # The last real frame's geometry: (width, height) for video,
+    # (samples, sample rate) for audio. Before any, a 20 ms audio frame at
+    # the app's rate, or a small video frame the encoder resizes from.
+    if kind == "video":
+        shape = (256, 256)
+    else:
+        shape = (round(ARTALK_SAMPLE_RATE * 0.020), ARTALK_SAMPLE_RATE)
+
+    def placeholder():
+        if kind == "video":
+            width, height = shape
+            return av.VideoFrame.from_ndarray(
+                np.zeros((height, width, 3), dtype=np.uint8), format="rgb24"
+            )
+        samples, sample_rate = shape
+        frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, samples), dtype=np.int16), format="s16", layout="mono"
+        )
+        frame.sample_rate = sample_rate
+        return frame
 
     def callback(*args):
+        nonlocal shape
         bound = method_ref()
-        return None if bound is None else bound(*args)
+        if bound is None:
+            return placeholder()
+        frame = bound(*args)
+        if kind == "video":
+            shape = (frame.width, frame.height)
+        else:
+            shape = (frame.samples, frame.sample_rate)
+        return frame
 
     return callback
 
@@ -1588,7 +1624,7 @@ def main() -> None:
     # With client rendering the browser draws the face; there is no video.
     video_source_track = (
         create_video_source_track(
-            pipeline_source_callback(pipeline.video_source_callback),
+            pipeline_source_callback(pipeline.video_source_callback, "video"),
             key=f"artalk_video_source_{mode.lower()}",
             fps=ARTALK_FPS,
         )
@@ -1596,7 +1632,7 @@ def main() -> None:
         else None
     )
     audio_source_track = create_audio_source_track(
-        pipeline_source_callback(pipeline.audio_source_callback),
+        pipeline_source_callback(pipeline.audio_source_callback, "audio"),
         key=f"artalk_audio_source_{mode.lower()}",
         sample_rate=ARTALK_SAMPLE_RATE,
         ptime=0.020,
