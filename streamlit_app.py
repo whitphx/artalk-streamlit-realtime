@@ -17,6 +17,7 @@ import re
 import signal
 import threading
 import time
+import weakref
 from pathlib import Path
 
 import av
@@ -344,6 +345,24 @@ def split_appearance(value: str) -> tuple[str, str | None]:
     if source != "gagavatar" or not avatar_id:
         raise ValueError(f"Unknown appearance: {value}")
     return source, avatar_id
+
+
+def pipeline_source_callback(method):
+    """The pipeline's source callback, without the track owning the pipeline.
+
+    streamlit-webrtc subscribes each source track to a process-wide aiortc
+    MediaRelay on every START, and the relay keeps a track whose proxy never
+    started, or whose relayed proxy was stopped while read, for the life of
+    the process. A track holding the bound method would keep the stopped
+    pipeline and its GPU memory along with it. The session state holds the
+    pipeline for as long as the track should play it."""
+    method_ref = weakref.WeakMethod(method)
+
+    def callback(*args):
+        bound = method_ref()
+        return None if bound is None else bound(*args)
+
+    return callback
 
 
 def stop_silence_pump() -> None:
@@ -1534,7 +1553,7 @@ def main() -> None:
     # With client rendering the browser draws the face; there is no video.
     video_source_track = (
         create_video_source_track(
-            pipeline.video_source_callback,
+            pipeline_source_callback(pipeline.video_source_callback),
             key=f"artalk_video_source_{mode.lower()}",
             fps=ARTALK_FPS,
         )
@@ -1542,7 +1561,7 @@ def main() -> None:
         else None
     )
     audio_source_track = create_audio_source_track(
-        pipeline.audio_source_callback,
+        pipeline_source_callback(pipeline.audio_source_callback),
         key=f"artalk_audio_source_{mode.lower()}",
         sample_rate=ARTALK_SAMPLE_RATE,
         ptime=0.020,
