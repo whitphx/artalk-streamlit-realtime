@@ -39,11 +39,34 @@ REAP_INTERVAL_SECONDS = 5.0
 SESSION_CLOSE_MARGIN_SECONDS = 15.0
 SESSION_CLOSE_INTERVAL_SECONDS = 5.0
 # Each collection over the frozen objects stalls every thread for a few
-# hundred milliseconds, so sessions closed in a busy minute share one.
+# hundred milliseconds, so sessions closed in a busy minute share one, and
+# it waits for a moment when no session is playing, up to the cap.
 FROZEN_COLLECT_INTERVAL_SECONDS = 60.0
+FROZEN_COLLECT_MAX_DEFER_SECONDS = 600.0
+
+# How recently a pipeline must have handed a track media for the process to
+# count as playing.
+PLAYING_WINDOW_SECONDS = 2.0
 
 ENDED_TIME_LIMIT = "time_limit"
 ENDED_NOT_STARTED = "not_started"
+
+
+_last_media_served = float("-inf")
+
+
+def note_media_served() -> None:
+    """Record that a pipeline just handed one of its tracks a frame."""
+    global _last_media_served
+    _last_media_served = time.monotonic()
+
+
+def media_playing() -> bool:
+    """Whether any session's media is flowing. The slots' record of START
+    and STOP lags: a script run records START seconds after the browser
+    starts playing. The frames themselves stop while a connection is set
+    up or the event loop stalls. Neither alone covers a playing session."""
+    return time.monotonic() - _last_media_served < PLAYING_WINDOW_SECONDS
 
 
 def current_session_id() -> str:
@@ -204,6 +227,12 @@ class PipelineSlots:
             if session_id in self._holders:
                 self._started.add(session_id)
                 self._start_by.pop(session_id, None)
+
+    def any_started(self) -> bool:
+        """Whether some session holding a slot has pressed START and not
+        STOP since."""
+        with self._lock:
+            return bool(self._started)
 
     def mark_stopped(self, session_id: str) -> None:
         """Record that this session pressed STOP. It keeps its slot as an
@@ -449,6 +478,9 @@ class DisconnectedSessionCloser:
     def _run(self) -> None:
         runtime = Runtime.instance()
         last_collect = -FROZEN_COLLECT_INTERVAL_SECONDS
+        # When the first session closed since the last collection was
+        # emptied, or None when nothing awaits a collection.
+        garbage_since: float | None = None
         while True:
             time.sleep(SESSION_CLOSE_INTERVAL_SECONDS)
             now = time.monotonic()
@@ -456,17 +488,27 @@ class DisconnectedSessionCloser:
             # here, and the ShutdownPolling threads, which check once a
             # second, have let go of them.
             with self._closed_lock:
-                closed = self._closed
-                if closed and now - last_collect >= FROZEN_COLLECT_INTERVAL_SECONDS:
-                    self._closed = []
-                else:
-                    closed = []
-            if closed:
-                last_collect = now
-                for session in closed:
-                    _empty_closed_session(session)
-                del closed, session
-                collect_frozen_garbage()
+                closed, self._closed = self._closed, []
+            if closed and garbage_since is None:
+                garbage_since = now
+            # Popped rather than iterated, so no loop variable keeps the
+            # last session alive until the next pass.
+            while closed:
+                _empty_closed_session(closed.pop())
+            if (
+                garbage_since is not None
+                and now - last_collect >= FROZEN_COLLECT_INTERVAL_SECONDS
+            ):
+                forced = now - garbage_since >= FROZEN_COLLECT_MAX_DEFER_SECONDS
+                if forced or not (media_playing() or slots.any_started()):
+                    elapsed_ms = collect_frozen_garbage()
+                    logger.info(
+                        "[sessions] collected closed sessions in %.0f ms%s",
+                        elapsed_ms,
+                        " (forced: sessions kept playing)" if forced else "",
+                    )
+                    last_collect = now
+                    garbage_since = None
             try:
                 # The session manager is only safe to use on its event loop.
                 runtime._get_async_objs().eventloop.call_soon_threadsafe(

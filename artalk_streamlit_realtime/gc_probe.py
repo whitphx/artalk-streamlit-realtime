@@ -10,12 +10,9 @@ with collector pauses.
 from __future__ import annotations
 
 import gc
-import logging
 import threading
 import time
 from collections import deque
-
-logger = logging.getLogger(__name__)
 
 PAUSE_EVENT_LIMIT = 100
 PAUSE_EVENT_MIN_MS = 10.0
@@ -126,8 +123,9 @@ def freeze_loaded_objects(force: bool = False) -> None:
     gc.freeze()
 
 
-def collect_frozen_garbage() -> None:
-    """Collect the garbage among the frozen objects, then freeze again.
+def collect_frozen_garbage() -> float:
+    """Collect the garbage among the frozen objects, then freeze again, and
+    return how long the collection took in milliseconds.
 
     Frozen objects are never traversed, so objects that were alive when
     frozen and have since become garbage held only by reference cycles stay
@@ -135,10 +133,10 @@ def collect_frozen_garbage() -> None:
     the stall the freeze exists to avoid, so call it only when something
     large is known to have become garbage."""
     if not _frozen:
-        return
+        return 0.0
     gc.unfreeze()
     start_s = time.perf_counter()
-    collected = gc.collect()
+    gc.collect()
     elapsed_ms = (time.perf_counter() - start_s) * 1000.0
     gc.freeze()
-    logger.info("[gc] collected %d frozen objects in %.0f ms", collected, elapsed_ms)
+    return elapsed_ms

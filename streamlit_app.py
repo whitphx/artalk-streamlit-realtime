@@ -102,6 +102,7 @@ from artalk_streamlit_realtime.sessions import (
     ENDED_TIME_LIMIT,
     current_session_id,
     live_session_ids,
+    note_media_served,
     session_closer,
     slots,
 )
@@ -388,6 +389,7 @@ def pipeline_source_callback(method, kind: str):
         if bound is None:
             return placeholder()
         frame = bound(*args)
+        note_media_served()
         if kind == "video":
             shape = (frame.width, frame.height)
         else:
