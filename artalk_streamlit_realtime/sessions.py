@@ -13,6 +13,7 @@ import heapq
 import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from streamlit import config
 from streamlit.runtime import Runtime
@@ -20,6 +21,9 @@ from streamlit.runtime.app_session import AppSession
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from .gc_probe import collect_frozen_garbage
+
+if TYPE_CHECKING:
+    from streamlit.runtime.session_manager import SessionInfo
 
 logger = logging.getLogger(__name__)
 
@@ -416,8 +420,11 @@ class DisconnectedSessionCloser:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        # Only read and written on the Streamlit event loop.
-        self._disconnected_since: dict[str, float] = {}
+        # Only read and written on the Streamlit event loop. The SessionInfo
+        # tells disconnects apart: Streamlit stores a new one at each, so a
+        # reconnect and a new disconnect between two passes restart the
+        # clock.
+        self._disconnected_since: dict[str, tuple[SessionInfo, float]] = {}
         self._closed_lock = threading.Lock()
         self._closed: list[AppSession] = []
 
@@ -483,22 +490,22 @@ class DisconnectedSessionCloser:
             - SESSION_CLOSE_MARGIN_SECONDS
         )
         now = time.monotonic()
-        self._disconnected_since = {
-            info.session.id: self._disconnected_since.get(info.session.id, now)
-            for info in session_mgr.list_sessions()
-            if not session_mgr.is_active_session(info.session.id)
-        }
-        for session_id, since in list(self._disconnected_since.items()):
+        previous = self._disconnected_since
+        self._disconnected_since = {}
+        for info in session_mgr.list_sessions():
+            session_id = info.session.id
+            if session_mgr.is_active_session(session_id):
+                continue
+            seen_info, since = previous.get(session_id, (None, now))
+            if seen_info is not info:
+                since = now
             if now - since < close_after:
+                self._disconnected_since[session_id] = (info, since)
                 continue
             logger.info("[sessions] closing disconnected session %s", session_id)
-            session_info = session_mgr.get_session_info(session_id)
             runtime.close_session(session_id)
-            del self._disconnected_since[session_id]
-            if session_info is not None:
-                with self._closed_lock:
-                    self._closed.append(session_info.session)
-
+            with self._closed_lock:
+                self._closed.append(info.session)
 
 slots = PipelineSlots()
 session_closer = DisconnectedSessionCloser()
