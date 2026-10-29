@@ -85,6 +85,7 @@ from artalk_streamlit_realtime.config import (
     REALTIME_VOICES,
     VOICE_DESCRIPTIONS,
     parse_args,
+    warn_unlisted_profiler_traces,
 )
 from artalk_streamlit_realtime.diagnostics import (
     render_event_log_panel,
@@ -475,6 +476,8 @@ def main() -> None:
         logger.warning("[loop-watchdog] not armed", exc_info=True)
     args = parse_args()
     log_api_key_sources()
+    if args.profile_trace_dir and not args.operator_tools:
+        warn_unlisted_profiler_traces()
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
@@ -963,14 +966,15 @@ def main() -> None:
             )
         if show_backend:
             with advanced_box:
-                # Left empty rather than filled in, since the operator's
-                # server can be on a host the public page should not name.
-                st.text_input(
-                    "moshi server URL",
-                    placeholder=SERVER_DEFAULT_PLACEHOLDER,
-                    key="personaplex_url",
-                    persist_state="page",
-                )
+                if args.operator_tools:
+                    # Left empty rather than filled in, since the operator's
+                    # server can be on a host the public page should not name.
+                    st.text_input(
+                        "moshi server URL",
+                        placeholder=SERVER_DEFAULT_PLACEHOLDER,
+                        key="personaplex_url",
+                        persist_state="page",
+                    )
                 st.text_area(
                     "Persona",
                     value=DEFAULT_PERSONAPLEX_TEXT_PROMPT,
@@ -979,13 +983,17 @@ def main() -> None:
                     persist_state="page",
                 )
         personaplex_url = (
-            st.session_state.get("personaplex_url", "").strip() or DEFAULT_PERSONAPLEX_URL
-        )
+            args.operator_tools and st.session_state.get("personaplex_url", "").strip()
+        ) or DEFAULT_PERSONAPLEX_URL
         personaplex_text_prompt = st.session_state.get(
             "personaplex_text_prompt", DEFAULT_PERSONAPLEX_TEXT_PROMPT
         )
     if mode == "Interactive" and backend == BACKEND_OPENAI:
-        preset_names = list(REALTIME_ENDPOINT_PRESETS) + [CUSTOM_ENDPOINT_LABEL]
+        preset_names = list(REALTIME_ENDPOINT_PRESETS)
+        # Without operator tools, Custom is only the endpoint the server was
+        # configured with, so it is offered only when there is one.
+        if args.operator_tools or DEFAULT_REALTIME_WEBSOCKET_BASE_URL:
+            preset_names.append(CUSTOM_ENDPOINT_LABEL)
         # An endpoint supplied through the environment is by definition not
         # one of the presets, so start on Custom and carry it in.
         default_endpoint = (
@@ -1002,8 +1010,10 @@ def main() -> None:
                     help="Anything speaking the OpenAI Realtime protocol.",
                 )
         endpoint_name = st.session_state.get("realtime_endpoint", default_endpoint)
+        if endpoint_name not in preset_names:
+            endpoint_name = default_endpoint
         if endpoint_name == CUSTOM_ENDPOINT_LABEL:
-            if show_backend:
+            if show_backend and args.operator_tools:
                 with advanced_box:
                     # Empty for the reason given at the moshi server URL.
                     st.text_input(
@@ -1014,9 +1024,9 @@ def main() -> None:
                         help="The SDK appends `/realtime`.",
                     )
             realtime_ws_base_url = (
-                st.session_state.get("realtime_ws_base_url", "").strip()
-                or DEFAULT_REALTIME_WEBSOCKET_BASE_URL
-            )
+                args.operator_tools
+                and st.session_state.get("realtime_ws_base_url", "").strip()
+            ) or DEFAULT_REALTIME_WEBSOCKET_BASE_URL
             secret_name = "OPENAI_API_KEY"
             # The server's key goes only to the server's endpoint. Anyone can
             # type a URL here, and a server of their own would receive it.
@@ -1803,26 +1813,30 @@ def main() -> None:
 
     with advanced_box:
         st.subheader("Diagnostics")
-        # Deliberately outside the auto-rerunning fragments: a button inside
-        # a run_every fragment races with its reruns and clicks get lost.
-        if st.button(
-            "Save diagnostics snapshot",
-            key="save_diagnostics_snapshot",
-            help=(
-                "Click the moment you observe a jitter or lag; dumps all "
-                "counters, spikes, GC state, and the session event timeline "
-                "to a timestamped JSON file on the server, plus the "
-                "last-served video frame as a PNG beside it."
-            ),
-        ):
-            snapshot_path = save_diagnostics_snapshot(pipeline, event_log)
-            logger.warning("[diagnostics] snapshot saved to %s", snapshot_path.resolve())
-            st.caption(f"Saved `{snapshot_path.name}` on the server.")
+        if args.operator_tools:
+            # Deliberately outside the auto-rerunning fragments: a button
+            # inside a run_every fragment races with its reruns and clicks
+            # get lost.
+            if st.button(
+                "Save diagnostics snapshot",
+                key="save_diagnostics_snapshot",
+                help=(
+                    "Click the moment you observe a jitter or lag; dumps all "
+                    "counters, spikes, GC state, and the session event timeline "
+                    "to a timestamped JSON file on the server, plus the "
+                    "last-served video frame as a PNG beside it."
+                ),
+            ):
+                snapshot_path = save_diagnostics_snapshot(pipeline, event_log)
+                logger.warning(
+                    "[diagnostics] snapshot saved to %s", snapshot_path.resolve()
+                )
+                st.caption(f"Saved `{snapshot_path.name}` on the server.")
         with st.expander("Session events", expanded=True):
             if st.button("Clear events", key="clear_event_log"):
                 event_log.clear()
             render_event_log_fragment()
-        if args.profile_trace_dir:
+        if args.profile_trace_dir and args.operator_tools:
             with st.expander("Torch profiler", expanded=True):
                 render_profiler_fragment()
         with st.expander("GC pauses", expanded=True):

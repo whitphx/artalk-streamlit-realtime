@@ -185,6 +185,8 @@ seconds, long enough for the browser to conceal audio and freeze video. Set
 
 The page opens in an easy view: a gallery of the avatars, the mode, and the voice. **Professional mode**, a toggle beside the title, adds an **Advanced** tab with every other setting and the pipeline diagnostics. The choice is kept in the URL (`?pro=true`), so a reload or a bookmark keeps the view. What the easy view leaves out keeps its launch default, or whatever professional mode last set it to.
 
+The tools in professional mode that act on the server stay hidden unless the app runs with `--operator-tools` (`ARTALK_OPERATOR_TOOLS=1`): typing a Realtime or moshi server URL for the server to connect to, the diagnostics snapshot button, and the profiler's trace list and downloads. Without it, the **Endpoint** choice covers only the presets and the endpoint the server was configured with. Leave it off wherever strangers can open the page.
+
 Voice descriptions come from each provider's own documentation, so a voice the provider does not describe is listed by name alone.
 
 The gallery numbers the built-in avatars instead of showing their ids, which can be file names that name the person pictured. `ARTALK_AVATARS` (or `--avatars`) narrows the built-in avatars offered to a comma-separated list of ids, such as `1.jpg,5.jpg`; a visitor's own registered avatars are always offered to them.
@@ -294,10 +296,10 @@ JSON files in <https://ui.perfetto.dev> or `chrome://tracing`. Pipeline stages
 are labeled `artalk.*` in the trace. Trace export happens on the worker thread
 and can stall the pipeline for a moment, so keep profiling off in normal runs.
 
-When profiling is enabled, the app shows a **Torch profiler** panel above the
-diagnostics column with a per-chunk operator summary (`key_averages`, sorted by
-self CUDA time) and a download button for each Chrome trace — useful when the
-app runs on a remote GPU host.
+When profiling is enabled and the app runs with `--operator-tools`, it shows
+a **Torch profiler** panel above the diagnostics column with a per-chunk
+operator summary (`key_averages`, sorted by self CUDA time) and a download
+button for each Chrome trace — useful when the app runs on a remote GPU host.
 
 The renderer can call `torch.cuda.synchronize()` at stage boundaries so the
 per-stage diagnostics timings are attributable. This is **off by default**
@@ -461,7 +463,7 @@ On a lab server, put an `[auth]` section for any OIDC provider in `.streamlit/se
 Still shared between sessions in one process:
 
 - The loaded models. Each session builds its own pipeline and motion streamer on top of them, and its own view of the photoreal renderer, so selections and per-avatar caches do not leak between sessions.
-- **Save diagnostics snapshot** writes the session's event log and its last video frame to `diagnostics_snapshots/` on the server, and any visitor can press it. Nothing in the app serves those files back.
+- With `--operator-tools`, **Save diagnostics snapshot** writes the session's event log and its last video frame to `diagnostics_snapshots/` on the server, and any visitor can press it. Nothing in the app serves those files back.
 - The GC pause panel shows process-wide counters.
 - An API key set as a server secret (`OPENAI_API_KEY`) is used by every visitor. A key typed into the page stays in that browser session.
 

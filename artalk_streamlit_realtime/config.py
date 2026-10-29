@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
+import logging
 import os
 from typing import NamedTuple
+
+logger = logging.getLogger(__name__)
 
 OPENAI_REALTIME_SAMPLE_RATE = 24000
 CONVERSATION_BACKENDS = ("openai-realtime", "openai-live", "personaplex")
@@ -198,6 +202,18 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+# Cached because the page script, which calls it, runs again on every
+# interaction.
+@functools.cache
+def warn_unlisted_profiler_traces() -> None:
+    # Nothing configures this package's loggers, so Python's fallback
+    # handler prints only warnings and above.
+    logger.warning(
+        "[config] --profile-trace-dir is set without --operator-tools: traces "
+        "are written to disk but the page does not list them"
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -384,6 +400,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Enable PyTorch Profiler capture and write one Chrome trace per "
             "profiled ARTalk motion chunk under this directory."
+        ),
+    )
+    parser.add_argument(
+        "--operator-tools",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_OPERATOR_TOOLS", False),
+        help=(
+            "Give professional mode the tools that act on the server: typing "
+            "any Realtime or moshi server URL for the server to connect to, "
+            "saving diagnostics snapshots to its disk, and listing and "
+            "downloading --profile-trace-dir traces. Leave off where the page "
+            "is public."
         ),
     )
     parser.add_argument(

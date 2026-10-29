@@ -77,6 +77,10 @@
 # ~/.config/artalk/openai.env, chmod 600), which exports OPENAI_API_KEY.
 # ARTALK_OPENAI_KEY_FOR_ALL=1 in the env file hands that key to every
 # visitor, signed in or not; set it only when the key's spend is capped.
+#
+# The page this job serves is public, so professional mode's server-side
+# tools stay off. Export ARTALK_OPERATOR_TOOLS=1 before submitting to turn
+# them on for a run that only the operator can reach.
 set -euo pipefail
 
 START=$SECONDS
@@ -267,6 +271,7 @@ echo "WebRTC: $TURN_STATUS"
 echo "Avatar registration: $REGISTRATION_STATUS"
 echo "Login: $LOGIN_STATUS"
 echo "OpenAI key: $KEY_STATUS"
+echo "Operator tools: ARTALK_OPERATOR_TOOLS=${ARTALK_OPERATOR_TOOLS:-unset, so off}"
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 APP_LOG=$DATA_DIR/app-${SLURM_JOB_ID:-$$}-${SLURM_RESTART_COUNT:-0}.log
