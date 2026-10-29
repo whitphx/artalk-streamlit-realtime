@@ -41,8 +41,10 @@ from artalk_streamlit_realtime.avatar_gallery import (
     user_thumbnail,
 )
 from artalk_streamlit_realtime.avatar_registry import (
+    MAX_DISPLAY_NAME_CHARS,
     AvatarRegistrationError,
     UserAvatarRegistry,
+    clean_display_name,
     owner_dir,
     prune_session_owners,
     session_owner_dir,
@@ -276,6 +278,7 @@ def api_key_input(secret_name: str, *, use_server_key: bool = True) -> str:
 def register_avatar_with_progress(
     registry: UserAvatarRegistry,
     avatar_id: str,
+    display_name: str,
     image_bytes: bytes,
     suffix: str,
     reference_s: float | None,
@@ -287,7 +290,9 @@ def register_avatar_with_progress(
 
     def run() -> None:
         try:
-            outcome["entry"] = registry.register(avatar_id, image_bytes, suffix)
+            outcome["entry"] = registry.register(
+                avatar_id, image_bytes, suffix, display_name
+            )
         except Exception as exc:
             outcome["error"] = exc
 
@@ -591,6 +596,9 @@ def main() -> None:
 
     gagavatar_ids = list_gagavatar_ids(str(tracked_path) if tracked_path else None)
     user_avatar_ids = user_registry.list_ids()
+    user_avatar_names = {
+        avatar_id: user_registry.display_name(avatar_id) for avatar_id in user_avatar_ids
+    }
     style_ids = list_style_ids(str(asset_dir))
 
     avatar_col, panel_col = st.columns([1, 1.35] if pro else [1, 1], gap="large")
@@ -678,9 +686,9 @@ def main() -> None:
                 [
                     {
                         "value": f"gagavatar:{avatar_id}",
-                        "label": avatar_id,
+                        "label": user_avatar_names[avatar_id],
                         "src": user_preview(avatar_id),
-                        "alt": f"{avatar_id} preview",
+                        "alt": f"{user_avatar_names[avatar_id]} preview",
                     }
                     for avatar_id in user_avatar_ids
                 ]
@@ -1070,25 +1078,30 @@ def main() -> None:
                 if registered_flash is not None:
                     elapsed_s = registered_flash.get("elapsed_s")
                     took = f" in {elapsed_s:.0f} s" if elapsed_s else ""
-                    st.success(
-                        f"Registered{took} and selected "
-                        f"`{registered_flash['avatar_id']}`."
-                    )
+                    # The name stays out of these elements, which render
+                    # Markdown: autolinking turns a typed URL into a link
+                    # even with the Markdown escaped. The gallery shows the
+                    # name as plain text.
+                    st.success(f"Registered{took}. The new avatar is selected.")
                     st.image(
                         registered_flash["vis_image"],
                         clamp=True,
-                        caption=f"Tracked fit: {registered_flash['avatar_id']}",
+                        caption="Tracked fit",
                     )
+                # A widget's value can only be reset by giving it a new key,
+                # so a registration moves the form on to a fresh pair.
+                form_generation = st.session_state.get("avatar_form_generation", 0)
                 upload = st.file_uploader(
                     "Face image",
                     type=["jpg", "jpeg", "png"],
-                    key="avatar_upload",
+                    key=f"avatar_upload_{form_generation}",
                 )
                 if upload is not None:
                     avatar_name = st.text_input(
                         "Avatar name",
-                        value=Path(upload.name).stem,
-                        key="avatar_name",
+                        value=Path(upload.name).stem[:MAX_DISPLAY_NAME_CHARS],
+                        max_chars=MAX_DISPLAY_NAME_CHARS,
+                        key=f"avatar_name_{form_generation}",
                     )
                     ctx = st.session_state.get(f"artalk_{mode.lower()}")
                     if (
@@ -1101,18 +1114,22 @@ def main() -> None:
                             "may cause a brief hiccup or fail on low memory."
                         )
                     if st.button("Register", key="avatar_register"):
-                        avatar_id = slugify_avatar_id(avatar_name)
-                        if not avatar_id:
-                            st.error("Avatar name is empty after sanitizing.")
+                        display_name = clean_display_name(avatar_name)
+                        if not display_name:
+                            st.error("Give the avatar a name.")
                         else:
+                            # The name is kept beside the avatar for display,
+                            # so the id only has to be a safe directory name.
                             avatar_id = user_registry.allocate_id(
-                                avatar_id, reserved=gagavatar_ids
+                                slugify_avatar_id(display_name) or "avatar",
+                                reserved=gagavatar_ids,
                             )
                             suffix = Path(upload.name).suffix.lower() or ".png"
                             try:
                                 entry = register_avatar_with_progress(
                                     user_registry,
                                     avatar_id,
+                                    display_name,
                                     upload.getvalue(),
                                     suffix,
                                     user_registry.last_track_seconds(),
@@ -1126,21 +1143,26 @@ def main() -> None:
                                 # a flash.
                                 st.session_state[APPEARANCE_KEY] = f"gagavatar:{avatar_id}"
                                 st.session_state["avatar_registered_flash"] = {
-                                    "avatar_id": avatar_id,
                                     "vis_image": entry["vis_image"]
                                     .numpy()
                                     .transpose(1, 2, 0),
                                     "elapsed_s": user_registry.last_track_seconds(),
                                 }
+                                st.session_state["avatar_form_generation"] = (
+                                    form_generation + 1
+                                )
                                 st.rerun()
                 if user_avatar_ids:
                     delete_id = st.selectbox(
                         "Delete registered avatar",
-                        ["(select)", *user_avatar_ids],
+                        [None, *user_avatar_ids],
+                        format_func=lambda avatar_id: (
+                            "(select)" if avatar_id is None else user_avatar_names[avatar_id]
+                        ),
                         key="avatar_delete_select",
                     )
-                    if delete_id != "(select)" and st.button(
-                        f"Delete {delete_id}", key="avatar_delete"
+                    if delete_id is not None and st.button(
+                        "Delete", key="avatar_delete"
                     ):
                         user_registry.delete(delete_id)
                         st.rerun()

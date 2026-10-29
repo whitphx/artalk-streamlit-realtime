@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 TRACK_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "track_avatar.py"
 TRACK_TIMEOUT_S = 600.0
+MAX_DISPLAY_NAME_CHARS = 40
 
 
 class AvatarRegistrationError(RuntimeError):
@@ -34,6 +36,18 @@ class AvatarRegistrationError(RuntimeError):
 
 def slugify_avatar_id(name: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", name.strip().lower()).strip("-.")
+
+
+def clean_display_name(name: str) -> str:
+    """A visitor's avatar name, made safe to show to them on the page.
+
+    Control and format characters go, since they can reorder or hide the
+    text around them (bidi overrides), and runs of whitespace collapse.
+    """
+    printable = "".join(
+        char if char.isprintable() else " " for char in unicodedata.normalize("NFC", name)
+    )
+    return " ".join(printable.split())[:MAX_DISPLAY_NAME_CHARS].strip()
 
 
 def owner_dir(root: Path | str, kind: str, owner_id: str) -> Path:
@@ -99,6 +113,13 @@ class UserAvatarRegistry:
             return []
         return sorted(path.parent.name for path in self.root.glob("*/tracked.pt"))
 
+    def display_name(self, avatar_id: str) -> str:
+        try:
+            name = (self.root / avatar_id / "name.txt").read_text(encoding="utf-8")
+        except OSError:
+            return avatar_id
+        return clean_display_name(name) or avatar_id
+
     def load(self, avatar_id: str) -> dict:
         # Entries are written by scripts/track_avatar.py as tensors only,
         # so the safe loading mode suffices.
@@ -133,7 +154,9 @@ class UserAvatarRegistry:
             n += 1
         return f"{base_id}-{n}"
 
-    def register(self, avatar_id: str, image_bytes: bytes, suffix: str) -> dict:
+    def register(
+        self, avatar_id: str, image_bytes: bytes, suffix: str, display_name: str
+    ) -> dict:
         if not self.can_register:
             raise AvatarRegistrationError(
                 "Avatar tracking is not configured; set GAGAVATAR_TRACK_PYTHON "
@@ -150,6 +173,9 @@ class UserAvatarRegistry:
             raise AvatarRegistrationError(
                 f"Avatar `{avatar_id}` already exists."
             ) from None
+        (avatar_dir / "name.txt").write_text(
+            clean_display_name(display_name), encoding="utf-8"
+        )
         source_path = avatar_dir / f"source{suffix}"
         source_path.write_bytes(image_bytes)
         tracked_path = avatar_dir / "tracked.pt"
