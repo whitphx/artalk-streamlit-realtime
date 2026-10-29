@@ -14,8 +14,12 @@ import logging
 import threading
 import time
 
+from streamlit import config
 from streamlit.runtime import Runtime
+from streamlit.runtime.app_session import AppSession
 from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+from .gc_probe import collect_frozen_garbage
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,15 @@ logger = logging.getLogger(__name__)
 # margin before tearing its pipeline down.
 DISCONNECT_GRACE_SECONDS = 20.0
 REAP_INTERVAL_SECONDS = 5.0
+
+# How long before Streamlit forgets a disconnected session to close it. The
+# closer only notices a disconnect on its next pass, so this must exceed the
+# pass interval with room to spare.
+SESSION_CLOSE_MARGIN_SECONDS = 15.0
+SESSION_CLOSE_INTERVAL_SECONDS = 5.0
+# Each collection over the frozen objects stalls every thread for a few
+# hundred milliseconds, so sessions closed in a busy minute share one.
+FROZEN_COLLECT_INTERVAL_SECONDS = 60.0
 
 ENDED_TIME_LIMIT = "time_limit"
 ENDED_NOT_STARTED = "not_started"
@@ -378,4 +391,114 @@ class PipelineSlots:
                     logger.warning("[slots] stopping %s failed", name, exc_info=True)
 
 
+class DisconnectedSessionCloser:
+    """Shuts down each disconnected session shortly before Streamlit forgets
+    it, then collects what the session left behind.
+
+    Streamlit keeps a disconnected session for
+    ``server.disconnectedSessionTTL`` seconds so that its browser can come
+    back, and then drops it from ``MemorySessionStorage`` without calling
+    ``AppSession.shutdown()``. Only ``close_session`` shuts a session down,
+    and nothing in the server calls it for a closed tab (see
+    ``WebsocketSessionManager.disconnect_session`` and ``close_session`` in
+    streamlit/runtime/websocket_session_manager.py, Streamlit 1.65.0). A
+    session that is never shut down keeps its script event loop and its
+    file descriptors open. Worse, streamlit-webrtc's ``ShutdownPolling``
+    threads wait for the shutdown and keep a strong reference to the session
+    while they wait, so the session, its session state and the pipeline in
+    it are never freed.
+
+    The session's objects reference each other in cycles that
+    ``freeze_loaded_objects`` may already have frozen, so freeing them takes
+    a collection over the frozen objects as well.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        # Only read and written on the Streamlit event loop.
+        self._disconnected_since: dict[str, float] = {}
+        self._closed_lock = threading.Lock()
+        self._closed: list[AppSession] = []
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is None and Runtime.exists():
+                self._thread = threading.Thread(
+                    target=self._run, name="session-closer", daemon=True
+                )
+                self._thread.start()
+
+    def _run(self) -> None:
+        runtime = Runtime.instance()
+        last_collect = -FROZEN_COLLECT_INTERVAL_SECONDS
+        while True:
+            time.sleep(SESSION_CLOSE_INTERVAL_SECONDS)
+            now = time.monotonic()
+            # Sessions are closed at the end of a pass, so they are a pass old
+            # here, and the ShutdownPolling threads, which check once a
+            # second, have let go of them.
+            with self._closed_lock:
+                closed = self._closed
+                if closed and now - last_collect >= FROZEN_COLLECT_INTERVAL_SECONDS:
+                    self._closed = []
+                else:
+                    closed = []
+            if closed:
+                last_collect = now
+                for session in closed:
+                    # What the closed session leaves can outlive it: the
+                    # runtime loop keeps the last session it served in a
+                    # local until another session sends something, and
+                    # aiortc's MediaRelay keeps some source tracks, whose
+                    # streamlit-webrtc reset callback holds the session
+                    # state. Emptying the state, its widget callbacks and the
+                    # fragments lets the pipeline go either way. Not done at
+                    # close time, because the ShutdownPolling callbacks still
+                    # pop their keys then.
+                    try:
+                        state = session.session_state
+                        state.clear()
+                        state._new_widget_state.widget_metadata.clear()
+                        session._fragment_storage.clear()
+                    except Exception:
+                        logger.warning(
+                            "[sessions] emptying a closed session failed",
+                            exc_info=True,
+                        )
+                del closed, session
+                collect_frozen_garbage()
+            try:
+                # The session manager is only safe to use on its event loop.
+                runtime._get_async_objs().eventloop.call_soon_threadsafe(
+                    self._close_expiring, runtime
+                )
+            except Exception:
+                logger.warning("[sessions] closer pass failed", exc_info=True)
+
+    def _close_expiring(self, runtime: Runtime) -> None:
+        session_mgr = runtime._session_mgr
+        close_after = (
+            config.get_option("server.disconnectedSessionTTL")
+            - SESSION_CLOSE_MARGIN_SECONDS
+        )
+        now = time.monotonic()
+        self._disconnected_since = {
+            info.session.id: self._disconnected_since.get(info.session.id, now)
+            for info in session_mgr.list_sessions()
+            if not session_mgr.is_active_session(info.session.id)
+        }
+        for session_id, since in list(self._disconnected_since.items()):
+            if now - since < close_after:
+                continue
+            logger.info("[sessions] closing disconnected session %s", session_id)
+            session_info = session_mgr.get_session_info(session_id)
+            runtime.close_session(session_id)
+            del self._disconnected_since[session_id]
+            if session_info is not None:
+                with self._closed_lock:
+                    self._closed.append(session_info.session)
+
+
 slots = PipelineSlots()
+session_closer = DisconnectedSessionCloser()

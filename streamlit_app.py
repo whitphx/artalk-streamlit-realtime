@@ -98,6 +98,7 @@ from artalk_streamlit_realtime.sessions import (
     ENDED_TIME_LIMIT,
     current_session_id,
     live_session_ids,
+    session_closer,
     slots,
 )
 from artalk_streamlit_realtime.artalk1s import ARTalk1sStreamer
@@ -465,6 +466,7 @@ def main() -> None:
         torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
     slots.start_grace = args.start_grace
+    session_closer.start()
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
     asset_dir = artalk_assets.root
