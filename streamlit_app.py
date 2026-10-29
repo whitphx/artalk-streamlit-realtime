@@ -364,8 +364,11 @@ def get_silence_pump(
         pump = PipelineSilencePump(
             pipeline, idle_motion=idle_motion, continuous_input=continuous_input
         )
-        pump.start()
+        # Writing session state can raise Streamlit's stop or rerun, so the
+        # thread starts only once the session holds the pump. The config goes
+        # last, so a pump stored without it is replaced on the next run.
         st.session_state[SILENCE_PUMP_KEY] = pump
+        pump.start()
         st.session_state[SILENCE_PUMP_CONFIG_KEY] = config
     return pump
 
@@ -395,8 +398,9 @@ def get_event_watcher(
         watcher = None
     if watcher is None:
         watcher = PipelineEventWatcher(pipeline, event_log)
-        watcher.start()
+        # Stored before it starts, for the reason given in get_silence_pump.
         st.session_state[EVENT_WATCHER_KEY] = watcher
+        watcher.start()
         st.session_state[EVENT_WATCHER_CONFIG_KEY] = config
     return watcher
 
@@ -1268,8 +1272,16 @@ def main() -> None:
                 gagavatar_flame=gagavatar_flame,
                 shape_id=avatar_id,
             )
-            st.session_state[PIPELINE_KEY] = pipeline
-            st.session_state[PIPELINE_CONFIG_KEY] = config
+            # Writing session state is where Streamlit raises the stop or
+            # rerun a closed or changed page asked for, and the pipeline's
+            # worker is already running. Dropped here, the pipeline would run
+            # forever, held by nothing but its own thread.
+            try:
+                st.session_state[PIPELINE_KEY] = pipeline
+                st.session_state[PIPELINE_CONFIG_KEY] = config
+            except BaseException:
+                pipeline.stop()
+                raise
             freeze_loaded_objects(force=True)
         if client_assets is not None:
             pipeline.set_avatar(avatar_id)
