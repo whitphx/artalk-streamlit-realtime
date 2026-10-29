@@ -20,6 +20,7 @@ from typing import Literal, NamedTuple, Protocol
 
 import streamlit as st
 
+from .redact import redact
 from .voice_records import (
     VOICE_DIR,
     VoiceSession,
@@ -500,7 +501,9 @@ class SessionRecorder:
                 delete_voice_recordings(self.store, self.voice_key)
             except Exception as exc:
                 logger.warning("[session-records] voice deletion failed", exc_info=True)
-                self.voice_deletion = VoiceDeletion("failed", f"{type(exc).__name__}: {exc}")
+                self.voice_deletion = VoiceDeletion(
+                    "failed", redact(f"{type(exc).__name__}: {exc}")
+                )
             else:
                 self.voice_deletion = VoiceDeletion("done", "")
 

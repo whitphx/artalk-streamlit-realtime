@@ -17,6 +17,7 @@ from artalk.realtime_pipeline import TURN_GAP_S
 
 from .config import ARTALK_SAMPLE_RATE, OPENAI_REALTIME_SAMPLE_RATE
 from .event_log import SessionEventLog
+from .redact import redact
 
 if TYPE_CHECKING:
     from artalk.realtime_pipeline import ARTalkPipeline
@@ -188,7 +189,7 @@ class OpenAIRealtimeBridge:
         except Exception as exc:
             logger.exception("OpenAI Realtime bridge crashed")
             with self._state_lock:
-                self._error = f"{type(exc).__name__}: {exc}"
+                self._error = redact(f"{type(exc).__name__}: {exc}")
         finally:
             with self._state_lock:
                 self._connected = False
@@ -337,7 +338,7 @@ class OpenAIRealtimeBridge:
                 logger.warning("OpenAI Realtime API error: %s", msg)
                 self._record_event("openai", "API error", msg)
                 with self._state_lock:
-                    self._error = msg
+                    self._error = redact(msg)
 
     def _track_response_item(self, event, pcm: bytes) -> None:
         item_id = getattr(event, "item_id", None)

@@ -16,9 +16,9 @@ import os
 
 import av
 import streamlit as st
-from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit_webrtc import WebRtcMode, create_audio_sink_track, create_audio_source_track, webrtc_streamer
 
+from artalk_streamlit_realtime.app_secrets import get_secret, log_api_key_sources
 from artalk_streamlit_realtime.audio_only_pipeline import (
     DEFAULT_AUDIO_ONLY_PREBUFFER_SECONDS,
     AudioOnlyPipeline,
@@ -57,18 +57,6 @@ BRIDGE_KEY = "audio_demo_bridge"
 CONFIG_KEY = "audio_demo_config"
 
 
-def get_secret(name: str, default: str = "") -> str:
-    """A secret from Streamlit's secrets file, else from the environment,
-    which is how a Space delivers its secrets."""
-    try:
-        value = st.secrets.get(name)
-    except StreamlitSecretNotFoundError:
-        value = None
-    if value is None:
-        value = os.environ.get(name)
-    return str(value) if value else default
-
-
 def stop_bridge() -> None:
     bridge = st.session_state.pop(BRIDGE_KEY, None)
     if bridge is not None:
@@ -78,6 +66,7 @@ def stop_bridge() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Voice backend demo", page_icon=":studio_microphone:")
+    log_api_key_sources()
     st.title("Voice backend demo")
     st.caption("Audio only, so latency is the model and the network, not the avatar.")
 
@@ -129,18 +118,20 @@ def main() -> None:
                     help="The SDK appends `/realtime`.",
                 ).strip()
                 secret_name = "OPENAI_API_KEY"
+                # The server's key goes only to the server's endpoint, not to
+                # whatever URL is typed here.
+                use_server_key = ws_base_url == DEFAULT_REALTIME_WEBSOCKET_BASE_URL
             else:
                 endpoint = REALTIME_ENDPOINT_PRESETS[chosen]
                 ws_base_url = endpoint.base_url
                 secret_name = endpoint.secret
+                use_server_key = True
                 declare_audio_format = endpoint.declares_audio_format
                 if ws_base_url:
                     st.caption(f"`{ws_base_url}`")
-            api_key = get_secret(secret_name) if secret_name else ""
-            if api_key:
-                st.success(f"`{secret_name}` loaded.")
-            elif secret_name:
-                st.warning(f"`{secret_name}` is not configured.")
+            api_key = get_secret(secret_name) if secret_name and use_server_key else ""
+            if secret_name and use_server_key and not api_key:
+                st.warning(f"Set `{secret_name}` on the server to use this endpoint.")
             model = st.text_input("Model", value=DEFAULT_REALTIME_MODEL)
             voice = st.selectbox(
                 "Voice", REALTIME_VOICES, index=REALTIME_VOICES.index(DEFAULT_REALTIME_VOICE)
@@ -153,10 +144,8 @@ def main() -> None:
             )
         elif backend == BACKEND_OPENAI_LIVE:
             api_key = get_secret("OPENAI_API_KEY")
-            if api_key:
-                st.success("`OPENAI_API_KEY` loaded.")
-            else:
-                st.warning("`OPENAI_API_KEY` is not configured.")
+            if not api_key:
+                st.warning("Set `OPENAI_API_KEY` on the server to use this backend.")
             model = st.text_input(
                 "Model", value=DEFAULT_LIVE_MODEL, key="live_model"
             ).strip()

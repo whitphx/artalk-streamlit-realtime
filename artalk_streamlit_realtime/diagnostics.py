@@ -14,6 +14,7 @@ from PIL import Image
 
 from .event_log import SessionEventLog
 from .gc_probe import PAUSE_EVENT_MIN_MS, GcPauseProbe, gc_pause_probe
+from .redact import redact
 
 SNAPSHOT_DIR = Path("diagnostics_snapshots")
 
@@ -49,7 +50,7 @@ def save_diagnostics_snapshot(
         Image.fromarray(pipeline.last_served_frame).save(frame_path)
         payload["last_served_frame"] = frame_path.name
     except Exception as exc:
-        payload["last_served_frame_error"] = repr(exc)
+        payload["last_served_frame_error"] = redact(repr(exc))
     path = SNAPSHOT_DIR / f"{stem}.json"
     path.write_text(json.dumps(payload, indent=1, default=str))
     return path
@@ -138,7 +139,7 @@ def render_profiler_panel(
         return
 
     if status["last_error"]:
-        st.error(f"Profiler capture failed: {status['last_error']}")
+        st.error(f"Profiler capture failed: {redact(status['last_error'])}")
 
     counters = pipeline.metrics_snapshot()["counters"]
     chunk_samples = int(metric_value(counters, "streamer_chunk_samples", 64000.0))
@@ -179,14 +180,10 @@ def render_profiler_panel(
             "the first chunk. Stopping the session or changing settings "
             "restarts the capture counters."
         )
-        st.caption(f"Traces will be written to `{run_dir}` on the server.")
         return
 
     if len(traces) > MAX_PROFILER_TRACES_LISTED:
-        st.caption(
-            f"Showing the latest {MAX_PROFILER_TRACES_LISTED} of "
-            f"{len(traces)} traces under `{root}`."
-        )
+        st.caption(f"Showing the latest {MAX_PROFILER_TRACES_LISTED} of {len(traces)} traces.")
     for trace_path in traces[:MAX_PROFILER_TRACES_LISTED]:
         run_name = trace_path.parent.name
         is_current = Path(run_dir) == trace_path.parent
@@ -235,8 +232,7 @@ def render_profiler_panel(
         "Chrome trace JSON: download it and open it in "
         "<https://ui.perfetto.dev> (drag & drop) or `chrome://tracing`. "
         "Pipeline stages appear as `artalk.*` spans; look for `cudaMemcpy` / "
-        "`cudaStreamSynchronize` blocks inside them. Traces are also on the "
-        f"server under `{root}`."
+        "`cudaStreamSynchronize` blocks inside them."
     )
 
 

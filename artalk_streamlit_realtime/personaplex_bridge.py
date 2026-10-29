@@ -26,6 +26,7 @@ import av
 import numpy as np
 
 from .config import ARTALK_SAMPLE_RATE, PERSONAPLEX_SAMPLE_RATE
+from .redact import redact
 
 if TYPE_CHECKING:
     from artalk.realtime_pipeline import ARTalkPipeline
@@ -205,7 +206,7 @@ class PersonaPlexBridge:
         except Exception as exc:
             logger.exception("PersonaPlex bridge crashed")
             with self._state_lock:
-                self._error = f"{type(exc).__name__}: {exc}"
+                self._error = redact(f"{type(exc).__name__}: {exc}")
         finally:
             with self._state_lock:
                 self._connected = False
@@ -259,7 +260,7 @@ class PersonaPlexBridge:
                         if exc is not None:
                             logger.error("%s failed", task.get_name(), exc_info=exc)
                             with self._state_lock:
-                                self._error = f"{type(exc).__name__}: {exc}"
+                                self._error = redact(f"{type(exc).__name__}: {exc}")
                 finally:
                     for task in tasks:
                         task.cancel()

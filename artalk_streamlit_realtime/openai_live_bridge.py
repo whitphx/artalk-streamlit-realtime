@@ -32,6 +32,7 @@ from .config import (
     OPENAI_LIVE_SAMPLE_RATE,
 )
 from .event_log import SessionEventLog
+from .redact import redact
 
 if TYPE_CHECKING:
     from artalk.realtime_pipeline import ARTalkPipeline
@@ -213,7 +214,7 @@ class OpenAILiveBridge:
         except Exception as exc:
             logger.exception("GPT-Live bridge crashed")
             with self._state_lock:
-                self._error = f"{type(exc).__name__}: {exc}"
+                self._error = redact(f"{type(exc).__name__}: {exc}")
         finally:
             with self._state_lock:
                 self._connected = False
@@ -374,7 +375,7 @@ class OpenAILiveBridge:
                 logger.warning("GPT-Live API error: %s", message)
                 self._record_event("live", "API error", message)
                 with self._state_lock:
-                    self._error = message
+                    self._error = redact(message)
 
     async def _handle_delegation(self, conn, delegation) -> None:
         self._record_event(

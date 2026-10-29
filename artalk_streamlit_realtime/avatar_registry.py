@@ -9,6 +9,7 @@ GAGAvatar_track subprocess. Per-avatar files keep the built-in
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import shutil
 import subprocess
@@ -18,6 +19,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import torch
+
+from .redact import redact
+
+logger = logging.getLogger(__name__)
 
 TRACK_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "track_avatar.py"
 TRACK_TIMEOUT_S = 600.0
@@ -175,15 +180,15 @@ class UserAvatarRegistry:
             ) from None
         if proc.returncode != 0 or not tracked_path.exists():
             shutil.rmtree(avatar_dir, ignore_errors=True)
-            log_path = self.root / ".last_track_error.log"
-            try:
-                log_path.write_text(
-                    f"command: {' '.join(command)}\n\n"
-                    f"--- stdout ---\n{proc.stdout or ''}\n"
-                    f"--- stderr ---\n{proc.stderr or ''}\n"
-                )
-            except OSError:
-                log_path = None
+            logger.warning(
+                "[avatars] tracking %s failed with exit code %s\n"
+                "command: %s\n--- stdout ---\n%s\n--- stderr ---\n%s",
+                avatar_id,
+                proc.returncode,
+                " ".join(command),
+                proc.stdout or "",
+                proc.stderr or "",
+            )
             # CUDA failures span several lines and the informative one is
             # rarely last; prefer lines that name an error.
             lines = [
@@ -194,9 +199,8 @@ class UserAvatarRegistry:
             tail = lines[-8:]
             named = [l for l in tail if "rror" in l or "failed" in l]
             detail = " | ".join(named or tail[-2:]) or f"exit code {proc.returncode}"
-            hint = f" (full log: {log_path})" if log_path else ""
             raise AvatarRegistrationError(
-                f"Avatar tracking failed: {detail[:400]}{hint}"
+                f"Avatar tracking failed: {redact(detail)[:400]}"
             )
         elapsed_s = time.monotonic() - track_started
         try:

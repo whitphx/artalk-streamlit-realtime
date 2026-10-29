@@ -7,3 +7,8 @@ gatherUsageStats = false
 # ~5 full 150 ms stop-the-world collections per second, starving the realtime
 # pipeline worker (see docs/realtime-performance-notes.md, 2026-07-10).
 postScriptGC = false
+
+[client]
+# An uncaught exception's message and traceback can name server paths and
+# hosts, so the page shows only its type; the server log keeps the rest.
+showErrorDetails = "type"

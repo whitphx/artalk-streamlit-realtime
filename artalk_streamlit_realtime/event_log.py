@@ -14,9 +14,11 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from artalk.realtime_pipeline import ARTalkPipeline
+
+from .redact import redact
 
 logger = logging.getLogger("artalk_streamlit_realtime.events")
 
@@ -60,9 +62,12 @@ class SessionEventLog:
             message=message,
             detail=detail,
         )
+        logger.warning("[event] %s", event.format_line(self.epoch_s))
+        # The ring feeds the diagnostics panel and its snapshots, which
+        # visitors can open; the server log above keeps the original.
+        event = replace(event, message=redact(message), detail=redact(detail))
         with self._lock:
             self.events.append(event)
-        logger.warning("[event] %s", event.format_line(self.epoch_s))
 
     def snapshot(self) -> list[SessionEvent]:
         with self._lock:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import faulthandler
 import inspect
 import logging
-import os
 import re
 import signal
 import threading
@@ -25,7 +24,6 @@ import streamlit as st
 import torch
 from artalk.assets import ARTalkAssets
 from artalk.realtime_pipeline import ARTalkPipeline
-from streamlit.errors import StreamlitSecretNotFoundError
 from streamlit_webrtc import (
     WebRtcMode,
     create_audio_sink_track,
@@ -35,6 +33,7 @@ from streamlit_webrtc import (
 )
 
 from artalk_streamlit_realtime.ai_badge import BadgedARTalkPipeline
+from artalk_streamlit_realtime.app_secrets import get_secret, log_api_key_sources
 from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
 from artalk_streamlit_realtime.avatar_gallery import (
     avatar_gallery,
@@ -112,6 +111,7 @@ from artalk_streamlit_realtime.loop_watchdog import loop_stall_watchdog
 from artalk_streamlit_realtime.openai_bridge import OpenAIRealtimeBridge
 from artalk_streamlit_realtime.openai_live_bridge import OpenAILiveBridge
 from artalk_streamlit_realtime.personaplex_bridge import PersonaPlexBridge
+from artalk_streamlit_realtime.redact import redact
 from artalk_streamlit_realtime.runtime import (
     StreamingGAGAvatarAdapter,
     list_gagavatar_ids,
@@ -138,6 +138,8 @@ from artalk_streamlit_realtime.silence import PipelineSilencePump
 from artalk_streamlit_realtime.streamlit_patches import (
     disable_streamlit_source_watcher,
 )
+
+logger = logging.getLogger(__name__)
 
 PIPELINE_KEY = "artalk_pipeline"
 PIPELINE_CONFIG_KEY = "artalk_pipeline_config"
@@ -174,6 +176,7 @@ VOICE_HELP = (
     "original voices, so those show only their names."
 )
 SESSION_END_WARNING_SECONDS = 10
+SERVER_DEFAULT_PLACEHOLDER = "Server default"
 PAGE_TITLE = "ARTalk Realtime"
 
 # Browsers start an AudioContext suspended and show the notification prompt
@@ -257,23 +260,10 @@ def format_wait(seconds: float) -> str:
     return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
 
 
-def get_secret(name: str, default: str = "") -> str:
-    """A secret from Streamlit's secrets file, else from the environment,
-    which is how a Space delivers its secrets."""
-    try:
-        value = st.secrets.get(name)
-    except StreamlitSecretNotFoundError:
-        value = None
-    if value is None:
-        value = os.environ.get(name)
-    return str(value) if value else default
-
-
-def api_key_input(secret_name: str) -> str:
+def api_key_input(secret_name: str, *, use_server_key: bool = True) -> str:
     """The configured secret, or a key typed into this browser session."""
-    api_key = get_secret(secret_name)
+    api_key = get_secret(secret_name) if use_server_key else ""
     if api_key:
-        st.success(f"`{secret_name}` loaded.")
         return api_key
     return st.text_input(
         secret_name,
@@ -477,10 +467,9 @@ def main() -> None:
 
         loop_stall_watchdog.install(get_global_event_loop())
     except Exception:
-        logging.getLogger(__name__).warning(
-            "[loop-watchdog] not armed", exc_info=True
-        )
+        logger.warning("[loop-watchdog] not armed", exc_info=True)
     args = parse_args()
+    log_api_key_sources()
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
@@ -555,8 +544,9 @@ def main() -> None:
                 audio_encoder=args.artalk_audio_encoder,
                 checkpoint_path=args.artalk_checkpoint,
             )
-    except Exception as exc:
-        st.error(f"Failed to initialize ARTalk runtime: {exc}")
+    except Exception:
+        logger.exception("Failed to initialize the ARTalk runtime")
+        st.error("The avatar model failed to load, so the demo is unavailable.")
         st.stop()
 
     model = artalk_runtime.model
@@ -578,10 +568,10 @@ def main() -> None:
         try:
             with _MODEL_BUILD_LOCK:
                 load_photoreal_renderer()
-        except Exception as exc:
+        except Exception:
             # Keep mesh mode usable; only a photoreal pick should fail, as it
             # does without the preload.
-            st.warning(f"Failed to preload the photoreal renderer: {exc}")
+            logger.exception("Failed to preload the photoreal renderer")
 
     avatar_root = args.user_avatar_dir
     if args.isolate_user_avatars:
@@ -619,14 +609,17 @@ def main() -> None:
 
     with picker_box:
         if not gagavatar_ids and not user_avatar_ids:
-            with st.expander("GAGAvatar assets", expanded=True):
-                st.write(f"Asset dir: `{asset_dir}`")
-                st.write(f"Tracked: `{tracked_path}`")
-                st.write(f"Tracked exists: `{bool(tracked_path and tracked_path.exists())}`")
-                st.write(f"Model: `{model_path}`")
-                st.write(f"Model exists: `{bool(model_path and model_path.exists())}`")
-                st.write(f"FLAME: `{flame_model_path}`")
-                st.write(f"FLAME exists: `{bool(flame_model_path and flame_model_path.exists())}`")
+            logger.warning(
+                "[assets] no GAGAvatar avatars: asset dir %s, tracked %s (exists=%s), "
+                "model %s (exists=%s), FLAME %s (exists=%s)",
+                asset_dir,
+                tracked_path,
+                bool(tracked_path and tracked_path.exists()),
+                model_path,
+                bool(model_path and model_path.exists()),
+                flame_model_path,
+                bool(flame_model_path and flame_model_path.exists()),
+            )
             st.warning(
                 "No GAGAvatar avatars were found. Set ARTALK_ASSET_DIR or pass "
                 "--asset-dir to an asset tree containing GAGAvatar/tracked.pt."
@@ -652,10 +645,11 @@ def main() -> None:
             bundled = set(client_assets.avatar_ids())
             builtin_ids = [avatar_id for avatar_id in builtin_ids if avatar_id in bundled]
             if not builtin_ids:
-                st.error(
-                    f"No avatar in {client_assets.root / 'avatars'} matches a "
-                    "GAGAvatar avatar offered here."
+                logger.error(
+                    "[assets] no avatar bundle in %s matches an offered avatar",
+                    client_assets.root / "avatars",
                 )
+                st.error("No avatar can be drawn in the browser, so the demo is unavailable.")
                 st.stop()
         builtin_previews = builtin_thumbnails(str(tracked_path) if tracked_path else None)
 
@@ -961,9 +955,11 @@ def main() -> None:
             )
         if show_backend:
             with advanced_box:
+                # Left empty rather than filled in, since the operator's
+                # server can be on a host the public page should not name.
                 st.text_input(
                     "moshi server URL",
-                    value=DEFAULT_PERSONAPLEX_URL,
+                    placeholder=SERVER_DEFAULT_PLACEHOLDER,
                     key="personaplex_url",
                     persist_state="page",
                 )
@@ -974,9 +970,9 @@ def main() -> None:
                     key="personaplex_text_prompt",
                     persist_state="page",
                 )
-        personaplex_url = st.session_state.get(
-            "personaplex_url", DEFAULT_PERSONAPLEX_URL
-        ).strip()
+        personaplex_url = (
+            st.session_state.get("personaplex_url", "").strip() or DEFAULT_PERSONAPLEX_URL
+        )
         personaplex_text_prompt = st.session_state.get(
             "personaplex_text_prompt", DEFAULT_PERSONAPLEX_TEXT_PROMPT
         )
@@ -1001,21 +997,27 @@ def main() -> None:
         if endpoint_name == CUSTOM_ENDPOINT_LABEL:
             if show_backend:
                 with advanced_box:
+                    # Empty for the reason given at the moshi server URL.
                     st.text_input(
                         "WebSocket base URL",
-                        value=DEFAULT_REALTIME_WEBSOCKET_BASE_URL,
+                        placeholder=SERVER_DEFAULT_PLACEHOLDER,
                         key="realtime_ws_base_url",
                         persist_state="page",
                         help="The SDK appends `/realtime`.",
                     )
-            realtime_ws_base_url = st.session_state.get(
-                "realtime_ws_base_url", DEFAULT_REALTIME_WEBSOCKET_BASE_URL
-            ).strip()
+            realtime_ws_base_url = (
+                st.session_state.get("realtime_ws_base_url", "").strip()
+                or DEFAULT_REALTIME_WEBSOCKET_BASE_URL
+            )
             secret_name = "OPENAI_API_KEY"
+            # The server's key goes only to the server's endpoint. Anyone can
+            # type a URL here, and a server of their own would receive it.
+            use_server_key = realtime_ws_base_url == DEFAULT_REALTIME_WEBSOCKET_BASE_URL
             endpoint_model = DEFAULT_REALTIME_MODEL
             endpoint_voices = tuple(REALTIME_VOICES)
         else:
             endpoint = REALTIME_ENDPOINT_PRESETS[endpoint_name]
+            use_server_key = True
             realtime_ws_base_url = endpoint.base_url
             realtime_declare_audio_format = endpoint.declares_audio_format
             secret_name = endpoint.secret
@@ -1027,8 +1029,6 @@ def main() -> None:
         model_key = f"realtime_model_{endpoint_name}"
         if show_backend:
             with advanced_box:
-                if endpoint_name != CUSTOM_ENDPOINT_LABEL and realtime_ws_base_url:
-                    st.caption(f"`{realtime_ws_base_url}`")
                 if not secret_name:
                     st.info("This endpoint takes no credential.")
                 st.text_input(
@@ -1050,7 +1050,7 @@ def main() -> None:
         realtime_model = st.session_state.get(model_key, endpoint_model).strip()
         with picker_box:
             if secret_name:
-                api_key = api_key_input(secret_name)
+                api_key = api_key_input(secret_name, use_server_key=use_server_key)
             if endpoint_voices:
                 realtime_voice = st.selectbox(
                     "Voice",
@@ -1415,11 +1415,14 @@ def main() -> None:
         with _MODEL_BUILD_LOCK:
             pipeline = get_pipeline()
     except Exception as exc:
+        # Initialization spans several optional model paths whose imports
+        # and checkpoints fail in ways the message alone does not locate.
+        logger.exception("Failed to initialize the avatar pipeline")
         with status_box:
-            st.error(f"Failed to initialize ARTalk avatar pipeline: {exc}")
-            # Initialization spans several optional model paths whose imports
-            # and checkpoints fail in ways the message alone does not locate.
-            st.exception(exc)
+            st.error(
+                "The avatar failed to start "
+                f"({redact(f'{type(exc).__name__}: {exc}')}). Try another avatar."
+            )
         st.stop()
     if not slots.attach(session_id, "pipeline", pipeline):
         # Taken over while this pipeline was being built; it is untracked, so
@@ -1613,10 +1616,11 @@ def main() -> None:
 
     try:
         rtc_configuration = resolve_rtc_configuration(args.ice_provider)
-    except Exception as exc:
+    except Exception:
+        logger.exception("[ice] provider %r failed; using STUN only", args.ice_provider)
         status_box.warning(
-            f"ICE provider {args.ice_provider!r} failed ({exc}); using STUN "
-            "only, which cannot connect through a proxy or a strict NAT."
+            "The media relay is unavailable, so the video may not connect "
+            "through a proxy or a strict NAT."
         )
         rtc_configuration = STUN_ONLY
 
@@ -1790,7 +1794,8 @@ def main() -> None:
             ),
         ):
             snapshot_path = save_diagnostics_snapshot(pipeline, event_log)
-            st.caption(f"Saved `{snapshot_path}`")
+            logger.warning("[diagnostics] snapshot saved to %s", snapshot_path.resolve())
+            st.caption(f"Saved `{snapshot_path.name}` on the server.")
         with st.expander("Session events", expanded=True):
             if st.button("Clear events", key="clear_event_log"):
                 event_log.clear()
