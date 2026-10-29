@@ -15,12 +15,11 @@ import faulthandler
 import sys
 import threading
 import time
-from pathlib import Path
+from .dump_files import DumpFiles
 
 HANG_THRESHOLD_S = 90.0
 REDUMP_INTERVAL_S = 120.0
 MAX_DUMPS_PER_INCIDENT = 4
-DUMP_DIR = Path("diagnostics_snapshots")
 
 
 class ScriptHangWatchdog:
@@ -33,6 +32,7 @@ class ScriptHangWatchdog:
         self._dumps_this_incident = 0
         self._last_dump_s = 0.0
         self._thread: threading.Thread | None = None
+        self._dump_files = DumpFiles("hang")
 
     def start(self) -> None:
         with self._lock:
@@ -90,11 +90,16 @@ class ScriptHangWatchdog:
         except Exception:
             pass
         try:
-            DUMP_DIR.mkdir(exist_ok=True)
-            path = DUMP_DIR / time.strftime("hang-%Y%m%d-%H%M%S.txt")
-            with open(path, "w") as f:
+            stem = self._dump_files.claim()
+            if stem is None:
+                sys.stderr.write(
+                    "[hang watchdog] no file copy, since the last one is too recent\n"
+                )
+                return
+            with open(stem.with_suffix(".txt"), "w") as f:
                 f.write(header)
                 faulthandler.dump_traceback(file=f, all_threads=True)
+            self._dump_files.prune()
         except Exception:
             # If the shared filesystem itself is the hang, the stderr copy
             # above is the surviving evidence.

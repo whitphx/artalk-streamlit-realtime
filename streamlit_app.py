@@ -1828,10 +1828,16 @@ def main() -> None:
                 ),
             ):
                 snapshot_path = save_diagnostics_snapshot(pipeline, event_log)
-                logger.warning(
-                    "[diagnostics] snapshot saved to %s", snapshot_path.resolve()
-                )
-                st.caption(f"Saved `{snapshot_path.name}` on the server.")
+                if snapshot_path is None:
+                    logger.warning(
+                        "[diagnostics] snapshot skipped: the last one is too recent"
+                    )
+                    st.caption("A snapshot was saved moments ago; try again shortly.")
+                else:
+                    logger.warning(
+                        "[diagnostics] snapshot saved to %s", snapshot_path.resolve()
+                    )
+                    st.caption(f"Saved `{snapshot_path.name}` on the server.")
         with st.expander("Session events", expanded=True):
             if st.button("Clear events", key="clear_event_log"):
                 event_log.clear()

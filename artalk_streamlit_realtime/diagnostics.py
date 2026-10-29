@@ -12,19 +12,26 @@ import streamlit as st
 from artalk.realtime_pipeline import ARTalkPipeline
 from PIL import Image
 
+from .dump_files import DumpFiles
 from .event_log import SessionEventLog
 from .gc_probe import PAUSE_EVENT_MIN_MS, GcPauseProbe, gc_pause_probe
 from .redact import redact
 
-SNAPSHOT_DIR = Path("diagnostics_snapshots")
+# Each snapshot writes two files, so the per-kind file cap holds half as
+# many snapshots.
+_snapshot_files = DumpFiles("snapshot")
 
 
 def save_diagnostics_snapshot(
     pipeline: ARTalkPipeline,
     event_log: SessionEventLog | None = None,
-) -> Path:
+) -> Path | None:
     """Dump the full diagnostics state to a timestamped JSON file, for
-    capturing the moment a jitter or lag is observed."""
+    capturing the moment a jitter or lag is observed. None when the previous
+    snapshot is too recent."""
+    stem = _snapshot_files.claim()
+    if stem is None:
+        return None
     now = datetime.now(timezone.utc)
     payload = {
         "captured_at_utc": now.isoformat(),
@@ -43,16 +50,15 @@ def save_diagnostics_snapshot(
             }
             for event in event_log.snapshot()
         ]
-    SNAPSHOT_DIR.mkdir(exist_ok=True)
-    stem = now.strftime("snapshot-%Y%m%d-%H%M%S")
-    frame_path = SNAPSHOT_DIR / f"{stem}-frame.png"
+    frame_path = stem.with_name(f"{stem.name}-frame.png")
     try:
         Image.fromarray(pipeline.last_served_frame).save(frame_path)
         payload["last_served_frame"] = frame_path.name
     except Exception as exc:
         payload["last_served_frame_error"] = redact(repr(exc))
-    path = SNAPSHOT_DIR / f"{stem}.json"
+    path = stem.with_suffix(".json")
     path.write_text(json.dumps(payload, indent=1, default=str))
+    _snapshot_files.prune()
     return path
 
 

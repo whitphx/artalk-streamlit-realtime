@@ -23,6 +23,8 @@ import threading
 import time
 from pathlib import Path
 
+from .dump_files import DumpFiles
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_S = 0.1
@@ -34,7 +36,7 @@ class EventLoopStallWatchdog:
         self._last_beat: float | None = None
         self._installed = False
         self._threshold_s = 0.3
-        self._dump_dir = Path("diagnostics_snapshots")
+        self._dump_files = DumpFiles("loop-stall")
 
     def install(
         self,
@@ -48,7 +50,7 @@ class EventLoopStallWatchdog:
                 return
             self._installed = True
             self._threshold_s = float(threshold_s)
-            self._dump_dir = Path(dump_dir)
+            self._dump_files = DumpFiles("loop-stall", dump_dir)
             self._last_beat = time.monotonic()
         asyncio.run_coroutine_threadsafe(self._heartbeat(), loop)
         threading.Thread(
@@ -90,9 +92,23 @@ class EventLoopStallWatchdog:
                 stall_started_at = None
 
     def _dump(self, lag_s: float) -> None:
-        path = self._dump_dir / f"loop-stall-{time.strftime('%Y%m%d-%H%M%S')}.txt"
         try:
-            self._dump_dir.mkdir(parents=True, exist_ok=True)
+            stem = self._dump_files.claim()
+        except OSError:
+            logger.warning(
+                "[loop-watchdog] event loop stalled %.0f ms; creating the dump "
+                "directory failed", lag_s * 1000, exc_info=True,
+            )
+            return
+        if stem is None:
+            logger.warning(
+                "[loop-watchdog] event loop stalled %.0f ms; no thread dump, "
+                "since the last one is too recent",
+                lag_s * 1000,
+            )
+            return
+        path = stem.with_suffix(".txt")
+        try:
             with open(path, "w") as fh:
                 fh.write(
                     f"event loop stalled {lag_s * 1000:.0f} ms\n"
@@ -106,6 +122,7 @@ class EventLoopStallWatchdog:
                 "to %s failed", lag_s * 1000, path, exc_info=True,
             )
             return
+        self._dump_files.prune()
         logger.warning(
             "[loop-watchdog] event loop stalled %.0f ms — thread stacks in %s",
             lag_s * 1000,
