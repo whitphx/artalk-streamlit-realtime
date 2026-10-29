@@ -419,7 +419,7 @@ class DisconnectedSessionCloser:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
+        self._started = False
         # Only read and written on the Streamlit event loop. The SessionInfo
         # tells disconnects apart: Streamlit stores a new one at each, so a
         # reconnect and a new disconnect between two passes restart the
@@ -430,11 +430,21 @@ class DisconnectedSessionCloser:
 
     def start(self) -> None:
         with self._lock:
-            if self._thread is None and Runtime.exists():
-                self._thread = threading.Thread(
-                    target=self._run, name="session-closer", daemon=True
+            if self._started or not Runtime.exists():
+                return
+            self._started = True
+            missing = _missing_streamlit_internals()
+            if missing:
+                logger.warning(
+                    "[sessions] not closing disconnected sessions: this "
+                    "Streamlit lacks %s, so their pipelines are kept until "
+                    "the process exits",
+                    ", ".join(missing),
                 )
-                self._thread.start()
+                return
+            threading.Thread(
+                target=self._run, name="session-closer", daemon=True
+            ).start()
 
     def _run(self) -> None:
         runtime = Runtime.instance()
@@ -454,25 +464,7 @@ class DisconnectedSessionCloser:
             if closed:
                 last_collect = now
                 for session in closed:
-                    # What the closed session leaves can outlive it: the
-                    # runtime loop keeps the last session it served in a
-                    # local until another session sends something, and
-                    # aiortc's MediaRelay keeps some source tracks, whose
-                    # streamlit-webrtc reset callback holds the session
-                    # state. Emptying the state, its widget callbacks and the
-                    # fragments lets the pipeline go either way. Not done at
-                    # close time, because the ShutdownPolling callbacks still
-                    # pop their keys then.
-                    try:
-                        state = session.session_state
-                        state.clear()
-                        state._new_widget_state.widget_metadata.clear()
-                        session._fragment_storage.clear()
-                    except Exception:
-                        logger.warning(
-                            "[sessions] emptying a closed session failed",
-                            exc_info=True,
-                        )
+                    _empty_closed_session(session)
                 del closed, session
                 collect_frozen_garbage()
             try:
@@ -506,6 +498,60 @@ class DisconnectedSessionCloser:
             runtime.close_session(session_id)
             with self._closed_lock:
                 self._closed.append(info.session)
+
+
+def _missing_streamlit_internals() -> list[str]:
+    """The private Streamlit attributes the closer relies on that this
+    Streamlit lacks. Checked against the session running the current
+    script, since some are only set on instances."""
+    runtime = Runtime.instance()
+    missing = [
+        name
+        for name in ("_get_async_objs", "_session_mgr", "close_session")
+        if not hasattr(runtime, name)
+    ]
+    session_mgr = getattr(runtime, "_session_mgr", None)
+    missing += [
+        f"_session_mgr.{name}"
+        for name in ("list_sessions", "is_active_session", "get_session_info")
+        if not hasattr(session_mgr, name)
+    ]
+    try:
+        from streamlit.runtime.state.session_state import SessionState, WStates
+    except ImportError:
+        missing.append("streamlit.runtime.state.session_state.SessionState")
+    else:
+        if "_new_widget_state" not in getattr(SessionState, "__dataclass_fields__", {}):
+            missing.append("SessionState._new_widget_state")
+        elif "widget_metadata" not in getattr(WStates, "__dataclass_fields__", {}):
+            missing.append("WStates.widget_metadata")
+    ctx = get_script_run_ctx()
+    info = (
+        session_mgr.get_session_info(ctx.session_id)
+        if ctx is not None and hasattr(session_mgr, "get_session_info")
+        else None
+    )
+    if info is not None and not hasattr(info.session, "_fragment_storage"):
+        missing.append("AppSession._fragment_storage")
+    return missing
+
+
+def _empty_closed_session(session: AppSession) -> None:
+    # What a closed session leaves can outlive it: the runtime loop keeps
+    # the last session it served in a local until another session sends
+    # something, and aiortc's MediaRelay keeps some source tracks, whose
+    # streamlit-webrtc reset callback holds the session state. Emptying the
+    # state, its widget callbacks and the fragments lets the pipeline go
+    # either way. Not done at close time, because the ShutdownPolling
+    # callbacks still pop their keys then.
+    try:
+        state = session.session_state
+        state.clear()
+        state._new_widget_state.widget_metadata.clear()
+        session._fragment_storage.clear()
+    except Exception:
+        logger.warning("[sessions] emptying a closed session failed", exc_info=True)
+
 
 slots = PipelineSlots()
 session_closer = DisconnectedSessionCloser()
