@@ -1653,6 +1653,8 @@ def main() -> None:
             return
         if mode == "Interactive" and ctx.state.playing and bridge is not None:
             bridge.start()
+        if args.session_time_limit and ctx.state.playing:
+            slots.start_clock(session_id, args.session_time_limit)
         if not ctx.state.playing and not ctx.state.signalling:
             if bridge is not None:
                 bridge.stop()
@@ -1793,6 +1795,14 @@ def main() -> None:
 
     with avatar_col:
         streamer_ctx = render_webrtc_component()
+        # The slot closes the server's end of the connection when it ends the
+        # session, and the component in the browser stops itself on that
+        # disconnect. Unmounting the component or passing
+        # desired_playing_state=False would take a full script run, and none
+        # follows an end: the status fragment notices it, and a full rerun
+        # from that fragment can blank the page (see the fragment below).
+        # The context exposes its worker only through this private getter.
+        slots.attach(session_id, "webrtc", streamer_ctx._get_worker())
         if client_assets is not None:
             pipeline.channel_source = lambda: (streamer_ctx.data_channels or {}).get(
                 CHANNEL_LABEL
@@ -1801,11 +1811,6 @@ def main() -> None:
         if ctx is not None and (ctx.state.playing or ctx.state.signalling):
             slots.mark_started(session_id)
             st.session_state.pop(QUEUED_KEY, None)
-        # Checked on every run rather than when START changes the state:
-        # a new session started from the notice inherits a connection
-        # that is still playing, so no state change starts its clock.
-        if args.session_time_limit and ctx is not None and ctx.state.playing:
-            slots.start_clock(session_id, args.session_time_limit)
         if args.session_time_limit or args.max_sessions:
             with status_box:
                 render_session_status_fragment()

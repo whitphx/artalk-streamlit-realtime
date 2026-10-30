@@ -413,8 +413,10 @@ class PipelineSlots:
         for session_id, objects in gone:
             logger.info("[slots] stopping session %s: %s", session_id, reason)
             # The bridge and the pump feed the pipeline, and the watcher and
-            # the recorder observe it, so they go before it.
-            for name in ("recorder", "bridge", "pump", "watcher", "pipeline"):
+            # the recorder observe it, so they go before it. The recorder
+            # goes before the WebRTC worker too, whose closing connection
+            # would otherwise end the record as a disconnect.
+            for name in ("recorder", "webrtc", "bridge", "pump", "watcher", "pipeline"):
                 obj = objects.get(name)
                 if obj is None:
                     continue
