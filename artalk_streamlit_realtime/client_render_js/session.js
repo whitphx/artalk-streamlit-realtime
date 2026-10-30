@@ -5,23 +5,12 @@
 import { init, createRenderer, environment } from './renderer.js';
 import { createPacer, slewToward, RING_SLOTS } from './pacer.js';
 import { makeBadge } from './badge.js';
+import { parseHeader, readMotion } from './motion.js';
 
 const PAGE = 'artalk-client-render/1';
-const HEADER_BYTES = 56;
 const OFFSET_WINDOW_MS = 2000;
 const SAMPLE_CAP = 30000;
 const PER_FRAME_CAP = 750;
-
-function parseHeader(buf) {
-  const v = new DataView(buf);
-  if (v.getUint32(0, true) !== 0x31565241) return null; // "ARV1"
-  return {
-    index: v.getUint32(4, true), generation: v.getUint32(8, true), jaw: v.getFloat32(12, true),
-    mediaMs: v.getFloat64(16, true) * 1000, sentWallMs: v.getFloat64(24, true), leadMs: v.getFloat32(32, true),
-    rms: v.getFloat32(36, true), audioFrameMs: v.getFloat64(40, true) * 1000,
-    rtp: v.getUint32(52, true) ? v.getUint32(48, true) : null,
-  };
-}
 
 // On the app's URL, ?raw=1 adds the time series to the results for offline
 // analysis.
@@ -200,7 +189,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     rendered: 0, renderedAhead: 0, presented: 0, skippedOverdue: 0, droppedRingFull: 0, requeuedRingFull: 0,
   };
   const pacer = createPacer(counts);
-  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [], schemes: [], rtpClock: [], hold: [], margins: [] };
+  const series = { arrival: [], audioServer: [], mouthMedia: [], mouthShown: [], audioShown: [], drawn: [], perFrame: [], schemes: [], rtpClock: [], hold: [], margins: [], decode: [] };
   // ?hold=0 turns off holding the audio back for late frames; ?holdmax=<ms>
   // changes the most it may add.
   const holdForData = PAGE_PARAMS.get('hold') === '0' ? undefined : {
@@ -221,7 +210,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
         const canvas = new OffscreenCanvas(512, 512), ctx = canvas.getContext('2d');
         const badge = cfg.aiBadge ? makeBadge(512) : null;
         next = { network: 'none', avatar: cfg.avatar };
-        next.render = async (_message, _step, h) => {
+        next.render = async (h) => {
           ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 512, 512);
           ctx.fillStyle = '#6cf'; ctx.fillRect(156, 256, 200, Math.max(2, h.jaw * 1200));
           if (badge) ctx.drawImage(badge.image, badge.x, badge.y);
@@ -254,18 +243,27 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     dropFrames();
   }
 
-  channel.addEventListener('message', ({ data: buf }) => {
+  channel.addEventListener('message', async ({ data: buf }) => {
     // Padding the server sends before the first frame to warm SCTP up.
     if (typeof buf === 'string') return;
     const arrival = performance.now();
-    const h = buf instanceof ArrayBuffer && buf.byteLength > HEADER_BYTES ? parseHeader(buf) : null;
+    const h = parseHeader(buf);
     if (!h) { counts.malformed++; return; }
+    // Unpacked on arrival, while the frame waits for its audio, rather than
+    // when it is due to render.
+    try {
+      await readMotion(buf, h);
+    } catch (e) {
+      counts.malformed++;
+      log(`unreadable motion message: ${e.message}`);
+      return;
+    }
+    push(series.decode, performance.now() - arrival);
     counts.received++;
     counts.bytes += buf.byteLength;
     if (h.index <= lastIndex) counts.outOfOrder++;
     lastIndex = Math.max(lastIndex, h.index);
     h.arrival = arrival;
-    h.buf = buf;
     // When this frame's audio reaches the browser, on this page's clock, if audio and data take the same time to
     // arrive. The lower envelope over a window drops the data channel's own jitter.
     const audioArrival = arrival + h.leadMs - h.mediaMs;
@@ -329,7 +327,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
     rendering = job;
     job.start = performance.now();
     try {
-      const frame = await renderer.render(job.h.buf, config.quantStep, job.h);
+      const frame = await renderer.render(job.h);
       frames[job.slot]?.close();
       frames[job.slot] = frame;
       await renderer.done();
@@ -433,6 +431,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
       timingMs: {
         holdNow: Math.round(holdMs()), holdTarget: Math.round(holdTarget()), jitterBuffer: Math.round(jitterBufferMs), playout: Math.round(playoutMs), extraDelay: Number(delayInput.value) || 0,
         interArrival: summary(arrivals.slice(1).map((a, i) => a[0] - arrivals[i][0])),
+        decode: summary(series.decode),
         interSend: summary(arrivals.slice(1).map((a, i) => a[2] - arrivals[i][2])),
         arrivalToDrawStart: summary(drawn.map((d) => d[3] - d[1])),
         drawStartToShown: summary(drawn.map((d) => d[4] - d[3])),

@@ -11,12 +11,12 @@
 import { parseBundle } from './bundle.js';
 import { createSplatter } from './splatter.js';
 import { makeBadge } from './badge.js';
+import { nearestEarlierVertices, headVertices } from './motion.js';
 
 const OUT = 512, CHANNELS = 16;
 const PAIR_CAPACITY = { 256: 1_500_000, 512: 3_000_000 };
 const WASM_PARTS = ['ort-wasm-asyncify-1.30.0.part0.wasm', 'ort-wasm-asyncify-1.30.0.part1.wasm'];
 const WASM_SHA256 = '39f9f0894d478800487ed9f7dbe92618498db320cf55c8e3d89adff8dce658da';
-export const CAMERA_OFFSET = 56, OFFSETS_OFFSET = 104;
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const sha256 = async (bytes) => hex(await crypto.subtle.digest('SHA-256', bytes));
@@ -282,17 +282,15 @@ export async function createRenderer({ network, avatar, aiBadge, sharpen, dataBa
   ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
   const presentPipeline = presentPipelineFor(Boolean(sharpen));
   const bg = device.createBindGroup({ layout: presentPipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: sess.outBuf } }] });
-  const headRef = bundle.arrays.head_ref.data, n = headRef.length;
-  const pos = new Float32Array(n), view = new Float32Array(16);
+  const headRef = bundle.arrays.head_ref.data, nearest = nearestEarlierVertices(headRef);
+  const pos = new Float32Array(headRef.length), steps = new Int32Array(headRef.length), view = new Float32Array(16);
   const badge = aiBadge ? badgeDrawFor() : null;
   return {
     network, avatar, precision: env.precision, graphCapture: sess.capture, networkCheck: sess.check,
-    // Resolves, once the frame's work is submitted, to the frame as an ImageBitmap.
-    async render(message, quantStep) {
-      const cam = new Float32Array(message, CAMERA_OFFSET, 12);
-      const q = new Int16Array(message, OFFSETS_OFFSET, n);
-      for (let i = 0; i < n; i++) pos[i] = headRef[i] + q[i] * quantStep;
-      sp.setPose(viewFromCamera(cam, view), pos);
+    // Takes a message read by motion.js's readMotion. Resolves, once the
+    // frame's work is submitted, to the frame as an ImageBitmap.
+    async render(h) {
+      sp.setPose(viewFromCamera(h.camera, view), headVertices(h, headRef, nearest, pos, steps));
       device.queue.submit([sp.encode(false)]);
       await sess.run();
       const enc = device.createCommandEncoder();

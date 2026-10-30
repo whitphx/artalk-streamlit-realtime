@@ -10,7 +10,7 @@ distilled from GAGAvatar on WebGPU (``client_render_js/``).
 Each message on the ``motion`` channel is one frame, little-endian:
 
     offset  type      field
-    0       4 bytes   magic b"ARV1"
+    0       4 bytes   magic b"ARV2"
     4       u32       frame index (the pipeline's 25 fps frame counter)
     8       u32       avatar generation (bumped on every avatar switch)
     12      f32       jaw opening (motion code channel 103)
@@ -26,8 +26,13 @@ Each message on the ``motion`` channel is one frame, little-endian:
                       first audio sample
     52      u32       1 when the RTP timestamp is known, else 0
     56      12 x f32  camera, the 3x4 transform GAGAvatar builds its view from
-    104     int16     head-vertex offsets (x, y, z per vertex) from the
-                      avatar bundle's neutral vertices, in QUANT_STEP units
+    104     f32       quantization step of the head-vertex offsets
+    108     u32       length of the offsets payload in bytes
+    112     bytes     head-vertex offsets, see encode_offsets
+
+The magic names the format. The page still reads b"ARV1" messages, whose
+offsets follow the camera as int16 at a step of 2^-17, one x, y, z per
+vertex.
 
 The audio RMS and the jaw opening let the browser estimate the audio-to-face
 offset it actually shows against the one the server intended.
@@ -47,6 +52,7 @@ import struct
 import threading
 import time
 import urllib.request
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +67,7 @@ from artalk.realtime_pipeline import (
 )
 
 CHANNEL_LABEL = "motion"
-# A frame spans about 25 packets, so with no retransmissions one lost packet
+# A frame spans several packets, so with no retransmissions one lost packet
 # loses the whole frame. A retransmission is worth it while the frame can
 # still arrive before the browser shows it, which a limit on the count of
 # retransmissions would not bound. The lifetime starts when the frame enters
@@ -74,19 +80,27 @@ CHANNEL_LABEL = "motion"
 # late anyway, and a frame older than this is past the most the browser
 # holds its audio back for.
 CHANNEL_OPTIONS = {"ordered": False, "maxPacketLifeTime": 500}
-# 2^-17 units per step covers +-0.25 units, several times the largest offset
-# seen in recorded conversations, at about 1/400 px of a 512 px frame.
-QUANT_STEP = 2.0**-17
+MAGIC = b"ARV2"
+# About 1/3 px of a 512 px frame. On recorded conversations, the page's
+# frames at this step score above 57 dB PSNR against frames at 2^-17.
+# Every halving of the step costs about another kilobyte per frame.
+QUANT_STEP = 2.0**-10
+# Offsets are clamped to +-OFFSET_LIMIT steps, so a residual between two of
+# them, zigzag coded, fits in 16 bits.
+OFFSET_LIMIT = 2**14 - 1
+# Level 9 compresses a few percent smaller but takes several times longer.
+DEFLATE_LEVEL = 6
 HEAD_VERTICES = 5023
 HEADER = struct.Struct("<4sIIfddffdII")
 CAMERA_OFFSET = HEADER.size
-OFFSETS_OFFSET = CAMERA_OFFSET + 12 * 4
-RECORD_BYTES = OFFSETS_OFFSET + HEAD_VERTICES * 3 * 2
+OFFSETS_HEADER = struct.Struct("<fI")
+OFFSETS_HEADER_OFFSET = CAMERA_OFFSET + 12 * 4
+PAYLOAD_OFFSET = OFFSETS_HEADER_OFFSET + OFFSETS_HEADER.size
 # Sent before the first frame, see audio_source_callback. A string, which
-# the page ignores, and frame-sized, so it loads SCTP as frames will. The
-# prebuffer usually ends well before the limit; it only bounds the padding
-# when no frame comes.
-WARMUP_PADDING = " " * RECORD_BYTES
+# the page ignores, and about as long as an encoded frame, so it loads SCTP
+# as frames will. The prebuffer usually ends well before the limit; it only
+# bounds the padding when no frame comes.
+WARMUP_PADDING = " " * 4096
 WARMUP_SECONDS = 3.0
 # The frame index and the timing fields are only known when the frame is
 # sent; the worker fills in the rest.
@@ -149,6 +163,54 @@ def _read_gsb_array(path: Path, name: str) -> np.ndarray:
         f.seek(16 + header_len + entry["offset"])
         data = f.read(entry["nbytes"])
     return np.frombuffer(data, dtype=entry["dtype"]).reshape(entry["shape"])
+
+
+def nearest_earlier_vertices(head_ref: np.ndarray) -> np.ndarray:
+    """For each vertex, the index of the nearest vertex before it in the
+    avatar's neutral head, or -1 for the first: the vertex encode_offsets
+    predicts its offset from.
+
+    The page computes the same table from the bundle's neutral vertices
+    (nearestEarlierVertices in motion.js), so nothing about the mesh goes
+    over the wire. Both sides take squared distances in float64 summed in
+    the same order and break ties by the lower index, so they agree exactly.
+    """
+    ref = head_ref.astype(np.float64)
+    n = len(ref)
+    nearest = np.full(n, -1, dtype=np.int32)
+    block = 512
+    for start in range(1, n, block):
+        rows = np.arange(start, min(start + block, n))
+        d = np.zeros((len(rows), rows[-1]), dtype=np.float64)
+        for axis in range(3):
+            delta = ref[rows, axis, None] - ref[None, : rows[-1], axis]
+            d += delta * delta
+        d[np.arange(rows[-1])[None, :] >= rows[:, None]] = np.inf
+        nearest[rows] = np.argmin(d, axis=1)
+    return nearest
+
+
+def encode_offsets(offsets: np.ndarray, nearest: np.ndarray) -> bytes:
+    """A message's offsets payload. ``offsets`` holds the head-vertex offsets
+    in integer steps, one row of x, y, z per vertex.
+
+    Each offset is coded as its difference from the offset of the vertex
+    ``nearest`` names, zigzag mapped to 16 bits. The differences are laid out
+    by axis (all x, then all y, then all z), their low bytes and then their
+    high bytes, and deflated without a zlib header, which the browser's
+    DecompressionStream("deflate-raw") reads.
+
+    Every message is coded on its own. Messages travel unordered and may be
+    lost, so a frame coded against an earlier one could only use one the
+    page has acknowledged, a round trip or more back, and on recorded motion
+    that saves little over coding the frame alone.
+    """
+    q = np.clip(offsets, -OFFSET_LIMIT, OFFSET_LIMIT).astype(np.int32)
+    residual = q - np.where(nearest[:, None] >= 0, q[nearest], 0)
+    zigzag = ((residual << 1) ^ (residual >> 31)).astype("<u2").T
+    planes = zigzag.reshape(-1).view(np.uint8).reshape(-1, 2).T
+    compressor = zlib.compressobj(DEFLATE_LEVEL, zlib.DEFLATED, -15)
+    return compressor.compress(planes.tobytes()) + compressor.flush()
 
 
 class ClientRenderAssets:
@@ -225,14 +287,17 @@ class ClientRenderAdapter:
         self.avatar_id: str | None = None
         self.generation = 0
         self._head_ref: torch.Tensor | None = None
+        self._nearest: np.ndarray | None = None
         # set_avatar_id runs on the script thread while the worker builds.
         self._lock = threading.Lock()
 
     def set_avatar_id(self, avatar_id: str):
-        head_ref = torch.from_numpy(self.assets.head_ref(avatar_id).copy())
+        head_ref = self.assets.head_ref(avatar_id)
+        nearest = nearest_earlier_vertices(head_ref)
         with self._lock:
             self.runtime.set_avatar_id(avatar_id)
-            self._head_ref = head_ref.to(self.runtime.device)
+            self._head_ref = torch.from_numpy(head_ref.copy()).to(self.runtime.device)
+            self._nearest = nearest
             self.avatar_id = avatar_id
             self.generation += 1
 
@@ -244,24 +309,29 @@ class ClientRenderAdapter:
                 "camera": batch["t_transform"][:, :3, :4],
                 "jaw": motion_code[:, 103],
                 "head_ref": self._head_ref,
+                "nearest": self._nearest,
                 "generation": self.generation,
             }
 
     def forward_expression(self, batch: dict) -> torch.Tensor:
         n = batch["points"].shape[0]
-        offsets = (batch["points"] - batch["head_ref"]) / QUANT_STEP
-        clamped = int((offsets.abs() > 32767).sum())
+        offsets = ((batch["points"] - batch["head_ref"]) / QUANT_STEP).round()
+        clamped = int((offsets.abs() > OFFSET_LIMIT).sum())
         metrics = active_pipeline_metrics()
         if clamped and metrics is not None:
             metrics.inc("client_render_clamped_offsets", clamped)
-        offsets = offsets.round().clamp(-32768, 32767).to(torch.int16).cpu().numpy()
+        offsets = offsets.to(torch.int32).cpu().numpy()
         camera = batch["camera"].float().cpu().numpy()
         jaw = batch["jaw"].float().cpu().numpy()
-        records = np.zeros((n, RECORD_BYTES), dtype=np.uint8)
-        for i in range(n):
-            HEADER.pack_into(records[i], 0, b"ARV1", 0, batch["generation"], jaw[i], 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
-        records[:, CAMERA_OFFSET:OFFSETS_OFFSET] = camera.astype("<f4").reshape(n, -1).view(np.uint8)
-        records[:, OFFSETS_OFFSET:] = offsets.astype("<i2").reshape(n, -1).view(np.uint8)
+        payloads = [encode_offsets(offsets[i], batch["nearest"]) for i in range(n)]
+        # One row per message, as long as the longest; the length field says
+        # where each message ends.
+        records = np.zeros((n, PAYLOAD_OFFSET + max(map(len, payloads))), dtype=np.uint8)
+        for i, payload in enumerate(payloads):
+            HEADER.pack_into(records[i], 0, MAGIC, 0, batch["generation"], jaw[i], 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
+            OFFSETS_HEADER.pack_into(records[i], OFFSETS_HEADER_OFFSET, QUANT_STEP, len(payload))
+            records[i, PAYLOAD_OFFSET : PAYLOAD_OFFSET + len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+        records[:, CAMERA_OFFSET:OFFSETS_HEADER_OFFSET] = camera.astype("<f4").reshape(n, -1).view(np.uint8)
         # The pipeline treats a uint8 batch as finished frames; each "frame"
         # here is one message.
         return torch.from_numpy(records)
@@ -372,7 +442,8 @@ class ClientRenderPipeline(ARTalkPipeline):
         samples = frame.to_ndarray().astype(np.float32) / 32768.0
         rms = float(np.sqrt(np.mean(samples * samples)))
         rtp = self.rtp_timestamp(int(start), time_base)
-        message = bytearray(rendered.image.tobytes())
+        _, payload_bytes = OFFSETS_HEADER.unpack_from(rendered.image, OFFSETS_HEADER_OFFSET)
+        message = bytearray(rendered.image[: PAYLOAD_OFFSET + payload_bytes].tobytes())
         STAMP_INDEX.pack_into(message, 4, frame_index)
         STAMP_TIMING.pack_into(
             message,
