@@ -792,7 +792,16 @@ def main() -> None:
         if args.output_rebuffer_seconds is not None
         else args.output_prebuffer_seconds
     )
-    default_sync = "rtp" if st.query_params.get("sync") == "rtp" else "arrival"
+    # Loopback's input is the visitor's microphone over the network, so it
+    # arrives as unevenly as their connection, and continuous playback then
+    # starves after every late burst with nothing left to absorb the next.
+    # Its audio already trails the voice by the model's chunk, so a refill
+    # pause costs little. An Interactive reply arrives faster than realtime
+    # and rarely starves, while a pause would add to every turn's latency.
+    default_underrun_policy = args.output_underrun_policy or (
+        "rebuffer" if mode == "Loopback" else "continuous"
+    )
+    default_sync ="rtp" if st.query_params.get("sync") == "rtp" else "arrival"
     if advanced_box is not None:
         with advanced_box:
             st.subheader("Avatar motion")
@@ -882,7 +891,7 @@ def main() -> None:
                     "Underrun policy",
                     ["continuous", "rebuffer"],
                     index=["continuous", "rebuffer"].index(
-                        args.output_underrun_policy
+                        default_underrun_policy
                     ),
                     key="underrun_policy",
                     persist_state="page",
@@ -918,7 +927,7 @@ def main() -> None:
     client_network = st.session_state.get("client_network", next(iter(NETWORKS)))
     client_sync = st.session_state.get("client_sync", default_sync)
     mic_processing = st.session_state.get("mic_processing", True)
-    underrun_policy = st.session_state.get("underrun_policy", args.output_underrun_policy)
+    underrun_policy = st.session_state.get("underrun_policy", default_underrun_policy)
     rebuffer_seconds = st.session_state.get("rebuffer_seconds", default_rebuffer_seconds)
     max_added_latency = st.session_state.get(
         "max_added_latency", float(args.max_added_latency_seconds)
@@ -1311,7 +1320,7 @@ def main() -> None:
             args.render_batch_size,
             args.output_prebuffer_seconds,
             args.output_segment_seconds,
-            args.output_underrun_policy,
+            default_underrun_policy,
             args.output_rebuffer_seconds,
             args.max_added_latency_seconds,
             args.renderer_stage_sync,
@@ -1358,7 +1367,7 @@ def main() -> None:
                 render_batch_size=args.render_batch_size,
                 output_audio_prebuffer_seconds=args.output_prebuffer_seconds,
                 output_segment_seconds=args.output_segment_seconds,
-                output_underrun_policy=args.output_underrun_policy,
+                output_underrun_policy=default_underrun_policy,
                 output_rebuffer_seconds=args.output_rebuffer_seconds,
                 max_added_latency_seconds=args.max_added_latency_seconds,
                 renderer_stage_sync=args.renderer_stage_sync,

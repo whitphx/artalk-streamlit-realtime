@@ -264,15 +264,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-underrun-policy",
-        default=os.environ.get("ARTALK_OUTPUT_UNDERRUN_POLICY", "continuous"),
+        default=os.environ.get("ARTALK_OUTPUT_UNDERRUN_POLICY"),
         choices=["continuous", "rebuffer"],
         help=(
             "What playback does when the output buffer starves mid-response. "
             "continuous keeps playing the moment any audio is available, "
-            "staying closest to live but stuttering when the renderer is "
-            "marginal. rebuffer pauses until the buffer refills to "
+            "staying closest to live but stuttering when the renderer or "
+            "the input is uneven. rebuffer pauses until the buffer refills to "
             "--output-rebuffer-seconds, trading latency (capped by "
-            "--max-added-latency-seconds) for continuous motion."
+            "--max-added-latency-seconds) for continuous motion. Unset, "
+            "Loopback rebuffers and Interactive plays continuously."
         ),
     )
     parser.add_argument(
