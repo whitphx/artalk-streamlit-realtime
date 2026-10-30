@@ -206,7 +206,7 @@ export function start({ channels, root, pc, data }) {
         next.done = async () => {};
       } else {
         await init({ ortUrl: cfg.ortUrl ?? new URL('ort/ort.webgpu.bundle.min.mjs', dataBase).href, graphCapture: cfg.graphCapture, dataBase, log });
-        next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, aiBadge: cfg.aiBadge, dataBase, log });
+        next = await createRenderer({ network: cfg.network, avatar: cfg.avatar, aiBadge: cfg.aiBadge, sharpen: cfg.sharpen, dataBase, log });
       }
       next.generation = cfg.generation;
       next.loadMs = Math.round(performance.now() - t0);

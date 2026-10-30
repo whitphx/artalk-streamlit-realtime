@@ -78,19 +78,31 @@ function viewFromCamera(cam, out) {
   return out;
 }
 
-const presentCode = (fp16) => /* wgsl */ `
+const SHARPEN_AMOUNT = 0.5;
+
+const presentCode = (fp16, sharpen) => /* wgsl */ `
 const PLANE = ${OUT * OUT}u;
 @group(0) @binding(0) var<storage, read> src: array<${fp16 ? 'u32' : 'f32'}>;
 ${fp16
     ? 'fn rd(i: u32) -> f32 { let w = unpack2x16float(src[i >> 1u]); return select(w.x, w.y, (i & 1u) == 1u); }'
     : 'fn rd(i: u32) -> f32 { return src[i]; }'}
+fn px(x0: i32, y0: i32) -> vec3f {
+  let i = u32(clamp(y0, 0, ${OUT - 1})) * ${OUT}u + u32(clamp(x0, 0, ${OUT - 1}));
+  return clamp(vec3f(rd(i), rd(PLANE + i), rd(2u * PLANE + i)), vec3f(0.0), vec3f(1.0));
+}
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
   return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
 }
 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  let pix = u32(pos.y) * ${OUT}u + u32(pos.x);
-  return vec4f(clamp(vec3f(rd(pix), rd(PLANE + pix), rd(2u * PLANE + pix)), vec3f(0.0), vec3f(1.0)), 1.0);
+  let x = i32(pos.x); let y = i32(pos.y);
+  let e = px(x, y);
+${sharpen ? `  var blur = vec3f(0.0);
+  for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {
+    blur += f32((2 - abs(dy)) * (2 - abs(dx))) * px(x + dx, y + dy);
+  } }
+  let o = e + ${SHARPEN_AMOUNT.toFixed(4)} * (e - blur / 16.0);` : '  let o = e;'}
+  return vec4f(clamp(o, vec3f(0.0), vec3f(1.0)), 1.0);
 }`;
 
 // Drawn with the viewport set to the badge's rectangle. The texture holds
@@ -105,8 +117,8 @@ const badgeCode = (x, y) => /* wgsl */ `
   return textureLoad(badge, vec2i(pos.xy) - vec2i(${x}, ${y}), 0);
 }`;
 
-let ort = null, env = null, device = null, models = null, presentPipeline = null, badgeDraw = null;
-const sessions = new Map(), bundles = new Map();
+let ort = null, env = null, device = null, models = null, badgeDraw = null;
+const sessions = new Map(), bundles = new Map(), presentPipelines = new Map();
 
 export function environment() { return env; }
 
@@ -150,15 +162,22 @@ async function ensureDevice(log) {
   device = d;
   device.lost.then((i) => log(`WebGPU device lost: ${i.message || i.reason}`));
   device.addEventListener('uncapturederror', (e) => log(`WebGPU error: ${e.error.message}`));
-  const module = device.createShaderModule({ code: presentCode(env.precision === 'fp16'), label: 'present' });
-  presentPipeline = device.createRenderPipeline({
-    layout: 'auto', vertex: { module, entryPoint: 'vs' },
-    fragment: { module, entryPoint: 'fs', targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
-  });
+}
+
+function presentPipelineFor(sharpen) {
+  if (!presentPipelines.has(sharpen)) {
+    const module = device.createShaderModule({ code: presentCode(env.precision === 'fp16', sharpen), label: sharpen ? 'present_sharpen' : 'present' });
+    presentPipelines.set(sharpen, device.createRenderPipeline({
+      layout: 'auto', vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
+    }));
+  }
+  return presentPipelines.get(sharpen);
 }
 
 // The badge goes on in the pass that presents the frame: one more draw and
-// no extra submit or copy.
+// no extra submit or copy. It is drawn after the frame's draw,
+// so the sharpening never touches its text.
 function badgeDrawFor() {
   if (badgeDraw) return badgeDraw;
   const badge = makeBadge(OUT);
@@ -250,7 +269,7 @@ function bundleFor(avatar, dataBase) {
 }
 
 // One network and one avatar, each frame rendered into an ImageBitmap.
-export async function createRenderer({ network, avatar, aiBadge, dataBase, log }) {
+export async function createRenderer({ network, avatar, aiBadge, sharpen, dataBase, log }) {
   const sess = await sessionFor(network, dataBase, log);
   const bundle = await bundleFor(avatar, dataBase);
   const fp16 = env.precision === 'fp16';
@@ -261,6 +280,7 @@ export async function createRenderer({ network, avatar, aiBadge, dataBase, log }
   const canvas = new OffscreenCanvas(OUT, OUT);
   const ctx = canvas.getContext('webgpu');
   ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+  const presentPipeline = presentPipelineFor(Boolean(sharpen));
   const bg = device.createBindGroup({ layout: presentPipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: sess.outBuf } }] });
   const headRef = bundle.arrays.head_ref.data, n = headRef.length;
   const pos = new Float32Array(n), view = new Float32Array(16);

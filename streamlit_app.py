@@ -1712,6 +1712,7 @@ def main() -> None:
                 "ortUrl": None if client_assets.has_local_ort else ORT_CDN_URL,
                 "graphCapture": client_assets.ort_patched,
                 "aiBadge": args.ai_badge,
+                "sharpen": args.client_sharpen and st.query_params.get("sharpen") != "0",
             },
         }
 

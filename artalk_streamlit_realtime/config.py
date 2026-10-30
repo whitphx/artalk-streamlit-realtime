@@ -546,6 +546,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--client-sharpen",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("ARTALK_CLIENT_SHARPEN", True),
+        help=(
+            "With --client-render, sharpen the browser's frames with a light "
+            "unsharp mask, which brings them closer to the server's render. "
+            "A page URL with ?sharpen=0 turns it off for that page."
+        ),
+    )
+    parser.add_argument(
         "--client-render-dir",
         default=os.environ.get("ARTALK_CLIENT_RENDER_DIR"),
         type=str,
