@@ -82,6 +82,12 @@ HEADER = struct.Struct("<4sIIfddffdII")
 CAMERA_OFFSET = HEADER.size
 OFFSETS_OFFSET = CAMERA_OFFSET + 12 * 4
 RECORD_BYTES = OFFSETS_OFFSET + HEAD_VERTICES * 3 * 2
+# Sent before the first frame, see audio_source_callback. A string, which
+# the page ignores, and frame-sized, so it loads SCTP as frames will. The
+# prebuffer usually ends well before the limit; it only bounds the padding
+# when no frame comes.
+WARMUP_PADDING = " " * RECORD_BYTES
+WARMUP_SECONDS = 3.0
 # The frame index and the timing fields are only known when the frame is
 # sent; the worker fills in the rest.
 STAMP_INDEX = struct.Struct("<I")
@@ -286,6 +292,7 @@ class ClientRenderPipeline(ARTalkPipeline):
         # it and time.perf_counter() when it was stamped.
         self._held_frame: tuple[bytearray, float, float] | None = None
         self._warmed_channel = None
+        self._warmup_until = 0.0
         super().__init__(**kwargs)
 
     @property
@@ -306,14 +313,8 @@ class ClientRenderPipeline(ARTalkPipeline):
         metrics = current_pipeline_metrics()
         channel = self.channel_source()
         if channel is not None and channel is not self._warmed_channel and channel.ready_state == "open":
-            # Until SCTP has measured a round trip, its retransmission timer
-            # waits 3 s rather than at least 1 s. When the last packets of a
-            # frame are lost, no later packets report the loss, and until
-            # that timer fires they fill the congestion window and block the
-            # frames behind them. The playback prebuffer leaves time for a
-            # short message to take a sample before the first frame.
-            channel.send("warm-up")
             self._warmed_channel = channel
+            self._warmup_until = time.perf_counter() + WARMUP_SECONDS
         target_index = self._media_clock_frame_index()
         rendered, frame_index = self._pop_video_frame_for_media_clock(target_index)
         if rendered is not None:
@@ -338,8 +339,23 @@ class ClientRenderPipeline(ARTalkPipeline):
             if channel.send(message):
                 metrics.inc("client_render_frames_sent")
                 metrics.inc("client_render_bytes_sent", len(message))
+                self._warmup_until = 0.0
             else:
                 metrics.inc("client_render_frames_dropped")
+        # Until the first frame, padding keeps SCTP busy during the playback
+        # prebuffer. The first exchange gives it a round-trip sample, without
+        # which its retransmission timer waits 3 s rather than at least 1 s,
+        # and its congestion window only grows while it is full. Started
+        # from an idle association, the window takes several round trips to
+        # hold a frame, and the first second of frames would be lost.
+        if (
+            channel is not None
+            and channel is self._warmed_channel
+            and self._held_frame is None
+            and time.perf_counter() < self._warmup_until
+            and channel.buffered_amount == 0
+        ):
+            channel.send(WARMUP_PADDING)
         return frame
 
     def _stamp_frame(self, rendered, frame_index, frame, pts, time_base):
