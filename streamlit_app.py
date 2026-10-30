@@ -27,6 +27,7 @@ from artalk.assets import ARTalkAssets
 from artalk.realtime_pipeline import ARTalkPipeline
 from streamlit_webrtc import (
     WebRtcMode,
+    WebRtcStreamerContext,
     create_audio_sink_track,
     create_audio_source_track,
     create_video_source_track,
@@ -800,7 +801,15 @@ def main() -> None:
     default_underrun_policy = args.output_underrun_policy or (
         "rebuffer" if mode == "Loopback" else "continuous"
     )
-    default_sync ="rtp" if st.query_params.get("sync") == "rtp" else "arrival"
+    # The streamlit-webrtc builds that stamp media with RTP timestamps are the
+    # ones whose frontend script gets createPlayoutClock, without which the
+    # RTP scheme has no clock to read.
+    sync_schemes = [
+        s for s in SYNC_SCHEMES if s != "rtp" or hasattr(WebRtcStreamerContext, "rtp_timestamp")
+    ]
+    default_sync = (
+        "rtp" if "rtp" in sync_schemes and st.query_params.get("sync") != "arrival" else "arrival"
+    )
     if advanced_box is not None:
         with advanced_box:
             st.subheader("Avatar motion")
@@ -853,8 +862,8 @@ def main() -> None:
                 )
                 st.selectbox(
                     "Face sync",
-                    list(SYNC_SCHEMES),
-                    index=list(SYNC_SCHEMES).index(default_sync),
+                    sync_schemes,
+                    index=sync_schemes.index(default_sync),
                     format_func=SYNC_SCHEMES.__getitem__,
                     key="client_sync",
                     persist_state="page",
