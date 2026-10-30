@@ -37,6 +37,7 @@ from streamlit_webrtc import (
 from artalk_streamlit_realtime.ai_badge import BadgedARTalkPipeline
 from artalk_streamlit_realtime.app_secrets import get_secret, log_api_key_sources
 from artalk_streamlit_realtime.assets import resolve_gagavatar_assets
+from artalk_streamlit_realtime.audio_delay import audio_device_delay
 from artalk_streamlit_realtime.avatar_gallery import (
     avatar_gallery,
     builtin_thumbnails,
@@ -1152,7 +1153,13 @@ def main() -> None:
             "realtime_instructions", DEFAULT_REALTIME_INSTRUCTIONS
         )
 
+    audio_delay_ms = 0
     with picker_box:
+        # Only the browser renderer schedules the face itself. A server-rendered
+        # face is a video track that the browser plays in sync with the audio
+        # track, so holding it back would mean retiming that track on the server.
+        if client_assets is not None:
+            audio_delay_ms = audio_device_delay(key="audio_device_delay")
         if user_registry.can_register:
             with st.expander("Your own avatars"):
                 registered_flash = st.session_state.pop("avatar_registered_flash", None)
@@ -1742,6 +1749,7 @@ def main() -> None:
                 "generation": pipeline.client_renderer.generation,
                 "network": client_network,
                 "sync": client_sync,
+                "extraDelayMs": audio_delay_ms,
                 "ortUrl": None if client_assets.has_local_ort else ORT_CDN_URL,
                 "graphCapture": client_assets.ort_patched,
                 "aiBadge": args.ai_badge,

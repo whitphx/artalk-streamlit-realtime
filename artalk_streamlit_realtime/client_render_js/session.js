@@ -168,7 +168,7 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
   const delayLabel = document.createElement('label');
   delayLabel.textContent = 'Extra face delay (ms) ';
   const delayInput = document.createElement('input');
-  delayInput.type = 'number'; delayInput.step = '10'; delayInput.value = '0'; delayInput.style.width = '5em';
+  delayInput.type = 'number'; delayInput.step = '10'; delayInput.value = String(data.extraDelayMs ?? 0); delayInput.style.width = '5em';
   delayLabel.append(delayInput);
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
@@ -484,6 +484,8 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
   return {
     update(next) {
       const changed = next.avatar !== config.avatar || next.network !== config.network || next.generation !== config.generation;
+      // Left alone otherwise, so a value typed into the field survives the page's reruns.
+      if (next.extraDelayMs !== config.extraDelayMs) delayInput.value = String(next.extraDelayMs ?? 0);
       config = next;
       scheme = next.sync;
       if (changed && !stopped) load(next);
