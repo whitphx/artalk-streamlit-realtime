@@ -43,8 +43,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
-import random
 import struct
 import threading
 import time
@@ -71,9 +69,6 @@ CHANNEL_LABEL = "motion"
 # timer waits at least 1 s, so only fast retransmissions ever happen and an
 # expired frame is abandoned rather than resent.
 CHANNEL_OPTIONS = {"ordered": False, "maxPacketLifeTime": 120}
-# Room for about five frames: after a short stall the backlog still arrives
-# before it is due, while a frame behind more than that would not.
-MAX_BUFFERED_BYTES = 160 * 1024
 # 2^-17 units per step covers +-0.25 units, several times the largest offset
 # seen in recorded conversations, at about 1/400 px of a 512 px frame.
 QUANT_STEP = 2.0**-17
@@ -86,6 +81,8 @@ RECORD_BYTES = OFFSETS_OFFSET + HEAD_VERTICES * 3 * 2
 # sent; the worker fills in the rest.
 STAMP_INDEX = struct.Struct("<I")
 STAMP_TIMING = struct.Struct("<ddffdII")
+# The send time and the lead, rewritten when a held frame goes out later.
+STAMP_SENT = struct.Struct("<df")
 JS_DIR = Path(__file__).with_name("client_render_js")
 ORT_BUNDLE = "ort.webgpu.bundle.min.mjs"
 ORT_CDN_URL = f"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/{ORT_BUNDLE}"
@@ -105,11 +102,6 @@ ORT_PATCHED_SHA256 = "5557036315cfbc7facf8a4bcbcff03703e0f6a6a54f7a172e1e29d14cc
 # identifies.
 ORT_PATCH_SITE = b"if(ae===O[R]||oe.includes(O[R])){"
 ORT_PATCH = b'if(ae===O[R]||oe.includes(O[R])||A&&i[R]?.[3]==="gpu-buffer"){'
-# Spike only: holds every motion message back by this long before sending,
-# plus a random extra of up to the jitter, to make the data channel slower
-# and less regular than the audio.
-SPIKE_SEND_DELAY_S = float(os.environ.get("ARTALK_SPIKE_SEND_DELAY_MS", "0")) / 1000.0
-SPIKE_SEND_JITTER_S = float(os.environ.get("ARTALK_SPIKE_SEND_JITTER_MS", "0")) / 1000.0
 NETWORKS = {
     "trained_lowres16": "Network, 256 px core (lowres16)",
     "trained_plain16": "Network, 512 px (plain16)",
@@ -271,6 +263,12 @@ class ClientRenderPipeline(ARTalkPipeline):
     emitted, as it does for the outbound video track. Here the audio source
     callback sends that frame on the data channel instead, so a message
     leaves with the audio it describes. There is no video track.
+
+    A frame only goes to the channel when nothing is waiting there for SCTP.
+    While SCTP's congestion window is full, a frame waits on the pipeline
+    instead, and the next frame replaces it: a frame queued behind older ones
+    would arrive after its audio, and would hold back the fresh frames
+    behind it too.
     """
 
     def __init__(self, **kwargs):
@@ -279,6 +277,9 @@ class ClientRenderPipeline(ARTalkPipeline):
         self.channel_source = lambda: None
         # (pts, time_base) -> the outbound audio's RTP timestamp at pts, or None.
         self.rtp_timestamp = lambda pts, time_base: None
+        # The frame waiting to be sent: the message, the lead stamped into
+        # it and time.perf_counter() when it was stamped.
+        self._held_frame: tuple[bytearray, float, float] | None = None
         super().__init__(**kwargs)
 
     @property
@@ -296,20 +297,37 @@ class ClientRenderPipeline(ARTalkPipeline):
     @with_pipeline_metrics
     def audio_source_callback(self, pts, time_base):
         frame = super().audio_source_callback(pts, time_base)
+        metrics = current_pipeline_metrics()
+        channel = self.channel_source()
         target_index = self._media_clock_frame_index()
         rendered, frame_index = self._pop_video_frame_for_media_clock(target_index)
-        if rendered is None:
-            return frame
-        self._last_video_frame_index_served = frame_index
-        metrics = current_pipeline_metrics()
-        metrics.inc("video_frames_served")
-        metrics.set("last_video_frame_index_served", frame_index)
-        self._record_served_video_lag(target_index, frame_index)
-        self._record_served_frame_latency(rendered)
-        channel = self.channel_source()
-        if channel is None:
-            metrics.inc("client_render_frames_without_channel")
-            return frame
+        if rendered is not None:
+            self._last_video_frame_index_served = frame_index
+            metrics.inc("video_frames_served")
+            metrics.set("last_video_frame_index_served", frame_index)
+            self._record_served_video_lag(target_index, frame_index)
+            self._record_served_frame_latency(rendered)
+            if channel is None:
+                metrics.inc("client_render_frames_without_channel")
+            else:
+                if self._held_frame is not None:
+                    metrics.inc("client_render_frames_dropped")
+                self._held_frame = self._stamp_frame(rendered, frame_index, frame, pts, time_base)
+        # Checked on every callback, not only with a new frame, so a held
+        # frame leaves within one audio ptime of the channel draining.
+        if channel is not None and self._held_frame is not None and channel.buffered_amount == 0:
+            message, lead_ms, stamped_at = self._held_frame
+            self._held_frame = None
+            waited_ms = (time.perf_counter() - stamped_at) * 1000.0
+            STAMP_SENT.pack_into(message, 24, time.time() * 1000.0, lead_ms - waited_ms)
+            if channel.send(message):
+                metrics.inc("client_render_frames_sent")
+                metrics.inc("client_render_bytes_sent", len(message))
+            else:
+                metrics.inc("client_render_frames_dropped")
+        return frame
+
+    def _stamp_frame(self, rendered, frame_index, frame, pts, time_base):
         with self._audio_out_lock:
             synced = self._synced_audio_samples_served
         # Track position of the frame's first sample. The synced count ends
@@ -336,17 +354,4 @@ class ClientRenderPipeline(ARTalkPipeline):
             rtp or 0,
             rtp is not None,
         )
-        delay_s = SPIKE_SEND_DELAY_S + random.uniform(0.0, SPIKE_SEND_JITTER_S)
-        if delay_s > 0:
-            threading.Timer(delay_s, self._send, (channel, bytes(message), metrics)).start()
-        else:
-            self._send(channel, bytes(message), metrics)
-        return frame
-
-    @staticmethod
-    def _send(channel, message: bytes, metrics) -> None:
-        if channel.send(message, max_buffered=MAX_BUFFERED_BYTES):
-            metrics.inc("client_render_frames_sent")
-            metrics.inc("client_render_bytes_sent", len(message))
-        else:
-            metrics.inc("client_render_frames_dropped")
+        return message, lead_ms, time.perf_counter()
