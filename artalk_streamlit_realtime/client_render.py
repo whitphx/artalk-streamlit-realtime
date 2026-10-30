@@ -63,12 +63,17 @@ from artalk.realtime_pipeline import (
 CHANNEL_LABEL = "motion"
 # A frame spans about 25 packets, so with no retransmissions one lost packet
 # loses the whole frame. A retransmission is worth it while the frame can
-# still arrive before the browser shows it, and frames arrive a few hundred
-# ms early; a limit on retransmission count would not bound that time.
-# aiortc's lifetime starts when the frame enters SCTP, and its retransmission
-# timer waits at least 1 s, so only fast retransmissions ever happen and an
-# expired frame is abandoned rather than resent.
-CHANNEL_OPTIONS = {"ordered": False, "maxPacketLifeTime": 120}
+# still arrive before the browser shows it, which a limit on the count of
+# retransmissions would not bound. The lifetime starts when the frame enters
+# SCTP and has to cover sending all of it: over a long path the congestion
+# window holds less than a frame per round trip, and SCTP abandons a frame
+# whose lifetime runs out before its last packets leave, so a lifetime
+# shorter than that delivers nothing at all. It also leaves room for a fast
+# retransmission, about one round trip, on a path of 200 ms. aiortc's
+# retransmission timer waits at least 1 s, so later resends would come too
+# late anyway, and a frame older than this is past the most the browser
+# holds its audio back for.
+CHANNEL_OPTIONS = {"ordered": False, "maxPacketLifeTime": 500}
 # 2^-17 units per step covers +-0.25 units, several times the largest offset
 # seen in recorded conversations, at about 1/400 px of a 512 px frame.
 QUANT_STEP = 2.0**-17
