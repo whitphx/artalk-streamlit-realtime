@@ -255,6 +255,8 @@ export function start({ channels, root, pc, data, createPlayoutClock }) {
   }
 
   channel.addEventListener('message', ({ data: buf }) => {
+    // The server's warm-up message, sent to take an SCTP round-trip sample.
+    if (typeof buf === 'string') return;
     const arrival = performance.now();
     const h = buf instanceof ArrayBuffer && buf.byteLength > HEADER_BYTES ? parseHeader(buf) : null;
     if (!h) { counts.malformed++; return; }

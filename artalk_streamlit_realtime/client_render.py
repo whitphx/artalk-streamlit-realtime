@@ -280,6 +280,7 @@ class ClientRenderPipeline(ARTalkPipeline):
         # The frame waiting to be sent: the message, the lead stamped into
         # it and time.perf_counter() when it was stamped.
         self._held_frame: tuple[bytearray, float, float] | None = None
+        self._warmed_channel = None
         super().__init__(**kwargs)
 
     @property
@@ -299,6 +300,15 @@ class ClientRenderPipeline(ARTalkPipeline):
         frame = super().audio_source_callback(pts, time_base)
         metrics = current_pipeline_metrics()
         channel = self.channel_source()
+        if channel is not None and channel is not self._warmed_channel and channel.ready_state == "open":
+            # Until SCTP has measured a round trip, its retransmission timer
+            # waits 3 s rather than at least 1 s. When the last packets of a
+            # frame are lost, no later packets report the loss, and until
+            # that timer fires they fill the congestion window and block the
+            # frames behind them. The playback prebuffer leaves time for a
+            # short message to take a sample before the first frame.
+            channel.send("warm-up")
+            self._warmed_channel = channel
         target_index = self._media_clock_frame_index()
         rendered, frame_index = self._pop_video_frame_for_media_clock(target_index)
         if rendered is not None:
