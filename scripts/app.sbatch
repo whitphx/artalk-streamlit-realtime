@@ -113,7 +113,17 @@ else
   # Not the st-remote script next to the interpreter: an overlay venv has
   # none, and the base env's script would start Streamlit on the base env's
   # Python, since st-remote runs Streamlit with its own interpreter.
-  ST_REMOTE=("$APP_PY" -c 'from streamlit_remote.cli import main; main()')
+  # st-remote shuts its children down only on KeyboardInterrupt, and SIGTERM
+  # would end it at once. Streamlit then answers SIGTERM by printing to the
+  # pipe st-remote no longer reads, and the BrokenPipeError aborts its stop.
+  ST_REMOTE=("$APP_PY" -c '
+import signal
+
+from streamlit_remote.cli import main
+
+signal.signal(signal.SIGTERM, signal.default_int_handler)
+main()
+')
 fi
 
 DATA_DIR=${APP_DATA_DIR:-$REPO/.cache/app}
@@ -250,10 +260,19 @@ EOF
 )
 eval "$LAUNCH_ENV"
 
-PIDS=()
+APP_PID=
 cleanup() {
-  for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
-  wait 2>/dev/null || true
+  # A second signal must not cut the shutdown short.
+  trap '' TERM INT
+  if [ -n "$APP_PID" ] && kill -0 -- "-$APP_PID" 2>/dev/null; then
+    kill -TERM -- "-$APP_PID" 2>/dev/null || true
+    # Longer than st-remote's own wait before it kills its children.
+    for _ in $(seq 1 30); do
+      ps -o stat= -s "$APP_PID" | grep -qv '^Z' || break
+      sleep 0.5
+    done
+    kill -KILL -- "-$APP_PID" 2>/dev/null || true
+  fi
   rm -rf "$SECRETS_DIR"
 }
 trap cleanup EXIT
@@ -275,12 +294,13 @@ echo "Operator tools: ARTALK_OPERATOR_TOOLS=${ARTALK_OPERATOR_TOOLS:-unset, so o
 # shellcheck disable=SC2206
 ST_REMOTE_EXTRA=(${ST_REMOTE_ARGS:-})
 APP_LOG=$DATA_DIR/app-${SLURM_JOB_ID:-$$}-${SLURM_RESTART_COUNT:-0}.log
-(cd "$DATA_DIR" && exec "${ST_REMOTE[@]}" --host 0.0.0.0 --port "$APP_PORT" \
+# A session of its own, with APP_PID as its id, lets cleanup signal the tunnel
+# and Streamlit too, which st-remote leaves running when it dies first.
+(cd "$DATA_DIR" && exec setsid "${ST_REMOTE[@]}" --host 0.0.0.0 --port "$APP_PORT" \
   --provider "${ST_REMOTE_PROVIDER:-ngrok}" --no-browser --no-tui \
   --streamlit-arg="--secrets.files=$SECRETS_FILE" \
   "${ST_REMOTE_EXTRA[@]}" "$REPO/streamlit_app.py") > "$APP_LOG" 2>&1 &
 APP_PID=$!
-PIDS+=("$APP_PID")
 URL=""
 for _ in $(seq 1 300); do
   URL=$(grep -A1 "Remote HTTPS URL:" "$APP_LOG" 2>/dev/null | sed -n '2s/ //gp' || true)
