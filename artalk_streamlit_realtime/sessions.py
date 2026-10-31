@@ -48,6 +48,11 @@ FROZEN_COLLECT_MAX_DEFER_SECONDS = 600.0
 # count as playing.
 PLAYING_WINDOW_SECONDS = 2.0
 
+# A session already past its time limit when someone starts waiting gets
+# this long rather than ending at once, and so does one that is within this
+# long of the limit, so the visitor sees the end coming on the page.
+FINAL_COUNTDOWN_SECONDS = 30.0
+
 ENDED_TIME_LIMIT = "time_limit"
 ENDED_NOT_STARTED = "not_started"
 
@@ -92,19 +97,30 @@ def _active_session_ids() -> set[str] | None:
 
 class PipelineSlots:
     """Admits at most `limit` sessions (0: unlimited), queues the rest in
-    arrival order, and stops what a vanished session, one past its time
-    limit, or one admitted that is not playing while others wait left
-    behind. Attached objects are stopped through ``stop()``."""
+    arrival order, and stops what a vanished session left behind, and,
+    while others wait, what one past its time limit or one admitted that
+    is not playing left behind. Attached objects are stopped through
+    ``stop()``.
+
+    The time limit, `session_seconds` of playing time (0: none), only
+    holds while someone is waiting: a slot nobody is waiting for serves
+    nobody else, so cutting its session short would only leave the GPU
+    idle."""
 
     def __init__(self) -> None:
         self.limit = 0
         self.start_grace = 30.0
+        self.session_seconds = 0.0
         self._lock = threading.Lock()
         self._holders: dict[str, dict[str, object]] = {}
         self._queue: list[str] = []
         self._missing_since: dict[str, float] = {}
-        self._deadlines: dict[str, float] = {}
-        self._time_left: dict[str, float] = {}
+        # Playing time before the current stretch, and when the current
+        # stretch began for a session playing now.
+        self._played: dict[str, float] = {}
+        self._playing_since: dict[str, float] = {}
+        # Playing time each holder may reach, set only while someone waits.
+        self._allowance: dict[str, float] = {}
         self._start_by: dict[str, float] = {}
         self._started: set[str] = set()
         self._ended: dict[str, str] = {}
@@ -137,6 +153,8 @@ class PipelineSlots:
                 self._queue.append(session_id)
             self._admit(active)
             self._start_reaper()
+            # Queueing can give the holders deadlines the reaper has not seen.
+            self._wake.set()
             return session_id in self._holders
 
     def holds(self, session_id: str) -> bool:
@@ -154,27 +172,30 @@ class PipelineSlots:
             ahead = self._queue[: self._queue.index(session_id)]
         return 1 + sum(1 for other in ahead if active is None or other in active)
 
-    def estimated_wait(self, session_id: str, session_seconds: float) -> float | None:
+    def estimated_wait(self, session_id: str) -> float | None:
         """Seconds until this queued session should get a slot, if every
-        session runs its full `session_seconds` and starts as soon as it is
+        session runs until its time limit and starts as soon as it is
         admitted. None without a time limit, or for a session not queued."""
         position = self.queue_position(session_id)
-        if not session_seconds or not self.limit or position is None:
+        if not self.session_seconds or not self.limit or position is None:
             return None
         now = time.monotonic()
         with self._lock:
             frees = []
             for holder in self._holders:
-                if holder in self._deadlines:
-                    frees.append(self._deadlines[holder] - now)
+                allowance = self._allowance.get(
+                    holder, self._default_allowance(holder, now)
+                )
+                remaining = allowance - self._played_total(holder, now)
+                if holder in self._playing_since:
+                    frees.append(remaining)
                 else:
                     start_by = self._start_by.get(holder, now + self.start_grace)
-                    time_left = self._time_left.get(holder, session_seconds)
-                    frees.append(start_by - now + time_left)
+                    frees.append(start_by - now + remaining)
             frees.extend([0.0] * max(self.limit - len(self._holders), 0))
         heapq.heapify(frees)
         for _ in range(position - 1):
-            heapq.heappush(frees, max(heapq.heappop(frees), 0.0) + session_seconds)
+            heapq.heappush(frees, max(heapq.heappop(frees), 0.0) + self.session_seconds)
         return max(heapq.heappop(frees), 0.0)
 
     def take_over(self, session_id: str) -> None:
@@ -184,6 +205,7 @@ class PipelineSlots:
         session is still connected, such as a tab left open on a machine that
         went to sleep.
         """
+        active = _active_session_ids()
         with self._lock:
             evicted = [
                 (other, self._holders.pop(other))
@@ -195,6 +217,7 @@ class PipelineSlots:
             if session_id in self._queue:
                 self._queue.remove(session_id)
             self._holders.setdefault(session_id, {})
+            self._update_waiting(active)
             self._start_reaper()
         self._stop(evicted, "taken over by another session")
 
@@ -237,44 +260,51 @@ class PipelineSlots:
     def mark_stopped(self, session_id: str) -> None:
         """Record that this session pressed STOP. It keeps its slot as an
         admitted session that has not started does, so its START grace
-        period runs while someone is waiting, and its time limit pauses."""
+        period runs while someone is waiting, and its playing time stops
+        counting."""
         active = _active_session_ids()
         with self._lock:
             if session_id not in self._holders:
                 return
             self._started.discard(session_id)
-            deadline = self._deadlines.pop(session_id, None)
-            if deadline is not None:
-                self._time_left[session_id] = max(deadline - time.monotonic(), 0.0)
-            self._arm_start_grace(active)
+            since = self._playing_since.pop(session_id, None)
+            if since is not None:
+                self._played[session_id] = self._played.get(session_id, 0.0) + (
+                    time.monotonic() - since
+                )
+            self._update_waiting(active)
         self._wake.set()
 
-    def start_clock(self, session_id: str, seconds: float) -> None:
-        """Give this session's slot a deadline `seconds` from now, or the
-        time it had left when it stopped, unless it already has one.
+    def start_clock(self, session_id: str) -> None:
+        """Count this session's playing time from now, unless it is already
+        counting.
 
-        The reaper stops the slot's objects once the deadline passes, so the
-        limit holds even when no script run is left to enforce it, such as
-        for a tab in the background.
+        The reaper stops the slot's objects once its time runs out while
+        someone waits, so the limit holds even when no script run is left
+        to enforce it, such as for a tab in the background.
         """
         self.mark_started(session_id)
         with self._lock:
             if session_id not in self._holders:
                 return
-            if session_id not in self._deadlines:
-                seconds = self._time_left.pop(session_id, seconds)
-                self._deadlines[session_id] = time.monotonic() + seconds
+            self._playing_since.setdefault(session_id, time.monotonic())
         self._wake.set()
 
     def deadline(self, session_id: str) -> float | None:
-        """When this session's time limit runs out (``time.monotonic()``)."""
+        """When this playing session's time runs out
+        (``time.monotonic()``); None while nobody is waiting."""
         with self._lock:
-            return self._deadlines.get(session_id)
+            return self._deadline(session_id)
 
     def time_left(self, session_id: str) -> float | None:
-        """Seconds of this session's time limit left while it is stopped."""
+        """Seconds of playing time this stopped session has left; None
+        while nobody is waiting."""
         with self._lock:
-            return self._time_left.get(session_id)
+            if session_id not in self._allowance or session_id in self._playing_since:
+                return None
+            return max(
+                self._allowance[session_id] - self._played.get(session_id, 0.0), 0.0
+            )
 
     def start_by(self, session_id: str) -> float | None:
         """When this session's slot passes to the queue unless it presses
@@ -291,10 +321,34 @@ class PipelineSlots:
     def _forget_holder(self, session_id: str) -> None:
         """Caller holds the lock and has removed the holder."""
         self._missing_since.pop(session_id, None)
-        self._deadlines.pop(session_id, None)
-        self._time_left.pop(session_id, None)
+        self._played.pop(session_id, None)
+        self._playing_since.pop(session_id, None)
+        self._allowance.pop(session_id, None)
         self._start_by.pop(session_id, None)
         self._started.discard(session_id)
+
+    def _played_total(self, session_id: str, now: float) -> float:
+        """Caller holds the lock."""
+        played = self._played.get(session_id, 0.0)
+        since = self._playing_since.get(session_id)
+        return played if since is None else played + now - since
+
+    def _default_allowance(self, session_id: str, now: float) -> float:
+        """Caller holds the lock. Counted from all the playing time so far,
+        so a long session does not get a fresh limit when someone starts
+        waiting."""
+        return max(
+            self.session_seconds,
+            self._played_total(session_id, now) + FINAL_COUNTDOWN_SECONDS,
+        )
+
+    def _deadline(self, session_id: str) -> float | None:
+        """Caller holds the lock."""
+        allowance = self._allowance.get(session_id)
+        since = self._playing_since.get(session_id)
+        if allowance is None or since is None:
+            return None
+        return since + allowance - self._played.get(session_id, 0.0)
 
     def _admit(self, active: set[str] | None) -> None:
         """Caller holds the lock. Hand free slots to the queue in order,
@@ -308,21 +362,26 @@ class PipelineSlots:
             self._missing_since.pop(session_id, None)
             self._holders[session_id] = {}
             logger.info("[slots] admitting session %s", session_id)
-        self._arm_start_grace(active)
+        self._update_waiting(active)
 
-    def _arm_start_grace(self, active: set[str] | None) -> None:
-        """Caller holds the lock. A holder that has not started, or has
-        stopped, gets `start_grace` seconds from when someone began waiting
-        for its slot or from its STOP, whichever is later, so a tab left open
-        without pressing START does not stall the queue, while one nobody is
-        waiting for keeps its slot."""
+    def _update_waiting(self, active: set[str] | None) -> None:
+        """Caller holds the lock. While someone is waiting, a holder that
+        has not started, or has stopped, gets `start_grace` seconds from
+        when someone began waiting for its slot or from its STOP, whichever
+        is later, so a tab left open without pressing START does not stall
+        the queue, and every holder gets its allowance of playing time.
+        With nobody waiting, both are lifted."""
         if not any(active is None or other in active for other in self._queue):
             self._start_by.clear()
+            self._allowance.clear()
             return
-        start_by = time.monotonic() + self.start_grace
+        now = time.monotonic()
+        start_by = now + self.start_grace
         for session_id in self._holders:
             if session_id not in self._started:
                 self._start_by.setdefault(session_id, start_by)
+            if self.session_seconds and session_id not in self._allowance:
+                self._allowance[session_id] = self._default_allowance(session_id, now)
 
     def _start_reaper(self) -> None:
         """Caller holds the lock."""
@@ -335,8 +394,10 @@ class PipelineSlots:
     def _reap_loop(self) -> None:
         while True:
             with self._lock:
+                deadlines = [self._deadline(holder) for holder in self._holders]
                 next_deadline = min(
-                    [*self._deadlines.values(), *self._start_by.values()],
+                    [d for d in deadlines if d is not None]
+                    + list(self._start_by.values()),
                     default=None,
                 )
             timeout = REAP_INTERVAL_SECONDS
@@ -351,14 +412,13 @@ class PipelineSlots:
 
     def _reap_once(self) -> None:
         self._stop(self._take_gone(DISCONNECT_GRACE_SECONDS), "its browser is gone")
+        # Unstarted holders go first, so the slots they free count against
+        # the sessions out of time.
         self._stop(
-            self._take_overdue(self._deadlines, ENDED_TIME_LIMIT),
-            "its time limit ran out",
-        )
-        self._stop(
-            self._take_overdue(self._start_by, ENDED_NOT_STARTED),
+            self._take_unstarted(),
             "it did not start before its grace period ran out",
         )
+        self._stop(self._take_out_of_time(), "its time limit ran out")
         active = _active_session_ids()
         live = live_session_ids()
         with self._lock:
@@ -368,22 +428,49 @@ class PipelineSlots:
                     if session_id not in live:
                         del self._ended[session_id]
 
-    def _take_overdue(
-        self, deadlines: dict[str, float], reason: str
-    ) -> list[tuple[str, dict[str, object]]]:
+    def _take_unstarted(self) -> list[tuple[str, dict[str, object]]]:
         now = time.monotonic()
         overdue = []
         with self._lock:
-            for session_id, deadline in list(deadlines.items()):
-                if now < deadline:
+            for session_id, start_by in list(self._start_by.items()):
+                if now < start_by:
                     continue
-                del deadlines[session_id]
+                del self._start_by[session_id]
                 holder = self._holders.pop(session_id, None)
                 if holder is not None:
                     self._forget_holder(session_id)
                     overdue.append((session_id, holder))
-                    self._ended[session_id] = reason
+                    self._ended[session_id] = ENDED_NOT_STARTED
         return overdue
+
+    def _take_out_of_time(self) -> list[tuple[str, dict[str, object]]]:
+        """Remove and return the holders out of playing time, but no more
+        than the waiting sessions need. The rest keep playing, since the
+        queue then empties and their limit is lifted."""
+        active = _active_session_ids()
+        now = time.monotonic()
+        with self._lock:
+            waiting = sum(
+                1 for other in self._queue if active is None or other in active
+            )
+            free = self.limit - len(self._holders) if self.limit else waiting
+            due = [
+                session_id
+                for session_id in self._holders
+                if (deadline := self._deadline(session_id)) is not None
+                and now >= deadline
+            ]
+            # Over-limit sessions given the same final countdown run out
+            # together, and the one that has played longest ends first.
+            due.sort(
+                key=lambda session_id: self._played_total(session_id, now), reverse=True
+            )
+            taken = []
+            for session_id in due[: max(waiting - free, 0)]:
+                taken.append((session_id, self._holders.pop(session_id)))
+                self._forget_holder(session_id)
+                self._ended[session_id] = ENDED_TIME_LIMIT
+        return taken
 
     def _take_gone(self, grace_seconds: float) -> list[tuple[str, dict[str, object]]]:
         """Remove and return the holders whose session has been gone for at

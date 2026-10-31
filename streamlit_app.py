@@ -522,6 +522,7 @@ def main() -> None:
         torch.set_num_threads(args.torch_threads)
     slots.limit = args.max_sessions
     slots.start_grace = args.start_grace
+    slots.session_seconds = args.session_time_limit
     session_closer.start()
     artalk_assets = ARTalkAssets.resolve(root=args.asset_dir)
     gagavatar_assets = resolve_gagavatar_assets(args, artalk_assets)
@@ -1444,8 +1445,9 @@ def main() -> None:
             label = "Join the queue again"
         else:
             st.info(
-                f"This session reached its {args.session_time_limit:g}-second "
-                "limit and was stopped, which frees the GPU for other visitors."
+                "Another visitor was waiting for the GPU and this session had "
+                f"used its {args.session_time_limit:g} s of playing time, so it "
+                "was stopped to let them in."
             )
             label = "Start a new session"
         if st.button(label, key=key):
@@ -1492,7 +1494,7 @@ def main() -> None:
                     "Every GPU session is in use. "
                     f"You are number {position} in the queue."
                 )
-                wait = slots.estimated_wait(session_id, args.session_time_limit)
+                wait = slots.estimated_wait(session_id)
                 if wait is None:
                     st.caption("Estimated wait: unknown, since sessions have no time limit.")
                 else:
@@ -1694,7 +1696,7 @@ def main() -> None:
         if mode == "Interactive" and ctx.state.playing and bridge is not None:
             bridge.start()
         if args.session_time_limit and ctx.state.playing:
-            slots.start_clock(session_id, args.session_time_limit)
+            slots.start_clock(session_id)
         if not ctx.state.playing and not ctx.state.signalling:
             if bridge is not None:
                 bridge.stop()
@@ -1804,10 +1806,14 @@ def main() -> None:
         start_by = slots.start_by(session_id)
         if deadline is not None:
             remaining = max(deadline - now, 0.0)
+            message = (
+                "Another visitor is waiting for the GPU, so this session ends "
+                f"in {remaining:.0f} s."
+            )
             if remaining <= SESSION_END_WARNING_SECONDS:
-                st.warning(f"This session ends in {remaining:.0f} s.")
+                st.warning(message)
             else:
-                st.caption(f"Time left in this session: {remaining:.0f} s")
+                st.caption(message)
             return
         if st.session_state.get(QUEUED_KEY):
             message = "It is your turn. Press **START** under the video to begin."
@@ -1826,13 +1832,14 @@ def main() -> None:
         time_left = slots.time_left(session_id)
         if time_left is not None:
             st.caption(
-                f"Time left in this session: {time_left:.0f} s, paused until "
-                "you press START."
+                f"This session has {time_left:.0f} s of playing time left "
+                "while someone is waiting, paused until you press START."
             )
         elif args.session_time_limit:
             st.caption(
-                f"Sessions are limited to {args.session_time_limit:g} s of "
-                "playing time."
+                "No time limit while nobody is waiting for the GPU. Once "
+                f"someone is, sessions get {args.session_time_limit:g} s of "
+                "playing time in all."
             )
 
     with avatar_col:
